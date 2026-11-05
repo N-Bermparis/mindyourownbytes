@@ -1,0 +1,30 @@
+name: Feature request
+description: Suggest a privacy-conscious improvement.
+title: "feat: "
+labels: [enhancement]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        For larger design changes, please start in Discussions when available.
+        Keep requests focused on local-first encrypted backup workflows.
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem would this solve?
+      placeholder: Describe the user's need rather than only a proposed implementation.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed behavior
+    validations:
+      required: true
+  - type: textarea
+    id: security
+    attributes:
+      label: Security or privacy impact
+      description: Does this change key handling, metadata exposure, or plaintext handling?
+    validations:
+      required: false

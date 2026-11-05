@@ -1,0 +1,42 @@
+# Python and virtual environments
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# Build artifacts
+build/
+dist/
+*.spec
+*.egg-info/
+
+# Local encrypted exports and recovered plaintext
+Encrypted Exports/
+Restored Files/
+vault_output/
+*.gpg
+*.pgp
+*.age
+
+# Secrets, keys, credentials, local databases
+.env
+.env.*
+*.key
+*.pem
+*.p12
+*.pfx
+credentials.json
+token.json
+*.sqlite
+*.db
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

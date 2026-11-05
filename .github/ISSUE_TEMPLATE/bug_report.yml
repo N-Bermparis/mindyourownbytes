@@ -1,0 +1,45 @@
+name: Bug report
+description: Report a reproducible functional bug using synthetic files only.
+title: "bug: "
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you! **Do not share real confidential documents, passphrases,
+        private keys, or security exploits here.** For vulnerabilities, read
+        [SECURITY.md](../../SECURITY.md) and report privately.
+  - type: input
+    id: version
+    attributes:
+      label: Application version or commit
+      placeholder: 0.1.0-alpha.1
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: Operating system and Gpg4win/GnuPG version
+      placeholder: Windows 11 23H2, Gpg4win 5.x
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Steps to reproduce
+      description: Use generated dummy files, never your private backups.
+      placeholder: "1. Open Encrypt files...\n2. Add dummy.txt...\n3. ..."
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+    validations:
+      required: true
