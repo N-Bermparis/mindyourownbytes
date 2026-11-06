@@ -1,162 +1,314 @@
-from pathlib import Path
+"""Path handling, naming, and failure logic. Uses no real gpg, so it runs anywhere."""
+
 import os
-import shutil
 import subprocess
 import tempfile
 import threading
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
-from backup_core import (
-    SourceItem, collect_files, list_public_keys, output_relative,
-    process_items, unique_target,
+from mindyourownbytes.core import (
+    SourceItem,
+    collect_files,
+    encode_passphrase,
+    find_gpg,
+    gpg_version,
+    is_link_or_junction,
+    looks_cloud_synced,
+    output_relative,
+    process_items,
+    unique_target,
 )
+from tests.support import stderr_with_statuses
+
+ENCRYPTED_OK = stderr_with_statuses("BEGIN_ENCRYPTION 2 9", "END_ENCRYPTION")
+DECRYPTED_OK = stderr_with_statuses("BEGIN_DECRYPTION", "DECRYPTION_OKAY", "GOODMDC", "END_DECRYPTION")
 
 
-class FileLayoutTests(unittest.TestCase):
+class TempDirCase(unittest.TestCase):
     def setUp(self):
-        self.temp = tempfile.TemporaryDirectory()
+        self.temp = tempfile.TemporaryDirectory(prefix="myobtest")
         self.addCleanup(self.temp.cleanup)
-        self.root = Path(self.temp.name)
+        self.root = Path(self.temp.name).resolve()
         self.source = self.root / "Research"
         (self.source / "QKD").mkdir(parents=True)
         (self.source / "QKD" / "report.pdf").write_bytes(b"Important research data")
         (self.source / "QKD" / "code.cpp").write_text("int main() { return 0; }")
         self.output = self.root / "encrypted"
 
+
+class FileLayoutTests(TempDirCase):
     def test_folder_layout(self):
-        files, skipped = collect_files([self.source], self.output, "encrypt")
-        self.assertEqual((len(files), skipped), (2, 0))
-        names = {str(output_relative(item, "encrypt")) for item in files}
+        result = collect_files([self.source], self.output, "encrypt")
+        self.assertEqual((len(result.items), result.skipped, result.unreadable), (2, 0, ()))
+        names = {str(output_relative(item, "encrypt")) for item in result.items}
         self.assertEqual(names, {
             str(Path("Research/QKD/report.pdf.gpg")),
             str(Path("Research/QKD/code.cpp.gpg")),
         })
 
-    def test_rejects_recursive_output(self):
+    def test_rejects_output_inside_input(self):
         with self.assertRaisesRegex(ValueError, "inside"):
             collect_files([self.source], self.source / "subdirectory", "encrypt")
-
-    def test_unique_backup_preserves_previous_copy(self):
-        name = self.output / "report.pdf.gpg"
-        self.output.mkdir()
-        name.write_bytes(b"existing ciphertext")
-        self.assertEqual(unique_target(name).name, "report.pdf (2).gpg")
 
     def test_restore_requires_encrypted_extension(self):
         item = SourceItem(self.source / "QKD" / "report.pdf", Path("report.pdf"), 1)
         with self.assertRaises(ValueError):
             output_relative(item, "restore")
 
-    @unittest.skipUnless(hasattr(os, "symlink"), "symlinks not available")
+    def test_restore_mode_skips_non_encrypted_files(self):
+        (self.source / "a.txt.gpg").write_bytes(b"x")
+        result = collect_files([self.source], self.output, "restore")
+        self.assertEqual([item.source.name for item in result.items], ["a.txt.gpg"])
+        self.assertEqual(result.skipped, 2)
+
+    def test_parent_directory_input_cannot_escape_output(self):
+        # Path("..").name is "..", which used to become part of the output path.
+        os.chdir(self.source / "QKD")
+        self.addCleanup(os.chdir, self.root.parent)
+        result = collect_files([".."], self.output, "encrypt")
+        target = (self.output / output_relative(result.items[0], "encrypt")).resolve()
+        self.assertIn(self.output.resolve(), target.parents)
+
     def test_skips_symlink(self):
         link = self.source / "link.txt"
         try:
             link.symlink_to(self.source / "QKD" / "report.pdf")
         except OSError:
             self.skipTest("Cannot create symlinks")
-        files, skipped = collect_files([self.source], self.output, "encrypt")
-        self.assertEqual(len(files), 2)
-        self.assertGreaterEqual(skipped, 1)
+        result = collect_files([self.source], self.output, "encrypt")
+        self.assertEqual(len(result.items), 2)
+        self.assertGreaterEqual(result.skipped, 1)
+
+    @unittest.skipUnless(os.name == "nt", "Windows junctions")
+    def test_never_follows_junction_out_of_the_selection(self):
+        outside = self.root / "outside"
+        outside.mkdir()
+        (outside / "not-selected.txt").write_text("private")
+        junction = self.source / "jump"
+        subprocess.run(["cmd", "/c", "mklink", "/J", str(junction), str(outside)],
+                       check=True, capture_output=True)
+        self.assertTrue(is_link_or_junction(junction))
+        result = collect_files([self.source], self.output, "encrypt")
+        self.assertNotIn("not-selected.txt", [item.source.name for item in result.items])
+        self.assertGreaterEqual(result.skipped, 1)
+
+    def test_unreadable_folder_is_reported_not_silently_dropped(self):
+        real_walk = os.walk
+
+        def walk_hitting_denied_folder(top, **kwargs):
+            kwargs["onerror"](PermissionError(13, "denied", str(Path(top) / "locked")))
+            yield from real_walk(top, **kwargs)
+
+        with patch("mindyourownbytes.core.os.walk", walk_hitting_denied_folder):
+            result = collect_files([self.source], self.output, "encrypt")
+        self.assertEqual([path.name for path in result.unreadable], ["locked"])
+        self.assertEqual(len(result.items), 2)
+
+
+class NamingTests(TempDirCase):
+    def test_collision_keeps_the_restored_extension(self):
+        self.output.mkdir()
+        (self.output / "report.pdf.gpg").write_bytes(b"existing ciphertext")
+        second = unique_target(self.output / "report.pdf.gpg")
+        self.assertEqual(second.name, "report (2).pdf.gpg")
+        self.assertEqual(second.with_suffix("").name, "report (2).pdf")
+
+    def test_collision_for_restored_file_and_dotfile(self):
+        self.output.mkdir()
+        (self.output / "report.pdf").write_bytes(b"x")
+        (self.output / ".env.gpg").write_bytes(b"x")
+        self.assertEqual(unique_target(self.output / "report.pdf").name, "report (2).pdf")
+        self.assertEqual(unique_target(self.output / ".env.gpg").name, ".env (2).gpg")
+
+    def test_free_name_is_unchanged(self):
+        self.assertEqual(unique_target(self.output / "a.gpg"), self.output / "a.gpg")
+
+
+class PassphraseEncodingTests(unittest.TestCase):
+    def test_rejects_what_gpg_would_silently_truncate(self):
+        for bad in ("first\nsecond", "first\rsecond", "nul\0byte", ""):
+            with self.subTest(bad=bad), self.assertRaises(ValueError):
+                encode_passphrase(bad)
+
+    def test_keeps_spaces_and_unicode(self):
+        self.assertEqual(encode_passphrase(" κωδικός ✓ "), " κωδικός ✓ ".encode())
+
+
+class GpgDiscoveryTests(TempDirCase):
+    def test_never_runs_a_gpg_planted_in_the_current_directory(self):
+        planted = self.root / ("gpg.exe" if os.name == "nt" else "gpg")
+        planted.write_bytes(b"not really gpg")
+        os.chdir(self.root)
+        self.addCleanup(os.chdir, self.root.parent)
+        environment = {"PATH": f"{os.pathsep}.{os.pathsep}relative", "ProgramFiles": "", "ProgramW6432": "",
+                       "ProgramFiles(x86)": "", "LOCALAPPDATA": ""}
+        with patch.dict(os.environ, environment):
+            os.environ.pop("NoDefaultCurrentDirectoryInExePath", None)
+            self.assertIsNone(find_gpg())
+
+    def test_skips_git_for_windows_bundled_gpg(self):
+        bundled = self.root / "Git" / "usr" / "bin"
+        bundled.mkdir(parents=True)
+        (bundled / ("gpg.exe" if os.name == "nt" else "gpg")).write_bytes(b"x")
+        environment = {"PATH": str(bundled), "ProgramFiles": "", "ProgramW6432": "",
+                       "ProgramFiles(x86)": "", "LOCALAPPDATA": ""}
+        with patch.dict(os.environ, environment):
+            self.assertIsNone(find_gpg())
+
+    def test_relative_binary_is_never_executed(self):
+        with patch("mindyourownbytes.core.subprocess.run") as run:
+            self.assertIsNone(gpg_version("gpg"))
+            run.assert_not_called()
+
+    def test_program_that_merely_mentions_gpg_is_rejected(self):
+        fake = subprocess.CompletedProcess([], 0, stdout="not-really-gpg 2.4.0\n")
+        with patch("mindyourownbytes.core.subprocess.run", return_value=fake):
+            self.assertIsNone(gpg_version(str(self.root / "x")))
+
+    def test_parses_real_and_vendor_version_strings(self):
+        for line, expected in (("gpg (GnuPG) 2.5.18", (2, 5, 18)), ("gpg (GnuPG/MacGPG2) 2.2.41", (2, 2, 41))):
+            fake = subprocess.CompletedProcess([], 0, stdout=f"{line}\nlibgcrypt 1.12\n")
+            with self.subTest(line=line), patch("mindyourownbytes.core.subprocess.run", return_value=fake):
+                self.assertEqual(gpg_version(str(self.root / "x")), expected)
+
+
+class CloudSyncDetectionTests(unittest.TestCase):
+    def test_detects_common_sync_folders(self):
+        for path in (r"C:\Users\me\OneDrive\Desktop", r"C:\Users\me\OneDrive - Contoso\x",
+                     "/home/me/Dropbox/a", "/home/me/Nextcloud/a",
+                     "/Users/me/Library/Mobile Documents/x", "/Users/me/Library/CloudStorage/y"):
+            with self.subTest(path=path):
+                normalized = path if os.name == "nt" or not path.startswith("C:") else path.replace("\\", "/")
+                self.assertIsNotNone(looks_cloud_synced(normalized))
+
+    def test_no_false_positive_on_a_similar_word(self):
+        # The original check matched the substring "sync", so this was flagged.
+        with patch.dict(os.environ, {"OneDrive": "", "OneDriveConsumer": "", "OneDriveCommercial": ""}):
+            self.assertIsNone(looks_cloud_synced("/home/me/async-project/box-plots"))
+
+    def test_honours_custom_onedrive_location_from_environment(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve() / "Personal files"
+            with patch.dict(os.environ, {"OneDrive": str(root)}):
+                self.assertEqual(looks_cloud_synced(root / "a" / "b"), "Personal files")
+
+
+class ProcessItemsTests(TempDirCase):
+    """gpg itself is mocked here; tests/test_gpg_integration.py runs the real thing."""
+
+    def run_job(self, items, operation, fake, method="password", fingerprint=None, **kwargs):
+        progress = []
+        with patch("mindyourownbytes.core.is_valid_gpg", return_value=True), patch(
+            "mindyourownbytes.core.run_gpg", side_effect=fake
+        ):
+            job = process_items("mock-gpg", items, self.output, operation, method, fingerprint,
+                                threading.Event(), lambda *args: progress.append(args), **kwargs)
+        return job, progress
+
+    def item(self):
+        original = self.source / "QKD" / "report.pdf"
+        return SourceItem(original, Path("Research/QKD/report.pdf"), original.stat().st_size)
 
     def test_failed_operation_removes_partial_outputs(self):
-        item = SourceItem(self.source / "QKD" / "report.pdf", Path("report.pdf"), 20)
-
-        def fail_and_leave_partially_written_data(argv, cancel):
+        def fail_after_writing(argv, cancel, secret=None):
             Path(argv[argv.index("--output") + 1]).write_bytes(b"partial")
-            return 2, "simulated GnuPG failure"
+            return 2, "gpg: simulated failure\n"
 
-        with patch("backup_core.is_valid_gpg", return_value=True), patch(
-            "backup_core._run_gpg", side_effect=fail_and_leave_partially_written_data
-        ):
-            results = []
-            job = process_items("mock-gpg", [item], self.output, "encrypt", "password",
-                                None, threading.Event(), lambda *args: results.append(args))
+        job, progress = self.run_job([self.item()], "encrypt", fail_after_writing)
         self.assertEqual((job.succeeded, job.failed), (0, 1))
-        self.assertEqual(list(self.output.rglob("*")), [])
+        self.assertEqual([p for p in self.output.rglob("*") if p.is_file()], [])
+        self.assertIn("simulated failure", progress[0][2])
 
-    def test_successful_publication_and_restore_paths(self):
-        original = self.source / "QKD" / "report.pdf"
-        input_item = SourceItem(original, Path("Research/QKD/report.pdf"), original.stat().st_size)
-
-        def fake_encrypt(argv, cancel):
+    def test_success_publishes_only_the_final_name(self):
+        def fake_encrypt(argv, cancel, secret=None):
             self.assertIn("--symmetric", argv)
-            self.assertIn("AES256", argv)
-            Path(argv[argv.index("--output") + 1]).write_bytes(b"dummy encrypted bytes")
-            return 0, ""
+            Path(argv[argv.index("--output") + 1]).write_bytes(b"dummy ciphertext")
+            return 0, ENCRYPTED_OK
 
-        with patch("backup_core.is_valid_gpg", return_value=True), patch(
-            "backup_core._run_gpg", side_effect=fake_encrypt
-        ):
-            job = process_items("mock-gpg", [input_item], self.output, "encrypt", "password",
-                                None, threading.Event(), lambda *args: None)
-        self.assertEqual((job.succeeded, job.failed), (1, 0))
+        job, _ = self.run_job([self.item()], "encrypt", fake_encrypt)
         self.assertEqual(job.outputs[0].relative_to(self.output), Path("Research/QKD/report.pdf.gpg"))
-        self.assertEqual(job.outputs[0].read_bytes(), b"dummy encrypted bytes")
-        self.assertFalse(any(self.output.rglob("*.partial")))
+        self.assertEqual(job.outputs[0].read_bytes(), b"dummy ciphertext")
+        self.assertFalse(list(self.output.rglob("*.partial")))
 
-        def fake_decrypt(argv, cancel):
-            self.assertIn("--decrypt", argv)
-            Path(argv[argv.index("--output") + 1]).write_bytes(original.read_bytes())
+    def test_exit_code_zero_without_encryption_status_is_a_failure(self):
+        def silent(argv, cancel, secret=None):
+            Path(argv[argv.index("--output") + 1]).write_bytes(b"who knows what this is")
             return 0, ""
 
-        restore_item = SourceItem(job.outputs[0], Path("Research/QKD/report.pdf.gpg"),
-                                  job.outputs[0].stat().st_size)
-        with patch("backup_core.is_valid_gpg", return_value=True), patch(
-            "backup_core._run_gpg", side_effect=fake_decrypt
-        ):
-            restored = process_items("mock-gpg", [restore_item], self.root / "restored", "restore",
-                                     "password", None, threading.Event(), lambda *args: None)
-        self.assertEqual((restored.succeeded, restored.failed), (1, 0))
-        self.assertEqual(restored.outputs[0].read_bytes(), original.read_bytes())
+        job, _ = self.run_job([self.item()], "encrypt", silent)
+        self.assertEqual((job.succeeded, job.failed), (0, 1))
+        self.assertEqual([p for p in self.output.rglob("*") if p.is_file()], [])
 
+    def test_passphrase_goes_over_the_pipe_and_never_into_argv(self):
+        seen = {}
 
-@unittest.skipUnless(shutil.which("gpg"), "GnuPG not installed")
-class GpgRoundTripTests(unittest.TestCase):
-    def test_public_key_encrypt_restore_and_no_overwrite(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            gnupg = root / "gnupg"
-            gnupg.mkdir(mode=0o700)
-            original = root / "document.pdf"
-            original.write_bytes(b"%PDF-1.4\nMYOB private test bytes\n")
-            env = dict(os.environ, GNUPGHOME=str(gnupg))
-            generated = subprocess.run([
-                shutil.which("gpg"), "--batch", "--yes", "--pinentry-mode", "loopback",
-                "--passphrase", "", "--quick-generate-key",
-                "MYOB Unit Test <test@example.invalid>", "default", "default", "1d",
-            ], env=env, check=False, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, timeout=40)
-            if generated.returncode != 0:
-                self.skipTest("GnuPG agent cannot generate an isolated test key in this environment")
+        def capture(argv, cancel, secret=None):
+            seen.update(argv=argv, secret=secret)
+            Path(argv[argv.index("--output") + 1]).write_bytes(b"c")
+            return 0, ENCRYPTED_OK
 
-            with patch.dict(os.environ, {"GNUPGHOME": str(gnupg)}):
-                keys = list_public_keys(shutil.which("gpg"))
-                self.assertEqual(len(keys), 1)
-                fingerprint, _ = keys[0]
-                report = [SourceItem(original, Path(original.name), original.stat().st_size)]
-                events = []
-                encrypted = process_items(
-                    shutil.which("gpg"), report, root / "backups", "encrypt", "public-key",
-                    fingerprint, threading.Event(), lambda *args: events.append(args),
-                )
-                self.assertEqual((encrypted.succeeded, encrypted.failed), (1, 0))
-                self.assertTrue(encrypted.outputs[0].exists())
-                self.assertNotIn(b"private test bytes", encrypted.outputs[0].read_bytes())
+        self.run_job([self.item()], "encrypt", capture, passphrases=["hunter2 hunter2"])
+        self.assertEqual(seen["secret"], b"hunter2 hunter2")
+        self.assertNotIn("hunter2", " ".join(seen["argv"]))
+        self.assertIn("--passphrase-fd", seen["argv"])
 
-                restored_item = SourceItem(encrypted.outputs[0], Path(encrypted.outputs[0].name),
-                                           encrypted.outputs[0].stat().st_size)
-                first = process_items(
-                    shutil.which("gpg"), [restored_item], root / "restored", "restore",
-                    "public-key", None, threading.Event(), lambda *args: None,
-                )
-                second = process_items(
-                    shutil.which("gpg"), [restored_item], root / "restored", "restore",
-                    "public-key", None, threading.Event(), lambda *args: None,
-                )
-                self.assertEqual((first.succeeded, second.succeeded), (1, 1))
-                self.assertNotEqual(first.outputs[0], second.outputs[0])
-                self.assertEqual(first.outputs[0].read_bytes(), original.read_bytes())
-                self.assertEqual(second.outputs[0].read_bytes(), original.read_bytes())
+    def test_kdf_is_pinned_rather_than_left_to_defaults(self):
+        seen = {}
+
+        def capture(argv, cancel, secret=None):
+            seen["argv"] = argv
+            Path(argv[argv.index("--output") + 1]).write_bytes(b"c")
+            return 0, ENCRYPTED_OK
+
+        self.run_job([self.item()], "encrypt", capture)
+        argv = seen["argv"]
+        self.assertEqual(argv[argv.index("--s2k-count") + 1], "65011712")
+        self.assertEqual(argv[argv.index("--s2k-digest-algo") + 1], "SHA512")
+        self.assertEqual(argv[argv.index("--cipher-algo") + 1], "AES256")
+        self.assertIn("--no-symkey-cache", argv)
+
+    def test_failed_encryption_is_not_described_as_a_damaged_file(self):
+        def disk_full(argv, cancel, secret=None):
+            return 2, stderr_with_statuses("NEED_PASSPHRASE_SYM 9 3 8") + "gpg: write error: disk full\n"
+
+        _, progress = self.run_job([self.item()], "encrypt", disk_full)
+        self.assertIn("disk full", progress[0][2])
+        self.assertNotIn("damaged", progress[0][2])
+
+    def test_staging_name_stays_short_for_long_filenames(self):
+        # Regression: it embedded the original name and overflowed the limit.
+        seen = {}
+        long_item = SourceItem(self.source / "QKD" / "report.pdf", Path("L" * 230 + ".pdf"), 1)
+
+        def capture(argv, cancel, secret=None):
+            seen["staged"] = Path(argv[argv.index("--output") + 1])
+            return 2, "gpg: stop here\n"
+
+        self.run_job([long_item], "encrypt", capture)
+        self.assertLess(len(seen["staged"].name), 40)
+        self.assertNotIn("L" * 10, seen["staged"].name)
+
+    def test_cleanup_failure_does_not_abort_the_batch(self):
+        first, second = self.item(), SourceItem(self.source / "QKD" / "code.cpp", Path("code.cpp"), 1)
+
+        def fail(argv, cancel, secret=None):
+            return 2, "gpg: nope\n"
+
+        with patch("pathlib.Path.unlink", side_effect=OSError(123, "invalid name")):
+            job, progress = self.run_job([first, second], "encrypt", fail)
+        self.assertEqual((job.failed, len(progress)), (2, 2))
+        self.assertEqual(len(job.leftovers), 2)
+
+    def test_rejects_invalid_requests(self):
+        with self.assertRaisesRegex(ValueError, "exactly one"):
+            self.run_job([self.item()], "encrypt", None, passphrases=["a", "b"])
+        with self.assertRaisesRegex(ValueError, "recipient"):
+            self.run_job([self.item()], "encrypt", None, method="public-key", fingerprint="abc")
+        with self.assertRaisesRegex(ValueError, "does not use"):
+            self.run_job([self.item()], "encrypt", None, method="public-key",
+                         fingerprint="A" * 40, passphrases=["a"])
 
 
 if __name__ == "__main__":
