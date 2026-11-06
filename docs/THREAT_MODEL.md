@@ -145,7 +145,8 @@ Its costs, which you should weigh:
   and memory can reach the pagefile or a hibernation file. Locking drops the app's
   references, but copies may persist until that memory is reused. Full-disk encryption
   reduces this risk.
-- **Typed passphrases pass through this app.** Choosing "GnuPG asks for each file" keeps
+- **Typed passphrases pass through this app.** Turning on "Let GnuPG ask for each passphrase"
+  in the Tools menu keeps
   them in Pinentry, so the app never sees them, at the cost of one prompt per file.
 - **The clipboard is exposed while a secret is on it.** Copying is cleared after 30 seconds
   and requests exclusion from Windows clipboard history and cloud sync, but other software

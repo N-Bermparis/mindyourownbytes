@@ -46,6 +46,7 @@ CI always runs them.
 | `mindyourownbytes/vault.py` | The saved passphrase vault |
 | `mindyourownbytes/library.py` | Collections and the library scan |
 | `mindyourownbytes/gui/` | The PySide6 interface. No cryptography goes here |
+| `mindyourownbytes/styles.qss` | Only what native controls can't do. Colors live in `gui/theme.py` |
 | `tests/` | One test file per module, plus real-GnuPG integration tests |
 | `docs/THREAT_MODEL.md` | What is and isn't protected. Keep this accurate |
 
@@ -72,6 +73,7 @@ Commit messages follow a light convention, for example
 - **No silent data loss.** Never overwrite or delete user files. Tell the user about anything that was skipped.
 - **Small attack surface.** No shell invocation, validated paths, and few dependencies.
 - **Honest claims.** Document what we don't protect, as clearly as what we do.
+- **Native first.** Use the platform's own controls, and write for people who've never heard of OpenPGP.
 
 ## License
 

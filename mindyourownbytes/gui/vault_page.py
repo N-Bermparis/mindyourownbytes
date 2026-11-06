@@ -2,14 +2,11 @@
 
 from __future__ import annotations
 
-from PySide6.QtCore import Qt, QTimer, Signal
+from PySide6.QtCore import Qt, QTimer, QUrl, Signal
+from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (
-    QAbstractItemView,
-    QFrame,
     QHBoxLayout,
-    QHeaderView,
     QInputDialog,
-    QLabel,
     QLineEdit,
     QMessageBox,
     QStackedWidget,
@@ -21,7 +18,15 @@ from PySide6.QtWidgets import (
 
 from mindyourownbytes.core import is_valid_gpg
 from mindyourownbytes.gui.dialogs import PassphraseDialog, VaultEntryDialog
-from mindyourownbytes.gui.widgets import SecretClipboard, WaitCursor, action_button
+from mindyourownbytes.gui.widgets import (
+    EmptyState,
+    SecretClipboard,
+    WaitCursor,
+    action_button,
+    card,
+    configure_table,
+    label,
+)
 from mindyourownbytes.vault import MIN_MASTER_LENGTH, Vault, VaultEntry, VaultError, WrongMasterPassphrase
 
 AUTO_LOCK_MS = 15 * 60 * 1000
@@ -46,14 +51,13 @@ class VaultPage(QWidget):
         self._lock_timer.timeout.connect(self.lock)
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(34, 27, 34, 24)
-        layout.setSpacing(16)
-        heading = QLabel("Saved passphrases")
-        heading.setObjectName("title")
-        layout.addWidget(heading)
-        subtitle = QLabel("Keep a different passphrase for each kind of document, inside one encrypted file.")
-        subtitle.setObjectName("mutedLabel")
-        layout.addWidget(subtitle)
+        layout.setContentsMargins(24, 18, 24, 16)
+        layout.setSpacing(10)
+        layout.addWidget(label("Passphrases", "title"))
+        layout.addWidget(label(
+            "Keep a different passphrase for each kind of document, safely in one place.", "muted", wrap=True,
+        ))
+        layout.addSpacing(4)
 
         self.stack = QStackedWidget()
         layout.addWidget(self.stack, stretch=1)
@@ -64,110 +68,88 @@ class VaultPage(QWidget):
             self.stack.addWidget(panel)
         self.refresh()
 
-    def _card(self, title: str, body: str) -> tuple[QFrame, QVBoxLayout]:
-        card = QFrame()
-        card.setObjectName("optionsCard")
-        inner = QVBoxLayout(card)
-        inner.setContentsMargins(24, 22, 24, 22)
-        inner.setSpacing(12)
-        headline = QLabel(title)
-        headline.setObjectName("dropTitle")
-        inner.addWidget(headline)
-        text = QLabel(body)
-        text.setObjectName("mutedLabel")
-        text.setWordWrap(True)
-        inner.addWidget(text)
-        return card, inner
-
     def _build_setup_panel(self) -> QWidget:
-        panel = QWidget()
-        outer = QVBoxLayout(panel)
-        outer.setContentsMargins(0, 0, 0, 0)
-        card, inner = self._card(
-            "Set up your vault",
-            "Saved passphrases are optional. They stay on this computer, inside one file that GnuPG "
-            "encrypts under a master passphrase of your choice. Nothing is uploaded, and your encrypted "
-            "files stay standard .gpg files that open without this app.\n\n" + _NO_RECOVERY,
-        )
         self.create_button = action_button("Create vault", "primary")
         self.create_button.clicked.connect(self.create_vault)
-        row = QHBoxLayout()
-        row.addWidget(self.create_button)
-        row.addStretch(1)
-        inner.addLayout(row)
-        outer.addWidget(card)
-        outer.addStretch(1)
-        return panel
+        self.setup_state = EmptyState(
+            "key", "Save your passphrases in an encrypted vault",
+            "This is optional. They stay on this computer, in one file that GnuPG encrypts under a master "
+            "passphrase of your choice. Nothing is uploaded, and your encrypted files still open without "
+            f"this app.\n\n{_NO_RECOVERY}",
+            (self.create_button,),
+        )
+        return self.setup_state
 
     def _build_locked_panel(self) -> QWidget:
-        panel = QWidget()
-        outer = QVBoxLayout(panel)
-        outer.setContentsMargins(0, 0, 0, 0)
-        card, inner = self._card("Your vault is locked", "Enter your master passphrase to use saved passphrases.")
-        self.unlock_button = action_button("Unlock", "primary")
+        self.unlock_button = action_button("Unlock", "primary", "restore")
         self.unlock_button.clicked.connect(self.request_unlock)
-        row = QHBoxLayout()
-        row.addWidget(self.unlock_button)
-        row.addStretch(1)
-        inner.addLayout(row)
-        outer.addWidget(card)
-        outer.addStretch(1)
-        return panel
+        self.locked_state = EmptyState(
+            "encrypt", "Your saved passphrases are locked", "Enter your master passphrase to use them.",
+            (self.unlock_button,),
+        )
+        return self.locked_state
 
     def _build_unlocked_panel(self) -> QWidget:
         panel = QWidget()
         outer = QVBoxLayout(panel)
         outer.setContentsMargins(0, 0, 0, 0)
-        outer.setSpacing(12)
-
-        self.table = QTableWidget(0, 3)
-        self.table.setHorizontalHeaderLabels(["NAME", "NOTE", "CREATED"])
-        header = self.table.horizontalHeader()
-        header.setDefaultAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
-        header.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
-        header.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
-        header.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
-        self.table.verticalHeader().setVisible(False)
-        self.table.setAlternatingRowColors(True)
-        self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
-        self.table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
-        self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
-        self.table.setShowGrid(False)
-        outer.addWidget(self.table, stretch=1)
+        outer.setSpacing(8)
 
         actions = QHBoxLayout()
-        actions.setSpacing(8)
-        self.add_button = action_button("+ Add passphrase", "primary")
+        actions.setSpacing(6)
+        self.add_button = action_button("Add passphrase", "primary", "plus")
         self.add_button.clicked.connect(self.add_entry)
-        self.copy_button = action_button("Copy")
-        self.copy_button.setToolTip("Copies for 30 seconds, then clears the clipboard")
-        self.copy_button.clicked.connect(self.copy_selected)
-        self.show_button = action_button("Show")
-        self.show_button.clicked.connect(self.show_selected)
-        self.rename_button = action_button("Rename", "subtle")
-        self.rename_button.clicked.connect(self.rename_selected)
-        self.delete_button = action_button("Delete", "subtle")
-        self.delete_button.clicked.connect(self.delete_selected)
-        for button in (self.add_button, self.copy_button, self.show_button, self.rename_button, self.delete_button):
-            actions.addWidget(button)
+        actions.addWidget(self.add_button)
         actions.addStretch(1)
+        self.copy_button = action_button("Copy", icon_name="copy")
+        self.copy_button.setToolTip("Copies it for 30 seconds, then clears the clipboard")
+        self.copy_button.clicked.connect(self.copy_selected)
+        self.show_button = action_button("Show", icon_name="eye")
+        self.show_button.clicked.connect(self.show_selected)
+        self.rename_button = action_button("Rename", icon_name="edit")
+        self.rename_button.clicked.connect(self.rename_selected)
+        self.delete_button = action_button("Delete", icon_name="trash")
+        self.delete_button.clicked.connect(self.delete_selected)
+        self._selection_buttons = (self.copy_button, self.show_button, self.rename_button, self.delete_button)
+        for button in self._selection_buttons:
+            actions.addWidget(button)
         outer.addLayout(actions)
 
+        frame = card()
+        frame_layout = QVBoxLayout(frame)
+        frame_layout.setContentsMargins(1, 1, 1, 1)
+        self.table = QTableWidget(0, 3)
+        self.table.setHorizontalHeaderLabels(["Name", "Note", "Created"])
+        configure_table(self.table, stretch=(0, 1), multi_select=False)
+        self.table.setAccessibleName("Saved passphrases")
+        self.table.itemSelectionChanged.connect(self._update_actions)
+        frame_layout.addWidget(self.table)
+        outer.addWidget(frame, stretch=1)
+
+        self.feedback = label("", "muted", wrap=True)
+        outer.addWidget(self.feedback)
+
         footer = QHBoxLayout()
-        footer.setSpacing(8)
-        self.location_note = QLabel()
-        self.location_note.setObjectName("mutedLabel")
-        self.location_note.setWordWrap(True)
+        footer.setSpacing(6)
+        self.location_note = label("", "muted", wrap=True)
         self.location_note.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         footer.addWidget(self.location_note, stretch=1)
-        self.change_master_button = action_button("Change master", "subtle")
+        self.open_folder_button = action_button("Open folder", icon_name="folder")
+        self.open_folder_button.setToolTip("Open the folder holding the vault, so you can back it up")
+        self.open_folder_button.clicked.connect(self.open_vault_folder)
+        footer.addWidget(self.open_folder_button)
+        self.change_master_button = action_button("Change master passphrase")
         self.change_master_button.clicked.connect(self.change_master)
         footer.addWidget(self.change_master_button)
-        self.lock_button = action_button("Lock now", "danger")
+        self.lock_button = action_button("Lock now", icon_name="encrypt")
         self.lock_button.clicked.connect(self.lock)
         footer.addWidget(self.lock_button)
         outer.addLayout(footer)
         return panel
+
+    def refresh_theme(self) -> None:
+        self.setup_state.refresh_icon()
+        self.locked_state.refresh_icon()
 
     def refresh(self) -> None:
         if not self.vault.exists:
@@ -187,12 +169,16 @@ class VaultPage(QWidget):
                 cell = QTableWidgetItem(value)
                 cell.setData(Qt.ItemDataRole.UserRole, entry.id)
                 self.table.setItem(row, column, cell)
-            self.table.setRowHeight(row, 34)
         self.location_note.setText(
-            f"Back up this file, and remember the master passphrase: {self.vault.path}\n"
-            "Locks after 15 minutes without use, and when you close the app. The app can't erase "
-            "secrets from memory until then, so lock it before leaving your computer."
+            "Locks by itself after 15 minutes without use, and when you close the app. "
+            f"Back up this file, and remember your master passphrase: {self.vault.path}"
         )
+        self._update_actions()
+
+    def _update_actions(self) -> None:
+        selected = bool(self.table.selectionModel().selectedRows())
+        for button in self._selection_buttons:
+            button.setEnabled(selected)
 
     def touch(self) -> None:
         """Restart the auto-lock countdown after the vault is used."""
@@ -208,7 +194,8 @@ class VaultPage(QWidget):
         if self.vault.gpg and is_valid_gpg(self.vault.gpg):
             return True
         QMessageBox.warning(self, "GnuPG is required",
-                            "The vault is encrypted by GnuPG. Install Gpg4win, or click Locate GnuPG, then try again.")
+                            "The vault is encrypted by GnuPG. Install Gpg4win, or use Tools > Locate GnuPG, "
+                            "then try again.")
         return False
 
     def create_vault(self) -> None:
@@ -218,7 +205,7 @@ class VaultPage(QWidget):
             self, "Create a master passphrase",
             f"This one passphrase protects every saved passphrase, so make it strong: at least "
             f"{MIN_MASTER_LENGTH} characters, and ideally five or more random words.\n\n{_NO_RECOVERY}",
-            confirm=True, min_length=MIN_MASTER_LENGTH,
+            confirm=True, min_length=MIN_MASTER_LENGTH, ok_text="Create vault",
         )
         if not dialog.exec():
             return
@@ -236,7 +223,7 @@ class VaultPage(QWidget):
             return False
         message = "Enter your master passphrase."
         while not self.vault.unlocked:
-            dialog = PassphraseDialog(self, "Unlock saved passphrases", message)
+            dialog = PassphraseDialog(self, "Unlock saved passphrases", message, ok_text="Unlock")
             if not dialog.exec():
                 return False
             try:
@@ -255,6 +242,7 @@ class VaultPage(QWidget):
         self.clipboard.clear()
         self.vault.lock()
         self.table.setRowCount(0)
+        self.feedback.setText("")
         self.refresh()
         self.changed.emit()
 
@@ -271,10 +259,10 @@ class VaultPage(QWidget):
         dialog = VaultEntryDialog(self)
         if not dialog.exec():
             return
-        label, passphrase, note = dialog.values()
+        label_text, passphrase, note = dialog.values()
         try:
             with WaitCursor():
-                self.vault.add(label, passphrase, note)
+                self.vault.add(label_text, passphrase, note)
         except (VaultError, ValueError) as exc:
             QMessageBox.warning(self, "Could not save", str(exc))
             return
@@ -284,6 +272,7 @@ class VaultPage(QWidget):
         entry = self._selected()
         if entry:
             self.clipboard.copy(entry.passphrase)
+            self.feedback.setText(f"Copied “{entry.label}”. The clipboard clears in 30 seconds.")
 
     def show_selected(self) -> None:
         entry = self._selected()
@@ -300,12 +289,12 @@ class VaultPage(QWidget):
         entry = self._selected()
         if not entry:
             return
-        label, accepted = QInputDialog.getText(self, "Rename", "New name:", QLineEdit.EchoMode.Normal, entry.label)
+        name, accepted = QInputDialog.getText(self, "Rename", "New name:", QLineEdit.EchoMode.Normal, entry.label)
         if not accepted:
             return
         try:
             with WaitCursor():
-                self.vault.rename(entry.id, label)
+                self.vault.rename(entry.id, name)
         except VaultError as exc:
             QMessageBox.warning(self, "Could not rename", str(exc))
             return
@@ -331,13 +320,17 @@ class VaultPage(QWidget):
             return
         self._after_change()
 
+    def open_vault_folder(self) -> None:
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(self.vault.path.parent)))
+
     def change_master(self) -> None:
-        current = PassphraseDialog(self, "Change master passphrase", "Enter your current master passphrase.")
+        current = PassphraseDialog(self, "Change master passphrase", "Enter your current master passphrase.",
+                                   ok_text="Continue")
         if not current.exec():
             return
         new = PassphraseDialog(
             self, "Change master passphrase", f"Choose a new master passphrase.\n\n{_NO_RECOVERY}",
-            confirm=True, min_length=MIN_MASTER_LENGTH,
+            confirm=True, min_length=MIN_MASTER_LENGTH, ok_text="Change it",
         )
         if not new.exec():
             return
@@ -348,4 +341,4 @@ class VaultPage(QWidget):
             QMessageBox.warning(self, "Could not change it", str(exc))
             return
         self._after_change()
-        QMessageBox.information(self, "Master passphrase changed", "The vault now uses the new passphrase.")
+        self.feedback.setText("The vault now uses your new master passphrase.")
