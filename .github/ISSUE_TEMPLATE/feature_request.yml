@@ -6,7 +6,7 @@ body:
   - type: markdown
     attributes:
       value: |
-        For larger design changes, please start in Discussions when available.
+        For larger design changes, please start in Discussions.
         Keep requests focused on local-first encrypted backup workflows.
   - type: textarea
     id: problem

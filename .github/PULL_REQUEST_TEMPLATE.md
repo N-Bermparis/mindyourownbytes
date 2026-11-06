@@ -4,7 +4,8 @@ Describe what changes and why.
 
 ## Verification
 
-- [ ] `python -m unittest discover -s tests -v` passes (or explain skipped tests)
+- [ ] `python -m unittest discover -s tests -t . -v` passes (or explain skipped tests)
+- [ ] `python -m ruff check .` passes
 - [ ] Encryption/restore behavior tested with dummy files if applicable
 - [ ] UI screenshots attached for visible changes (dummy data only)
 - [ ] No real private files, keys, passphrases, tokens, or credentials included

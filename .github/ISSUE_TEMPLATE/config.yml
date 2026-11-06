@@ -1,8 +1,8 @@
 blank_issues_enabled: false
 contact_links:
-  - name: Security reporting policy
-    url: https://github.com/N-Bermparis/mindyourownbytes/blob/main/SECURITY.md
-    about: Do not report vulnerabilities through public issues.
-  - name: Discussions (questions and ideas)
+  - name: Report a security vulnerability
+    url: https://github.com/N-Bermparis/mindyourownbytes/security/advisories/new
+    about: Please report vulnerabilities privately, never in a public issue.
+  - name: Questions and ideas
     url: https://github.com/N-Bermparis/mindyourownbytes/discussions
-    about: Ask questions or discuss the roadmap when Discussions is enabled.
+    about: Ask questions or discuss the roadmap.

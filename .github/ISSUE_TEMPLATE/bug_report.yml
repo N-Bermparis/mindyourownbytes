@@ -8,7 +8,7 @@ body:
       value: |
         Thank you! **Do not share real confidential documents, passphrases,
         private keys, or security exploits here.** For vulnerabilities, read
-        [SECURITY.md](../../SECURITY.md) and report privately.
+        [SECURITY.md](https://github.com/N-Bermparis/mindyourownbytes/blob/main/SECURITY.md) and report privately.
   - type: input
     id: version
     attributes:
@@ -20,7 +20,7 @@ body:
     id: environment
     attributes:
       label: Operating system and Gpg4win/GnuPG version
-      placeholder: Windows 11 23H2, Gpg4win 5.x
+      placeholder: Windows 11 24H2, Gpg4win 5.x
     validations:
       required: true
   - type: textarea
