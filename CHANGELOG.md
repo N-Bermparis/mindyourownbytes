@@ -9,13 +9,14 @@ First public version. Not independently audited.
 
 ### Added
 
+- A guided, plain-language desktop app using native controls, with the system's light or dark mode.
 - Drag-and-drop encryption of files and folders to standard OpenPGP `.gpg` files.
 - Passphrase encryption (AES-256) and public-key encryption with Kleopatra/GnuPG keys.
 - Type one passphrase for a whole batch, instead of one prompt per file.
 - Encrypted vault for saved passphrases, with generation and auto-lock. Stored as a plain
   GnuPG file that opens without this application.
 - Library screen with collections, search, and moving files between collections.
-- Restore workflow that can try every saved passphrase.
+- Restore that selects how to unlock files, can try every saved passphrase, and retries only what failed.
 - Warnings before restoring into a synced folder, when originals already appear to be in
   one, and before encrypting to a key you can't decrypt with.
 - Real-GnuPG test suite, including forged, tampered, and truncated input.

@@ -53,6 +53,8 @@ can't read. This app makes that a drag and drop.
 - **Restore safely.** Forged, tampered, and truncated files are rejected, with nothing written.
 - **Works with any storage**, because it never talks to any: Google Drive, OneDrive, Dropbox,
   iCloud, a NAS, or a USB stick. You upload the files yourself.
+- **Clear, guided steps** in plain language, using your system's own controls and its light or
+  dark mode. Failed files can be retried with one click.
 
 | Library | Saved passphrases |
 | --- | --- |
@@ -90,26 +92,29 @@ been tested on macOS. Reports are very welcome.
 
 **Encrypt**
 
-1. Drop files or folders into the window.
-2. Choose how to protect them. *Type once for this batch* is the simplest.
+1. Drop files or folders onto the window.
+2. Choose how to protect them. *Passphrase* is the simplest.
 3. Optionally type a collection name, such as `Taxes`.
-4. Click **Encrypt files**, and upload what appears in the output folder. By default that's
-   `%USERPROFILE%\mindyourownbytes\Encrypted Exports`.
+4. Click **Encrypt**. When it's done, click **Open folder** and upload what's there. By default
+   that's `%USERPROFILE%\mindyourownbytes\Encrypted Exports`.
 
 **Restore**
 
-1. Download your `.gpg` files, or select them in the **Library**.
-2. Choose how to unlock them, then a folder that no cloud service syncs.
-3. Click **Restore files**.
+1. Download your `.gpg` files and drop them on the **Restore** screen, or select them in the
+   **Library**.
+2. The app selects how to unlock them based on how they were encrypted, and you can change it.
+3. Choose a folder that no cloud service syncs, then click **Restore**.
 
 ### Which method should I choose?
 
 | Method | Good for | Trade-off |
 | --- | --- | --- |
-| **Type once for this batch** | Most people | The passphrase passes through this app |
-| **GnuPG asks for each file** | Keeping passphrases away from this app | One prompt per file, so slow for folders |
+| **Passphrase** | Most people | The passphrase passes through this app |
 | **Saved passphrase** | Different secrets for different documents | One master passphrase guards them all |
-| **OpenPGP public key** | Existing Kleopatra users | You must back up your private key, and forged files aren't detected ([why](docs/THREAT_MODEL.md#tampering)) |
+| **OpenPGP key** | Existing Kleopatra users | You must back up your private key, and forged files aren't detected ([why](docs/THREAT_MODEL.md#tampering)) |
+
+Would you rather this app never saw your passphrase? Turn on **Tools > Let GnuPG ask for each
+passphrase**. You'll then be asked once for every file, so it's slower for folders.
 
 ## No lock-in
 

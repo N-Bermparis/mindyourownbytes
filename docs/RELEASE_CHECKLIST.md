@@ -15,14 +15,15 @@ release pull request. Passing this list is not a security certification.
 
 ## Functional checks with real Pinentry, on Windows
 
-- [ ] Encrypt and restore with each method: type once, GnuPG asks, saved passphrase, public key.
+- [ ] Encrypt and restore with each method: passphrase, GnuPG's own prompt (Tools menu), saved passphrase, key.
+- [ ] Drag and drop files and folders onto the Encrypt and Restore screens.
 - [ ] Encrypt, upload manually, download, restore, and compare file hashes.
 - [ ] Restore on a second, clean computer, using only your backup of the passphrase or key.
 - [ ] Open a file and the vault using plain `gpg`, without this app.
 - [ ] Try a wrong passphrase, a missing key, a corrupt file, and Cancel.
 - [ ] Test spaces, Unicode, very long names, and name collisions.
 - [ ] Test from an ordinary, non-administrator account.
-- [ ] Check keyboard use and that every dialog is readable in light and dark Windows themes.
+- [ ] Check keyboard use, and that every screen and dialog is readable in light and dark Windows themes.
 
 ## Safety and packaging
 
