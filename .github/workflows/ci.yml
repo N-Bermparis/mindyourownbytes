@@ -53,27 +53,17 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y gnupg libegl1 libgl1 libxkbcommon0 libdbus-1-3 libfontconfig1 libglib2.0-0t64
-      # The official release, checked against the SHA-256 published at
-      # https://gnupg.org/download/integrity_check.html. It is unpacked rather than
-      # run, because the installer's silent mode hangs on the server image.
+      # The same GnuPG that the Windows download includes, from its pinned official package.
       - name: Install native GnuPG (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
         timeout-minutes: 5
         run: |
-          $installer = Join-Path $env:RUNNER_TEMP 'gnupg-setup.exe'
-          Invoke-WebRequest 'https://gnupg.org/ftp/gcrypt/binary/gnupg-w32-2.5.24_20260923.exe' -OutFile $installer
-          $actual = (Get-FileHash $installer -Algorithm SHA256).Hash
-          if ($actual -ne 'EA6F9DEE2CCCD83287432625B8B399173805ADD81D27067FCAF019C0C4DA1AD8') {
-            throw "Unexpected installer checksum: $actual"
-          }
-          $target = Join-Path $env:RUNNER_TEMP 'gnupg'
-          7z x -y "-o$target" $installer | Out-Null
-          $gpg = Get-ChildItem $target -Recurse -Filter gpg.exe | Select-Object -First 1
-          if (-not $gpg) { throw 'gpg.exe was not found after unpacking' }
-          Write-Output $gpg.FullName
-          & $gpg.FullName --version | Select-Object -First 1
-          Add-Content $env:GITHUB_PATH $gpg.DirectoryName
+          $bin = python packaging/build_windows.py --gnupg-only (Join-Path $env:RUNNER_TEMP 'gnupg') | Select-Object -Last 1
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Write-Output $bin
+          & (Join-Path $bin 'gpg.exe') --version | Select-Object -First 1
+          Add-Content $env:GITHUB_PATH $bin
       - name: Install locked dependencies
         run: python -m pip install --require-hashes -r requirements.txt
       - name: Show GnuPG in use

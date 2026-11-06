@@ -1,6 +1,7 @@
-"""Entry point for ``python -m mindyourownbytes``."""
+"""Entry point for ``python -m mindyourownbytes``, and for the Windows download."""
 
 import sys
+from pathlib import Path
 
 if sys.version_info < (3, 12):  # noqa: UP036
     # Running from a source checkout skips pip's requires-python check. Under
@@ -10,4 +11,8 @@ if sys.version_info < (3, 12):  # noqa: UP036
 from mindyourownbytes.gui.main_window import main  # noqa: E402
 
 if __name__ == "__main__":
+    if len(sys.argv) == 3 and sys.argv[1] == "--self-test":
+        from mindyourownbytes.selftest import run
+
+        sys.exit(run(Path(sys.argv[2])))
     main()

@@ -4,7 +4,7 @@
 
 mindyourownbytes is **alpha software and has not been independently audited**. Please
 don't rely on it as the only protection, or the only copy, of anything critical. There
-is no stable release yet, so only the latest commit on `main` is supported.
+is no stable release yet, so only the latest release and the latest commit on `main` are supported.
 
 ## Reporting a vulnerability
 
@@ -36,6 +36,7 @@ disclosing publicly.
 - Plaintext ending up in the export folder.
 - Losing data: overwriting a file, or reporting success when a file wasn't protected.
 - Getting this application to run a program other than GnuPG.
+- Problems in the Windows download, including a bundled GnuPG with a known vulnerability.
 - Weaknesses in the vault's design.
 
 Findings about GnuPG itself should go to the

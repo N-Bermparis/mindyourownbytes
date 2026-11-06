@@ -1,0 +1,36 @@
+What's inside this download of mindyourownbytes {version}
+
+mindyourownbytes is free software under the GNU General Public License, version 3 or
+later (see LICENSE.txt). It comes with no warranty. Its source code is at
+https://github.com/N-Bermparis/mindyourownbytes/tree/v{version}
+
+This download also contains the software below, each under its own license.
+
+
+GnuPG {gnupg}, in the "gnupg" folder
+  Does all of the encryption. These are the official Windows files from the GnuPG
+  project, unmodified and signed by g10 Code GmbH. Three network tools that this app
+  never uses are left out (dirmngr, gpg-wks-client, libntbtls), as are translations.
+  License: GPL-3.0-or-later and LGPL. See "Legal notices" in gnupg\README.txt.
+  Source code: {gnupg_source}, attached to every release of this app,
+  and at {gnupg_source_url}
+
+Qt and PySide6 {qt}, in the "_internal\PySide6" and "_internal\shiboken6" folders
+  Draw the interface.
+  License: used here under the GNU General Public License, version 3 (see LICENSE.txt).
+  Source code: https://download.qt.io/official_releases/qt/{qt_series}/{qt}/single/
+  and https://download.qt.io/official_releases/QtForPython/pyside6/PySide6-{qt}-src/
+
+Python {python}, in the "_internal" folder
+  Runs the app.
+  License: the Python Software Foundation License, with the licenses of the libraries
+  it uses, in licenses\Python.txt.
+  Source code: https://www.python.org/downloads/release/python-{python}/
+
+PyInstaller {pyinstaller}, the launcher inside mindyourownbytes.exe
+  License: GPL-2.0-or-later with an exception for the programs it launches, in
+  licenses\PyInstaller.txt.
+  Source code: https://github.com/pyinstaller/pyinstaller
+
+Microsoft Visual C++ runtime, in the "_internal" folders
+  Redistributed with Python and Qt, under Microsoft's terms for redistributable code.

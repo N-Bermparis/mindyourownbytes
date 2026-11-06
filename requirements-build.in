@@ -1,0 +1,3 @@
+# What builds the Windows download. Regenerate requirements-build.txt from the project folder:
+#   uv pip compile --universal --generate-hashes requirements-build.in -o requirements-build.txt
+pyinstaller==6.22.3

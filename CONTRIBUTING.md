@@ -17,7 +17,8 @@ or try the app and tell us where you got stuck. That feedback is valuable in its
 
 ## Setting up
 
-You need Python 3.12+ and GnuPG 2.2.8+ ([Gpg4win](https://gpg4win.org/) on Windows).
+You need Python 3.12+ and GnuPG 2.2.8+ ([Gpg4win](https://gpg4win.org/) on Windows). For a
+Windows download that you can simply run, see the [README](README.md#getting-started).
 
 ```bash
 python -m venv .venv
@@ -38,6 +39,20 @@ The tests use a temporary GnuPG home and never touch your real keyring. Without 
 the cryptography tests are skipped, so if that happens please say so in your pull request.
 CI always runs them.
 
+## Building the Windows download
+
+You rarely need to: every pull request that could affect the download builds and tests it, and keeps
+the result as a workflow artifact. To do it yourself, you need [7-Zip](https://www.7-zip.org/):
+
+```bash
+python -m pip install --require-hashes -r requirements.txt -r requirements-build.txt
+python packaging/build_windows.py
+python packaging/check_windows_download.py
+```
+
+The last command really installs, upgrades, and uninstalls the app, so read the top of that file
+first. `build_windows_exe.bat` does the first two steps for you.
+
 ## Where things live
 
 | Path | Purpose |
@@ -47,6 +62,8 @@ CI always runs them.
 | `mindyourownbytes/library.py` | Collections and the library scan |
 | `mindyourownbytes/gui/` | The PySide6 interface. No cryptography goes here |
 | `mindyourownbytes/styles.qss` | Only what native controls can't do. Colors live in `gui/theme.py` |
+| `mindyourownbytes/selftest.py` | The check that the built app runs on itself |
+| `packaging/` | The Windows download: its recipes, and the script that tests the result |
 | `tests/` | One test file per module, plus real-GnuPG integration tests |
 | `docs/THREAT_MODEL.md` | What is and isn't protected. Keep this accurate |
 
@@ -59,7 +76,7 @@ CI always runs them.
 4. Confirm plaintext can't reach the export folder, and that errors can't overwrite or lose data.
 5. Keep dependencies to a minimum and explain any you add. Lock files are generated with
    [`uv pip compile --universal --generate-hashes`](https://docs.astral.sh/uv/pip/compile/),
-   from `pyproject.toml` and `requirements-dev.in`.
+   from `pyproject.toml`, `requirements-dev.in`, and `requirements-build.in`.
 6. For visible changes, attach Windows screenshots using dummy data only.
 
 Commit messages follow a light convention, for example

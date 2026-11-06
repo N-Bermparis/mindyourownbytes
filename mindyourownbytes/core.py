@@ -12,6 +12,7 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import threading
 import uuid
 from collections.abc import Callable, Iterable, Sequence
@@ -136,13 +137,24 @@ def _absolute_path_entries() -> list[Path]:
     return entries
 
 
+def bundled_gpg() -> str | None:
+    """The copy of GnuPG inside the Windows download, when running from one."""
+    if not getattr(sys, "frozen", False):
+        return None
+    candidate = Path(sys.executable).parent / "gnupg" / "bin" / "gpg.exe"
+    return str(candidate) if candidate.is_file() else None
+
+
 def find_gpg() -> str | None:
     """Locate GnuPG without ever searching the current directory.
 
     ``shutil.which`` is deliberately not used: on Windows it searches the
     current directory first, so a gpg.exe dropped next to the app would be
     executed at startup and would then see every file and passphrase. The
-    standard install locations come first for the same reason.
+    standard install locations come first for the same reason, and because
+    someone's keys and Kleopatra already work with the GnuPG they installed.
+    After those comes the copy in the Windows download, ahead of PATH, so that a
+    stray PATH entry can't replace it.
     """
     if os.name == "nt":
         roots = [os.environ.get(name, "") for name in
@@ -156,6 +168,9 @@ def find_gpg() -> str | None:
                 candidate = Path(root) / subpath
                 if candidate.is_file():
                     return str(candidate)
+        bundled = bundled_gpg()
+        if bundled:
+            return bundled
     names = ("gpg.exe",) if os.name == "nt" else ("gpg",)
     for directory in _absolute_path_entries():
         for name in names:

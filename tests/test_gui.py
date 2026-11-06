@@ -65,6 +65,20 @@ class WithoutGnuPGTests(unittest.TestCase):
         self.assertEqual(window.operation, "restore")
         self.assertIs(window.pages.currentWidget(), window.transfer_page)
 
+    def test_about_says_when_gnupg_came_with_the_app(self):
+        window = MainWindow(self.settings, self.folder / "vault.gpg")
+        self.addCleanup(window.close)
+        window.gpg = "included-gpg"
+        with patch.object(main_window, "gpg_version", return_value=(2, 5, 24)), patch.object(
+            main_window.QMessageBox, "about"
+        ) as about:
+            with patch.object(main_window, "bundled_gpg", return_value="included-gpg"):
+                window.show_about()
+            self.assertIn("GnuPG 2.5.24 (included with this app)", about.call_args.args[2])
+            with patch.object(main_window, "bundled_gpg", return_value=None):
+                window.show_about()
+            self.assertNotIn("included", about.call_args.args[2])
+
     def test_stale_saved_gnupg_path_falls_back_to_detection(self):
         self.settings.setValue("gpg_path", str(self.folder / "uninstalled" / "gpg.exe"))
         with patch.object(main_window, "find_gpg", return_value="detected") as detect, patch.object(

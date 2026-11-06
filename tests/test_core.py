@@ -2,6 +2,7 @@
 
 import os
 import subprocess
+import sys
 import tempfile
 import threading
 import unittest
@@ -10,6 +11,7 @@ from unittest.mock import patch
 
 from mindyourownbytes.core import (
     SourceItem,
+    bundled_gpg,
     collect_files,
     encode_passphrase,
     find_gpg,
@@ -167,6 +169,48 @@ class GpgDiscoveryTests(TempDirCase):
                        "ProgramFiles(x86)": "", "LOCALAPPDATA": ""}
         with patch.dict(os.environ, environment):
             self.assertIsNone(find_gpg())
+
+    def _download_folder(self) -> Path:
+        """Lay out what the Windows download holds, and pretend to be running from it."""
+        folder = self.root / "app"
+        (folder / "gnupg" / "bin").mkdir(parents=True)
+        (folder / "gnupg" / "bin" / "gpg.exe").write_bytes(b"x")
+        for name, value in (("frozen", True), ("executable", str(folder / "mindyourownbytes.exe"))):
+            patcher = patch.object(sys, name, value, create=True)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        return folder
+
+    def test_source_checkouts_have_no_included_gnupg(self):
+        self.assertIsNone(bundled_gpg())
+
+    def test_included_gnupg_can_be_missing_from_the_download(self):
+        folder = self._download_folder()
+        self.assertEqual(bundled_gpg(), str(folder / "gnupg" / "bin" / "gpg.exe"))
+        (folder / "gnupg" / "bin" / "gpg.exe").unlink()
+        self.assertIsNone(bundled_gpg())
+
+    @unittest.skipUnless(os.name == "nt", "only the Windows download includes GnuPG")
+    def test_download_uses_its_own_gnupg_ahead_of_path(self):
+        folder = self._download_folder()
+        elsewhere = self.root / "elsewhere"
+        elsewhere.mkdir()
+        (elsewhere / "gpg.exe").write_bytes(b"x")
+        environment = {"PATH": str(elsewhere), "ProgramFiles": "", "ProgramW6432": "",
+                       "ProgramFiles(x86)": "", "LOCALAPPDATA": ""}
+        with patch.dict(os.environ, environment):
+            self.assertEqual(find_gpg(), str(folder / "gnupg" / "bin" / "gpg.exe"))
+
+    @unittest.skipUnless(os.name == "nt", "only the Windows download includes GnuPG")
+    def test_download_prefers_a_gnupg_the_user_installed(self):
+        self._download_folder()
+        installed = self.root / "Program Files" / "GnuPG" / "bin"
+        installed.mkdir(parents=True)
+        (installed / "gpg.exe").write_bytes(b"x")
+        environment = {"PATH": "", "ProgramFiles": str(self.root / "Program Files"), "ProgramW6432": "",
+                       "ProgramFiles(x86)": "", "LOCALAPPDATA": ""}
+        with patch.dict(os.environ, environment):
+            self.assertEqual(find_gpg(), str(installed / "gpg.exe"))
 
     def test_relative_binary_is_never_executed(self):
         with patch("mindyourownbytes.core.subprocess.run") as run:
