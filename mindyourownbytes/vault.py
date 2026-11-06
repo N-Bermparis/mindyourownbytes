@@ -24,7 +24,7 @@ from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 
-from mindyourownbytes.core import SYMMETRIC_ARGS, describe_failure, encode_passphrase, run_gpg_pipe
+from mindyourownbytes.core import describe_failure, encode_passphrase, run_gpg_pipe, symmetric_args
 
 VAULT_FORMAT = "mindyourownbytes-vault"
 VAULT_VERSION = 1
@@ -262,7 +262,8 @@ class Vault:
         pending = self.path.with_name(f".{self.path.name}.{uuid.uuid4().hex[:12]}.tmp")
         previous = pending.with_suffix(".prev")
         try:
-            code, _, stderr = run_gpg_pipe(self.gpg, [*SYMMETRIC_ARGS, "--output", str(pending)], secret, plaintext)
+            # Always the default algorithm, so that the vault itself opens in nearly any OpenPGP tool.
+            code, _, stderr = run_gpg_pipe(self.gpg, [*symmetric_args(), "--output", str(pending)], secret, plaintext)
             if code != 0 or not pending.is_file():
                 lines = [line for line in stderr.splitlines() if not line.startswith("[GNUPG:] ")]
                 raise VaultError(f"GnuPG could not write the vault: {lines[-1] if lines else 'no details'}")

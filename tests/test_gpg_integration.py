@@ -2,13 +2,16 @@
 
 import os
 import random
+import re
 import threading
 import time
 import unittest
 from pathlib import Path
 
 from mindyourownbytes.core import (
+    CIPHERS,
     SourceItem,
+    available_ciphers,
     collect_files,
     gpg_version,
     list_public_keys,
@@ -122,6 +125,68 @@ class PassphraseRoundTripTests(IntegrationCase):
                               "--output", str(out), "--decrypt", str(encrypted))
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(out.read_bytes(), b"readable forever")
+
+
+class AlgorithmChoiceTests(IntegrationCase):
+    def offered(self):
+        ciphers = available_ciphers(self.gpg)
+        if os.environ.get("MYOB_REQUIRE_GPG"):
+            # GnuPG's own builds and CI's have them all, so losing one there is a bug worth seeing.
+            self.assertEqual(ciphers, CIPHERS)
+        return ciphers
+
+    def encrypt_with(self, cipher, content: bytes = b"private test bytes\n") -> Path:
+        path = self.write(f"{cipher.name}.bin", content)
+        result = self.job([self.item(path)], f"exports-{cipher.name}", "encrypt", passphrases=[PASSPHRASE],
+                          cipher=cipher.name)
+        self.assertEqual((result.succeeded, result.failed), (1, 0), self.progress)
+        return result.outputs[0]
+
+    def test_each_algorithm_keeps_the_same_strong_settings_and_format(self):
+        for cipher in self.offered():
+            with self.subTest(cipher.label):
+                packets = self.packets(self.encrypt_with(cipher), PASSPHRASE)
+                self.assertRegex(packets, rf"symkey enc packet: version \d+, cipher {cipher.packet_id}\b")
+                self.assertRegex(packets, r"s2k 3, hash 10\b", "expected iterated S2K with SHA-512")
+                self.assertIn("count 65011712", packets)
+                self.assertIn(":encrypted data packet:", packets, "expected the long-established RFC 4880 format")
+                self.assertRegex(packets, r"mdc(_method)?: 2", "expected an MDC integrity check")
+
+    def test_each_algorithm_restores_here_and_with_plain_gpg(self):
+        content = os.urandom(300_000)
+        for cipher in self.offered():
+            with self.subTest(cipher.label):
+                encrypted = self.encrypt_with(cipher, content)
+                self.assertNotIn(content[:64], encrypted.read_bytes())
+                restored = self.job([self.item(encrypted)], f"restored-{cipher.name}", "restore",
+                                    passphrases=[PASSPHRASE])
+                self.assertEqual(restored.outputs[0].read_bytes(), content)
+                plain = self.root / f"plain-{cipher.name}.bin"
+                result = self.run_gpg("--pinentry-mode", "loopback", "--passphrase", PASSPHRASE,
+                                      "--output", str(plain), "--decrypt", str(encrypted))
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(plain.read_bytes(), content)
+
+    def test_each_algorithm_refuses_a_wrong_passphrase_and_damage(self):
+        for cipher in self.offered():
+            with self.subTest(cipher.label):
+                encrypted = self.encrypt_with(cipher, os.urandom(50_000))
+                self.assert_restore_rejected(encrypted, f"wrong-{cipher.name}", "Wrong passphrase",
+                                             passphrases=["nope"])
+                blob = bytearray(encrypted.read_bytes())
+                blob[len(blob) // 2] ^= 0xFF
+                bad = self.write(f"bad-{cipher.name}.bin.gpg", bytes(blob))
+                self.assert_restore_rejected(bad, f"bad-{cipher.name}", "damaged|altered", passphrases=[PASSPHRASE])
+
+    def test_the_list_agrees_with_what_gnupg_says_about_itself(self):
+        # Read another way, in case the list has a bug that makes it quietly offer less.
+        version = self.run_gpg("--version").stdout.decode(errors="replace")
+        expected = [cipher for cipher in CIPHERS if re.search(rf"\b{cipher.name}\b", version)]
+        self.assertEqual(available_ciphers(self.gpg), tuple(expected))
+
+    def test_a_cipher_disabled_in_gpg_conf_is_not_offered(self):
+        (self.home / "gpg.conf").write_text("disable-cipher-algo TWOFISH\n", encoding="utf-8")
+        self.assertNotIn("TWOFISH", [cipher.name for cipher in available_ciphers(self.gpg)])
 
 
 class PeekProtectionTests(IntegrationCase):
@@ -286,7 +351,9 @@ class PublicKeyTests(IntegrationCase):
         if version is None or version < (2, 5, 0):
             self.skipTest("Kyber keys need GnuPG 2.5 or later")
         fingerprint = self.generate_key("Quantum <quantum@example.invalid>", algorithm="pqc")
-        self.assertEqual([key.fingerprint for key in list_public_keys(self.gpg)], [fingerprint])
+        keys = list_public_keys(self.gpg)
+        self.assertEqual([key.fingerprint for key in keys], [fingerprint])
+        self.assertEqual(keys[0].algorithm, "Kyber-768 (post-quantum)")
         encrypted = self.job([self.item(self.write("a.txt", b"harvest now, decrypt later"))], "exports",
                              "encrypt", "public-key", fingerprint)
         self.assertEqual((encrypted.succeeded, encrypted.failed), (1, 0), self.progress)
@@ -294,6 +361,28 @@ class PublicKeyTests(IntegrationCase):
                          "expected a Kyber recipient")
         restored = self.job([self.item(encrypted.outputs[0])], "restored", "restore", "public-key")
         self.assertEqual(restored.outputs[0].read_bytes(), b"harvest now, decrypt later")
+
+    def test_key_list_names_the_kind_of_key_files_really_get_encrypted_to(self):
+        fingerprint = self.generate_key()
+        algorithm = list_public_keys(self.gpg)[0].algorithm
+        # GnuPG 2.4 and later make Curve25519 keys by default, and older versions RSA.
+        self.assertRegex(algorithm, r"^(Curve25519|RSA-\d+)$")
+        encrypted = self.job([self.item(self.write("a.txt"))], "exports", "encrypt", "public-key", fingerprint)
+        expected = "1" if algorithm.startswith("RSA") else "18"
+        self.assertRegex(self.packets(encrypted.outputs[0]), rf"pubkey enc packet: version \d+, algo {expected}\b")
+
+    def test_key_list_follows_a_post_quantum_subkey_added_to_an_older_key(self):
+        version = gpg_version(self.gpg)
+        if version is None or version < (2, 5, 0):
+            self.skipTest("Kyber keys need GnuPG 2.5 or later")
+        fingerprint = self.generate_key()
+        time.sleep(1.1)  # Timestamps are in seconds, and a tie would keep the older subkey.
+        added = self.run_gpg("--passphrase", "", "--pinentry-mode", "loopback", "--quick-add-key",
+                             fingerprint, "pqc", "encr", "1y")
+        self.assertEqual(added.returncode, 0, added.stderr)
+        self.assertEqual(list_public_keys(self.gpg)[0].algorithm, "Kyber-768 (post-quantum)")
+        encrypted = self.job([self.item(self.write("a.txt"))], "exports", "encrypt", "public-key", fingerprint)
+        self.assertRegex(self.packets(encrypted.outputs[0]), r"pubkey enc packet: version \d+, algo 8\b")
 
     def signed_by_someone_else(self, tamper: bool = False) -> Path:
         """A file signed by an outside key, like Kleopatra's sign-and-encrypt produces."""

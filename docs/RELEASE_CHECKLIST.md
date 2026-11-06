@@ -17,6 +17,7 @@ release pull request. Passing this list is not a security certification.
 ## Functional checks with real Pinentry, on Windows
 
 - [ ] Encrypt and restore with each method: passphrase, GnuPG's own prompt (Tools menu), saved passphrase, key.
+- [ ] Encrypt and restore with each algorithm: AES-256, Twofish, Camellia-256.
 - [ ] Drag and drop files and folders onto the Encrypt and Restore screens.
 - [ ] Encrypt, upload manually, download, restore, and compare file hashes.
 - [ ] Restore on a second, clean computer, using only your backup of the passphrase or key.

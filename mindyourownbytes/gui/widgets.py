@@ -11,6 +11,7 @@ from PySide6.QtWidgets import (
     QAbstractButton,
     QAbstractItemView,
     QApplication,
+    QComboBox,
     QFileIconProvider,
     QFrame,
     QHBoxLayout,
@@ -43,6 +44,17 @@ _WINDOWS_CLIPBOARD_EXCLUSIONS = (
 
 _INFOBAR_ICONS = {"success": ("check", "ok"), "error": ("alert", "error"), "warning": ("alert", "warn"),
                   "info": ("info", "info")}
+
+
+class SteadyComboBox(QComboBox):
+    """Ignores the mouse wheel, so that it only changes when someone means to change it.
+
+    Scrolling the page with the pointer over a normal combo box quietly picks another
+    item. Here that could mean a different key, passphrase, or algorithm.
+    """
+
+    def wheelEvent(self, event) -> None:
+        event.ignore()
 
 
 def human_size(size: int) -> str:

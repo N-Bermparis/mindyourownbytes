@@ -10,7 +10,10 @@ from pathlib import Path
 from unittest.mock import patch
 
 from mindyourownbytes.core import (
+    CIPHERS,
+    DEFAULT_CIPHER,
     SourceItem,
+    available_ciphers,
     bundled_gpg,
     collect_files,
     encode_passphrase,
@@ -18,6 +21,7 @@ from mindyourownbytes.core import (
     find_kleopatra,
     gpg_version,
     is_link_or_junction,
+    list_public_keys,
     looks_cloud_synced,
     output_relative,
     process_items,
@@ -369,6 +373,48 @@ class ProcessItemsTests(TempDirCase):
         self.assertEqual(argv[argv.index("--cipher-algo") + 1], "AES256")
         self.assertIn("--no-symkey-cache", argv)
 
+    def capture_commands(self, seen):
+        def capture(argv, cancel, secret=None):
+            seen.append(argv)
+            Path(argv[argv.index("--output") + 1]).write_bytes(b"c")
+            return 0, DECRYPTED_OK if "--decrypt" in argv else ENCRYPTED_OK
+
+        return capture
+
+    def test_aes_256_is_the_default_choice(self):
+        self.assertEqual(DEFAULT_CIPHER, "AES256")
+        self.assertEqual(CIPHERS[0].name, DEFAULT_CIPHER)
+
+    def test_each_algorithm_reaches_gnupg_with_the_same_strong_settings(self):
+        for cipher in CIPHERS:
+            with self.subTest(cipher.label):
+                seen = []
+                self.run_job([self.item()], "encrypt", self.capture_commands(seen), cipher=cipher.name)
+                argv = seen[0]
+                self.assertEqual(argv[argv.index("--cipher-algo") + 1], cipher.name)
+                self.assertEqual(argv[argv.index("--s2k-mode") + 1], "3")
+                self.assertEqual(argv[argv.index("--s2k-digest-algo") + 1], "SHA512")
+                self.assertEqual(argv[argv.index("--s2k-count") + 1], "65011712")
+
+    def test_an_algorithm_this_app_does_not_offer_is_refused_before_any_work(self):
+        def never(argv, cancel, secret=None):
+            self.fail("gpg should not have run")
+
+        for cipher in ("CAST5", "3DES", "IDEA", "BLOWFISH", "AES", "aes256", "", "AES256 --s2k-count 1024"):
+            with self.subTest(cipher), self.assertRaises(ValueError):
+                self.run_job([self.item()], "encrypt", never, cipher=cipher)
+        self.assertFalse(self.output.exists())
+
+    def test_only_passphrase_encryption_takes_an_algorithm(self):
+        seen = []
+        original = self.source / "QKD" / "report.pdf"
+        self.run_job([self.item()], "encrypt", self.capture_commands(seen), "public-key", "A" * 40, cipher="TWOFISH")
+        self.run_job([SourceItem(original, Path("a.pdf.gpg"), 1)], "restore", self.capture_commands(seen),
+                     cipher="TWOFISH")
+        self.assertEqual(len(seen), 2)
+        for argv in seen:
+            self.assertNotIn("--cipher-algo", argv)
+
     def test_failed_encryption_is_not_described_as_a_damaged_file(self):
         def disk_full(argv, cancel, secret=None):
             return 2, stderr_with_statuses("NEED_PASSPHRASE_SYM 9 3 8") + "gpg: write error: disk full\n"
@@ -409,6 +455,123 @@ class ProcessItemsTests(TempDirCase):
         with self.assertRaisesRegex(ValueError, "does not use"):
             self.run_job([self.item()], "encrypt", None, method="public-key",
                          fingerprint="A" * 40, passphrases=["a"])
+
+
+class AvailableCiphersTests(unittest.TestCase):
+    """A build of GnuPG, or someone's gpg.conf, can rule out an algorithm."""
+
+    GPG = str(Path(tempfile.gettempdir()).resolve() / "gpg")
+
+    def offered(self, stdout="", **mock):
+        answer = subprocess.CompletedProcess([], 0, stdout=stdout, stderr="")
+        with patch("mindyourownbytes.core.subprocess.run", return_value=answer, **mock):
+            return [cipher.name for cipher in available_ciphers(self.GPG)]
+
+    def test_lists_the_strong_ones_in_this_apps_order_and_never_the_old_ones(self):
+        listing = "cfg:ciphername:IDEA;3DES;CAST5;BLOWFISH;AES;AES192;CAMELLIA256;TWOFISH;AES256;CAMELLIA128\n"
+        self.assertEqual(self.offered(listing), ["AES256", "TWOFISH", "CAMELLIA256"])
+
+    def test_leaves_out_what_this_gnupg_cannot_use(self):
+        self.assertEqual(self.offered("cfg:ciphername:AES;AES256;TWOFISH\n"), ["AES256", "TWOFISH"])
+        self.assertEqual(self.offered("cfg:ciphername:TWOFISH;CAMELLIA256\n"), ["TWOFISH", "CAMELLIA256"])
+
+    def test_offers_only_the_default_if_gnupg_cannot_say(self):
+        for listing in ("", "cfg:pubkey:1;2;3\n", "cfg:ciphername\n", "cfg:ciphername:IDEA;CAST5\n", "nonsense"):
+            with self.subTest(listing):
+                self.assertEqual(self.offered(listing), ["AES256"])
+        self.assertEqual(self.offered(side_effect=OSError), ["AES256"])
+        self.assertEqual(self.offered(side_effect=subprocess.TimeoutExpired("gpg", 8)), ["AES256"])
+
+    def test_never_runs_a_relative_path(self):
+        # The same rule as everywhere else: a planted gpg in this folder must never run.
+        with patch("mindyourownbytes.core.subprocess.run") as run:
+            self.assertEqual([cipher.name for cipher in available_ciphers("gpg")], ["AES256"])
+        run.assert_not_called()
+
+
+def key_record(kind, algorithm, bits="", *, created="1700000000", capabilities="e", validity="u", curve=""):
+    """A pub or sub line from gpg --with-colons, with only the fields that matter here filled in."""
+    fields = [""] * 21
+    fields[:6] = [kind, validity, bits, algorithm, "0123456789ABCDEF", created]
+    fields[11] = capabilities
+    fields[16] = curve
+    return ":".join(fields)
+
+
+class KeyTypeTests(unittest.TestCase):
+    """The key list has to name the key that GnuPG will really use."""
+
+    PRIMARY = key_record("pub", "22", "255", capabilities="scE", curve="ed25519")
+
+    def described(self, primary, *subkeys):
+        details = [f"fpr{':' * 9}{'A' * 40}:", f"uid:u{':' * 8}Test <test@example.invalid>:"]
+        listing = "\n".join([primary, *details, *subkeys])
+        with patch("mindyourownbytes.core._list_keys",
+                   side_effect=lambda binary, command: listing if command == "--list-keys" else ""):
+            keys = list_public_keys("gpg")
+        self.assertEqual(len(keys), 1)
+        return keys[0].algorithm
+
+    def test_names_each_kind_of_key(self):
+        for expected, subkey in (
+            ("RSA-3072", key_record("sub", "1", "3072")),
+            ("ElGamal-2048", key_record("sub", "16", "2048")),
+            ("Curve25519", key_record("sub", "18", "255", curve="cv25519")),
+            ("Curve448", key_record("sub", "18", "448", curve="cv448")),
+            ("NIST P-256", key_record("sub", "18", "256", curve="nistp256")),
+            ("Brainpool P-384", key_record("sub", "18", "384", curve="brainpoolP384r1")),
+            ("Kyber-768 (post-quantum)", key_record("sub", "8", "768", curve="ky768_bp256")),
+            ("Kyber-1024 (post-quantum)", key_record("sub", "8", "1024", curve="ky1024_bp384")),
+            ("secp256k1", key_record("sub", "18", "256", curve="secp256k1")),
+            ("", key_record("sub", "99", "256")),
+        ):
+            with self.subTest(expected):
+                self.assertEqual(self.described(self.PRIMARY, subkey), expected)
+
+    def test_describes_the_newest_encryption_subkey(self):
+        old = key_record("sub", "18", "255", created="1700000000", curve="cv25519")
+        new = key_record("sub", "8", "768", created="1800000000", curve="ky768_bp256")
+        self.assertEqual(self.described(self.PRIMARY, old, new), "Kyber-768 (post-quantum)")
+        self.assertEqual(self.described(self.PRIMARY, new, old), "Kyber-768 (post-quantum)")
+
+    def test_keeps_the_first_of_a_tie_as_gnupg_does(self):
+        first = key_record("sub", "18", "255", curve="cv25519")
+        second = key_record("sub", "1", "3072")
+        self.assertEqual(self.described(self.PRIMARY, first, second), "Curve25519")
+
+    def test_skips_a_newer_subkey_that_no_longer_works(self):
+        works = key_record("sub", "18", "255", curve="cv25519")
+        for validity in "erdni":
+            with self.subTest(validity):
+                dead = key_record("sub", "8", "768", created="1800000000", validity=validity)
+                self.assertEqual(self.described(self.PRIMARY, works, dead), "Curve25519")
+
+    def test_skips_a_newer_subkey_that_cannot_encrypt(self):
+        works = key_record("sub", "1", "3072")
+        signing = key_record("sub", "22", "255", created="1800000000", capabilities="s", curve="ed25519")
+        self.assertEqual(self.described(self.PRIMARY, works, signing), "RSA-3072")
+
+    def test_the_primary_key_only_counts_without_an_encryption_subkey(self):
+        primary = key_record("pub", "1", "4096", created="1800000000", capabilities="scaeSCAE")
+        self.assertEqual(self.described(primary), "RSA-4096")
+        self.assertEqual(self.described(primary, key_record("sub", "18", "255", curve="cv25519")), "Curve25519")
+
+    def test_each_key_gets_its_own_description(self):
+        second_primary = key_record("pub", "22", "255", created="1600000000", capabilities="scE", curve="ed25519")
+        listing = "\n".join([
+            self.PRIMARY, f"fpr{':' * 9}{'A' * 40}:", f"uid:u{':' * 8}First <first@example.invalid>:",
+            key_record("sub", "8", "768", created="1800000000", curve="ky768_bp256"),
+            second_primary, f"fpr{':' * 9}{'B' * 40}:", f"uid:u{':' * 8}Second <second@example.invalid>:",
+            key_record("sub", "18", "255", created="1600000000", curve="cv25519"),
+        ])
+        with patch("mindyourownbytes.core._list_keys",
+                   side_effect=lambda binary, command: listing if command == "--list-keys" else ""):
+            keys = list_public_keys("gpg")
+        self.assertEqual({key.uid.split()[0]: key.algorithm for key in keys},
+                         {"First": "Kyber-768 (post-quantum)", "Second": "Curve25519"})
+
+    def test_a_missing_date_does_not_stop_the_list(self):
+        self.assertEqual(self.described(self.PRIMARY, key_record("sub", "1", "2048", created="")), "RSA-2048")
 
 
 if __name__ == "__main__":

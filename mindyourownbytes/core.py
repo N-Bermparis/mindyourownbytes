@@ -38,14 +38,44 @@ _BASE_ARGS = (
     "--no-auto-key-retrieve", "--no-auto-key-locate",
 )
 
-#: Pinned because the implicit defaults are unsafe to rely on: they vary by
-#: GnuPG version and silently fall back to 65,536 iterations when gpg-agent
-#: cannot be reached. These values are the OpenPGP maximum and stay compatible
-#: with every OpenPGP implementation. See docs/THREAT_MODEL.md.
-SYMMETRIC_ARGS = (
-    "--symmetric", "--cipher-algo", "AES256", "--s2k-mode", "3",
-    "--s2k-digest-algo", "SHA512", "--s2k-count", "65011712",
+
+class Cipher(NamedTuple):
+    """An encryption algorithm people can choose for passphrase encryption."""
+
+    #: What GnuPG calls it.
+    name: str
+    #: What people see.
+    label: str
+    #: Its number inside an OpenPGP file.
+    packet_id: int
+
+
+#: Every choice has a 256-bit key and 128-bit blocks. IDEA, 3DES, CAST5, and Blowfish
+#: are left out because their 64-bit blocks are too small, and GnuPG 2.5 refuses to
+#: encrypt with them. Smaller keys are left out because they bring no benefit.
+#: AES-256 comes first, because it's the default: the one nearly every OpenPGP tool opens.
+CIPHERS = (
+    Cipher("AES256", "AES-256", 9),
+    Cipher("TWOFISH", "Twofish", 10),
+    Cipher("CAMELLIA256", "Camellia-256", 13),
 )
+DEFAULT_CIPHER = CIPHERS[0].name
+
+
+def symmetric_args(cipher: str = DEFAULT_CIPHER) -> tuple[str, ...]:
+    """Passphrase encryption settings, with nothing left to GnuPG's defaults.
+
+    The implicit defaults are unsafe to rely on: they vary by GnuPG version and
+    silently fall back to 65,536 iterations when gpg-agent cannot be reached. The
+    iteration count and digest are the OpenPGP maximum. See docs/THREAT_MODEL.md.
+    """
+    if cipher not in {choice.name for choice in CIPHERS}:
+        raise ValueError(f"This app doesn't offer the encryption algorithm {cipher!r}.")
+    return (
+        "--symmetric", "--cipher-algo", cipher, "--s2k-mode", "3",
+        "--s2k-digest-algo", "SHA512", "--s2k-count", "65011712",
+    )
+
 
 #: Hands gpg the passphrase over stdin, in place of asking through Pinentry.
 _PIPE_ARGS = ("--pinentry-mode", "loopback", "--passphrase-fd", "0")
@@ -63,6 +93,21 @@ _GPG_ERR_CANCELED = 99
 
 #: Sync clients often append an account name, e.g. "OneDrive - Contoso".
 _SYNC_FOLDER_PREFIXES = ("onedrive", "dropbox (", "nextcloud-", "google drive (")
+
+#: In gpg's --with-colons output: expired, revoked, disabled, never valid, and invalid.
+_UNUSABLE_VALIDITY = tuple("erdni")
+
+#: Curves as gpg's --with-colons output names them, and as people know them.
+_CURVE_NAMES = {
+    "cv25519": "Curve25519",
+    "cv448": "Curve448",
+    "nistp256": "NIST P-256",
+    "nistp384": "NIST P-384",
+    "nistp521": "NIST P-521",
+    "brainpoolp256r1": "Brainpool P-256",
+    "brainpoolp384r1": "Brainpool P-384",
+    "brainpoolp512r1": "Brainpool P-512",
+}
 
 
 @dataclass(frozen=True)
@@ -88,6 +133,8 @@ class PublicKey(NamedTuple):
     #: False means the matching private key is not on this computer, so the user
     #: could not decrypt what they encrypt to this key.
     has_secret: bool
+    #: The type of key that files get encrypted to, for people to read. Empty if unknown.
+    algorithm: str = ""
 
 
 class CollectResult(NamedTuple):
@@ -235,6 +282,30 @@ def is_valid_gpg(binary: str) -> bool:
     return version is not None and version >= MIN_GPG_VERSION
 
 
+def available_ciphers(binary: str) -> tuple[Cipher, ...]:
+    """The choices this GnuPG can use, because a build or a gpg.conf can rule some out.
+
+    If GnuPG can't say, this offers only the default, which is what would be used anyway.
+    If it turns out not to work, GnuPG's refusal is reported like any other failure.
+    """
+    if not Path(binary).is_absolute():
+        return CIPHERS[:1]
+    try:
+        result = subprocess.run(
+            [binary, "--batch", "--with-colons", "--list-config", "ciphername"],
+            capture_output=True, encoding="utf-8", errors="replace",
+            timeout=8, check=False, creationflags=windows_flags(),
+        )
+    except (OSError, subprocess.SubprocessError):
+        return CIPHERS[:1]
+    supported: set[str] = set()
+    for line in result.stdout.splitlines():
+        fields = line.split(":")
+        if fields[:2] == ["cfg", "ciphername"] and len(fields) > 2:
+            supported.update(name.strip().upper() for name in fields[2].split(";"))
+    return tuple(cipher for cipher in CIPHERS if cipher.name in supported) or CIPHERS[:1]
+
+
 def is_link_or_junction(path: Path) -> bool:
     """Detect links to elsewhere.
 
@@ -275,6 +346,36 @@ def _secret_fingerprints(binary: str) -> set[str]:
     return fingerprints
 
 
+def _key_type(fields: list[str]) -> str:
+    """Name the type of key in a ``pub`` or ``sub`` record, for people to read."""
+    bits, algorithm = fields[2], fields[3]
+    curve = fields[16] if len(fields) > 16 else ""
+    if algorithm in ("1", "2"):
+        return f"RSA-{bits}"
+    if algorithm in ("16", "20"):
+        return f"ElGamal-{bits}"
+    if algorithm == "8":
+        return f"Kyber-{bits} (post-quantum)"
+    return _CURVE_NAMES.get(curve.lower(), curve)
+
+
+def _encryption_key_type(records: list[list[str]]) -> str:
+    """Describe the key GnuPG will really encrypt to.
+
+    That's the newest usable encryption subkey, and the primary key only if there is
+    none. A key can hold several, such as a post-quantum subkey added to an older key.
+    """
+    def usable(fields: list[str]) -> bool:
+        return len(fields) > 11 and "e" in fields[11] and fields[1] not in _UNUSABLE_VALIDITY
+
+    subkeys = [fields for fields in records if fields[0] == "sub" and usable(fields)]
+    if subkeys:
+        # max() keeps the first of a tie, as GnuPG does.
+        return _key_type(max(subkeys, key=lambda fields: int(fields[5]) if fields[5].isdigit() else 0))
+    primary = next((fields for fields in records if fields[0] == "pub" and usable(fields)), None)
+    return _key_type(primary) if primary else ""
+
+
 def list_public_keys(binary: str) -> list[PublicKey]:
     """List keys usable for encryption, with the user's own keys first.
 
@@ -285,12 +386,13 @@ def list_public_keys(binary: str) -> list[PublicKey]:
     secret = _secret_fingerprints(binary)
     keys: list[PublicKey] = []
     current: dict[str, str] | None = None
+    records: list[list[str]] = []
 
     def flush() -> None:
         if current and current["fingerprint"] and current["usable"]:
             keys.append(PublicKey(
                 current["fingerprint"], current["uid"] or "Unknown identity",
-                current["fingerprint"] in secret,
+                current["fingerprint"] in secret, _encryption_key_type(records),
             ))
 
     for line in _list_keys(binary, "--list-keys").splitlines():
@@ -298,14 +400,17 @@ def list_public_keys(binary: str) -> list[PublicKey]:
         record = fields[0]
         if record == "pub":
             flush()
+            records = []
             capabilities = fields[11] if len(fields) > 11 else ""
             validity = fields[1] if len(fields) > 1 else ""
-            usable = "E" in capabilities and "D" not in capabilities and validity not in tuple("erdni")
+            usable = "E" in capabilities and "D" not in capabilities and validity not in _UNUSABLE_VALIDITY
             current = {"fingerprint": "", "uid": "", "usable": "yes" if usable else ""}
         elif current is not None and record == "fpr" and not current["fingerprint"]:
             current["fingerprint"] = fields[9] if len(fields) > 9 else ""
         elif current is not None and record == "uid" and not current["uid"]:
             current["uid"] = _unescape_colon_field(fields[9]) if len(fields) > 9 else ""
+        if record in ("pub", "sub") and len(fields) > 5:
+            records.append(fields)
     flush()
     return sorted(keys, key=lambda key: not key.has_secret)
 
@@ -617,14 +722,14 @@ def _check_success(operation: Operation, code: int, stderr: str, staged: Path) -
 
 
 def _build_command(binary: str, operation: Operation, method: Method, fingerprint: str | None,
-                   staged: Path, source: Path, piped: bool) -> list[str]:
+                   staged: Path, source: Path, piped: bool, cipher: str) -> list[str]:
     command = [binary, *_BASE_ARGS]
     command += _PIPE_ARGS if piped else ("--pinentry-mode", "ask")
     command += ["--output", str(staged)]
     if operation == "restore":
         command.append("--decrypt")
     elif method == "password":
-        command += SYMMETRIC_ARGS
+        command += symmetric_args(cipher)
     else:
         command += ["--encrypt", "--recipient", fingerprint or ""]
     command += ["--", str(source)]
@@ -642,7 +747,7 @@ def _remove_staged(staged: Path, leftovers: list[Path]) -> None:
 
 def _process_one(binary: str, item: SourceItem, output_directory: Path, operation: Operation,
                  method: Method, fingerprint: str | None, cancel: threading.Event,
-                 secrets: Sequence[bytes], leftovers: list[Path]) -> Path:
+                 secrets: Sequence[bytes], leftovers: list[Path], cipher: str) -> Path:
     target = unique_target(output_directory / output_relative(item, operation))
     target.parent.mkdir(parents=True, exist_ok=True)
     failures: list[GpgFailure] = []
@@ -652,7 +757,7 @@ def _process_one(binary: str, item: SourceItem, output_directory: Path, operatio
         staged = target.parent / f".myob-{uuid.uuid4().hex[:16]}.partial"
         try:
             command = _build_command(binary, operation, method, fingerprint, staged,
-                                     item.source, piped=secret is not None)
+                                     item.source, piped=secret is not None, cipher=cipher)
             code, stderr = run_gpg(command, cancel, secret)
             _check_success(operation, code, stderr, staged)
             publish_no_overwrite(staged, target)
@@ -677,19 +782,23 @@ def process_items(
     binary: str, items: list[SourceItem], output_directory: Path,
     operation: Operation, method: Method, fingerprint: str | None,
     cancel: threading.Event, on_progress: Callable[[int, bool, str, Path | None], None],
-    *, passphrases: Sequence[str] = (),
+    *, passphrases: Sequence[str] = (), cipher: str = DEFAULT_CIPHER,
 ) -> JobResult:
     """Process each item independently; failed jobs leave no partial exports.
 
     With no ``passphrases``, gpg-agent asks through Pinentry, once per file for
     passphrase encryption. Otherwise the passphrase goes to gpg over a pipe. A
     restore may pass several, which are tried in order.
+
+    ``cipher`` only applies to passphrase encryption. A key decides its own, and a
+    restore reads it from the file.
     """
     if not is_valid_gpg(binary):
         raise RuntimeError(
             "The selected GnuPG executable is not available, or is older than "
             f"{'.'.join(map(str, MIN_GPG_VERSION))}."
         )
+    symmetric_args(cipher)  # Refuses an algorithm this app doesn't offer, before any work.
     if operation == "encrypt" and method == "public-key":
         if not fingerprint or not re.fullmatch(r"[0-9A-Fa-f]{40,64}", fingerprint):
             raise ValueError("Select a valid OpenPGP recipient key.")
@@ -709,7 +818,7 @@ def process_items(
             break
         try:
             target = _process_one(binary, item, output_directory, operation, method,
-                                  fingerprint, cancel, secrets, leftovers)
+                                  fingerprint, cancel, secrets, leftovers, cipher)
         except Cancelled:
             was_cancelled = True
             on_progress(index, False, "Cancelled", None)

@@ -46,12 +46,13 @@ can't read. This app makes that a drag and drop.
 - **Drag in files or folders** and get encrypted `.gpg` copies, with folder structure kept.
   Your originals are never changed, and existing files are never overwritten.
 - **One passphrase for a whole batch**, typed once.
+- **Choose the algorithm** for passphrase encryption: AES-256 (recommended), Twofish, or Camellia-256.
 - **Save different passphrases** for different kinds of documents, in an optional vault
   encrypted under one master passphrase. It can also generate strong ones.
 - **Organize into collections** such as Taxes or Medical, then browse, search, and move files
   in the Library. Collections are plain folders, so they work in Explorer and on any cloud too.
-- **Or use OpenPGP keys** you already manage in Kleopatra, including post-quantum Kyber keys
-  with GnuPG 2.5 or later.
+- **Or use OpenPGP keys** you already manage in Kleopatra, with each key's type shown, including
+  post-quantum Kyber keys with GnuPG 2.5 or later.
 - **Restore safely.** Forged, tampered, and truncated files are rejected, with nothing written.
 - **Works with any storage**, because it never talks to any: Google Drive, OneDrive, Dropbox,
   iCloud, a NAS, or a USB stick. You upload the files yourself.
@@ -135,7 +136,8 @@ been tested on macOS. Reports are very welcome.
 **Encrypt**
 
 1. Drop files or folders onto the window.
-2. Choose how to protect them. *Passphrase* is the simplest.
+2. Choose how to protect them. *Passphrase* is the simplest. You can also pick an algorithm, but
+   AES-256 suits nearly everyone.
 3. Optionally type a collection name, such as `Taxes`.
 4. Click **Encrypt**. When it's done, click **Open folder** and upload what's there. By default
    that's `%USERPROFILE%\mindyourownbytes\Encrypted Exports`.
@@ -158,6 +160,24 @@ been tested on macOS. Reports are very welcome.
 Would you rather this app never saw your passphrase? Turn on **Tools > Let GnuPG ask for each
 passphrase**. You'll then be asked once for every file, so it's slower for folders.
 
+### Which algorithm should I choose?
+
+Keep **AES-256** unless you have a reason not to. All three are strong, so this is about preference
+and compatibility rather than extra protection, and none of them can rescue a weak passphrase.
+
+| Algorithm | GnuPG | Other OpenPGP tools |
+| --- | --- | --- |
+| **AES-256** (recommended) | ✅ Opens it | Almost all, because the OpenPGP standard asks every tool to support it |
+| **Twofish** | ✅ Opens it | Not all, because it's optional in the standard. OpenPGP.js opens it |
+| **Camellia-256** | ✅ Opens it | Not all, because it's optional in the standard. OpenPGP.js can't open it |
+
+Restoring never asks, because each file records its own algorithm. Older ciphers such as CAST5 and
+3DES aren't offered, and the vault always uses AES-256.
+
+With an **OpenPGP key**, the key decides, so the key list shows each key's type. Classical keys such as
+RSA and Curve25519 aren't safe against a future quantum computer, while Kyber keys are designed to be
+([more on this](docs/THREAT_MODEL.md#other-limits)).
+
 ## No lock-in
 
 Your data never depends on this project still existing. With this app gone, plain GnuPG
@@ -174,8 +194,9 @@ gpg --decrypt "%APPDATA%\mindyourownbytes\vault.gpg"
 ```
 
 During review, files from both encryption modes were also decrypted byte for byte by
-[OpenPGP.js](https://openpgpjs.org/), an entirely separate implementation. For the details on
-file formats, see the [threat model](docs/THREAT_MODEL.md#how-the-design-defends-you).
+[OpenPGP.js](https://openpgpjs.org/), an entirely separate implementation, with one exception:
+[it can't open Camellia-256](#which-algorithm-should-i-choose). For the details on file formats, see
+the [threat model](docs/THREAT_MODEL.md#how-the-design-defends-you).
 
 **Back up your passphrases, master passphrase, and private keys somewhere other than the
 cloud you're protecting against.** If you lose them, nobody can recover your files. That

@@ -59,6 +59,8 @@ def _check_interface(checks: _Checks, report: dict, folder: Path, scratch: Path,
     picture = window.grab()
     checks.record("The window draws", not picture.isNull() and picture.save(str(folder / "window.png")))
     checks.record("The window sees GnuPG", "ready" in window.gpg_status.text(), window.gpg_status.text())
+    offered = [window.algorithm_combo.itemData(row) for row in range(window.algorithm_combo.count())]
+    checks.record("The window offers every algorithm", offered == [cipher.name for cipher in core.CIPHERS], offered)
     window.add_paths([str(source)])
     app.processEvents()
     checks.record("Added files appear in the list", [item.source.name for item in window.items] == [source.name])
@@ -68,10 +70,11 @@ def _check_interface(checks: _Checks, report: dict, folder: Path, scratch: Path,
 
 
 def _job(gpg: str, source: Path, output: Path, operation: core.Operation, method: core.Method,
-         fingerprint: str | None = None, passphrases: tuple[str, ...] = ()) -> core.JobResult:
+         fingerprint: str | None = None, passphrases: tuple[str, ...] = (),
+         cipher: str = core.DEFAULT_CIPHER) -> core.JobResult:
     items = core.collect_files([source], output, operation).items
     return core.process_items(gpg, items, output, operation, method, fingerprint, threading.Event(),
-                              lambda *_: None, passphrases=passphrases)
+                              lambda *_: None, passphrases=passphrases, cipher=cipher)
 
 
 def _is_restored(result: core.JobResult) -> bool:
@@ -93,6 +96,25 @@ def _check_passphrase_round_trip(checks: _Checks, gpg: str, source: Path, scratc
                   and not (wrong_folder.exists() and any(wrong_folder.iterdir())))
     restored = _job(gpg, output, scratch / "passphrase-restored", "restore", "password", passphrases=(PASSPHRASE,))
     checks.record("Restores with a passphrase", _is_restored(restored))
+
+
+def _check_every_algorithm(checks: _Checks, gpg: str, source: Path, scratch: Path) -> None:
+    """Each one is separate code in GnuPG, so one could go missing without affecting the others."""
+    for cipher in core.CIPHERS:
+        name = f"{cipher.label} encrypts and restores"
+        encrypted = _job(gpg, source, scratch / f"{cipher.name}-encrypted", "encrypt", "password",
+                         passphrases=(PASSPHRASE,), cipher=cipher.name)
+        if not encrypted.succeeded:
+            checks.record(name, False, "could not encrypt")
+            continue
+        listing = subprocess.run(
+            [gpg, "--batch", "--no-tty", "--pinentry-mode", "cancel", "--list-packets", str(encrypted.outputs[0])],
+            capture_output=True, encoding="utf-8", errors="replace", timeout=60, check=False,
+            creationflags=core.windows_flags(),
+        ).stdout
+        restored = _job(gpg, encrypted.outputs[0], scratch / f"{cipher.name}-restored", "restore", "password",
+                        passphrases=(PASSPHRASE,))
+        checks.record(name, f"cipher {cipher.packet_id}," in listing and _is_restored(restored), listing[:120])
 
 
 def _check_key_round_trip(checks: _Checks, gpg: str, source: Path, scratch: Path) -> None:
@@ -143,6 +165,7 @@ def _check_gnupg(checks: _Checks, report: dict, source: Path, scratch: Path) -> 
         return
 
     _check_passphrase_round_trip(checks, gpg, source, scratch)
+    _check_every_algorithm(checks, gpg, source, scratch)
     _check_key_round_trip(checks, gpg, source, scratch)
     _check_vault(checks, gpg, scratch)
 

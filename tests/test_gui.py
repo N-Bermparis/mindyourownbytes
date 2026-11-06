@@ -10,19 +10,21 @@ import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+from mindyourownbytes.core import CIPHERS, available_ciphers, list_public_keys
 from tests.support import GpgTestCase
 
 HAS_QT = importlib.util.find_spec("PySide6") is not None
 
 if HAS_QT:
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
-    from PySide6.QtCore import QEventLoop, QSettings, QUrl
-    from PySide6.QtGui import QAction, QColor
+    from PySide6.QtCore import QEventLoop, QPoint, QPointF, QSettings, Qt, QUrl
+    from PySide6.QtGui import QAction, QColor, QWheelEvent
     from PySide6.QtWidgets import QApplication, QInputDialog, QLabel, QMessageBox, QWidget
 
     from mindyourownbytes.gui import icons, library_page, main_window, theme
     from mindyourownbytes.gui.dialogs import PassphraseDialog, ProtectionDialog
     from mindyourownbytes.gui.main_window import MainWindow
+    from mindyourownbytes.gui.widgets import SteadyComboBox
 
 PASSPHRASE = "a perfectly good test passphrase"
 MASTER = "a long master passphrase"
@@ -152,6 +154,12 @@ class WithoutGnuPGTests(unittest.TestCase):
         titles = [action.text().replace("&", "") for action in window.findChildren(QAction)]
         for expected in ("Add files…", "Locate GnuPG…", "What this protects", "Report a problem"):
             self.assertIn(expected, titles)
+
+    def test_without_gnupg_the_only_choice_is_the_default(self):
+        window = MainWindow(self.settings, self.folder / "vault.gpg")
+        self.addCleanup(window.close)
+        self.assertEqual(window.algorithm_combo.count(), 1)
+        self.assertEqual(window.chosen_cipher(), "AES256")
 
     def test_protection_summary_states_the_main_limits_plainly(self):
         dialog = ProtectionDialog(None)
@@ -486,6 +494,180 @@ class TransferFlowTests(GuiCase):
             self.window.add_paths([str(self.root / "input")])
         self.assertIn("could not be read", self.message_boxes["warning"].call_args.args[1])
         self.assertIn("locked", self.message_boxes["warning"].call_args.args[2])
+
+
+class AlgorithmChoiceTests(GuiCase):
+    def offered(self, window=None):
+        combo = (window or self.window).algorithm_combo
+        return [combo.itemData(row) for row in range(combo.count())]
+
+    def choose(self, name: str):
+        """As a person would, which is the only way a choice gets remembered."""
+        row = self.window.algorithm_combo.findData(name)
+        self.assertGreaterEqual(row, 0, name)
+        self.window.algorithm_combo.setCurrentIndex(row)
+        self.window.algorithm_combo.activated.emit(row)
+
+    def reopen(self):
+        window = MainWindow(self.settings, self.root / "app" / "vault.gpg")
+        self.addCleanup(window.close)
+        return window
+
+    def test_aes_256_is_preselected_and_recommended(self):
+        self.assertEqual(self.offered(), [cipher.name for cipher in available_ciphers(self.gpg)])
+        self.assertEqual(self.window.chosen_cipher(), "AES256")
+        self.assertEqual(self.window.algorithm_combo.currentText(), "AES-256 (recommended)")
+        self.assertEqual([self.window.algorithm_combo.itemText(row).count("recommended")
+                          for row in range(self.window.algorithm_combo.count())],
+                         [1] + [0] * (self.window.algorithm_combo.count() - 1))
+
+    def test_the_chosen_algorithm_is_what_the_file_really_uses(self):
+        for cipher in available_ciphers(self.gpg):
+            with self.subTest(cipher.label):
+                self.choose(cipher.name)
+                self.window.add_paths([str(self.write(f"{cipher.name}.txt"))])
+                self.select_method("once")
+                self.run_with_typed_passphrase()
+                self.assertRegex(self.packets(self.root / "exports" / f"{cipher.name}.txt.gpg", PASSPHRASE),
+                                 rf"symkey enc packet: version \d+, cipher {cipher.packet_id}\b")
+                self.assertIn(f"1 file encrypted with {cipher.label}", self.window.result_bar.text())
+                self.window.clear_files()
+
+    def test_files_restore_without_being_told_the_algorithm(self):
+        self.choose("TWOFISH")
+        self.window.add_paths([str(self.write("a.txt", b"no need to remember"))])
+        self.select_method("once")
+        self.run_with_typed_passphrase()
+        self.choose("CAMELLIA256")
+        self.window.set_operation("restore")
+        self.window.add_paths([str(self.root / "exports" / "a.txt.gpg")])
+        self.select_method("once")
+        self.run_with_typed_passphrase()
+        self.assertEqual((self.root / "restored" / "a.txt").read_bytes(), b"no need to remember")
+        self.assertNotIn(" with ", self.window.result_bar.title_label.text())
+
+    def test_the_main_button_passes_on_the_chosen_algorithm(self):
+        self.choose("TWOFISH")
+        self.window.add_paths([str(self.write("a.txt"))])
+        self.select_method("once")
+        with patch.object(main_window, "process_items", wraps=main_window.process_items) as process:
+            self.run_with_typed_passphrase(action=self.window._primary_clicked)
+        self.assertEqual(process.call_args.kwargs["cipher"], "TWOFISH")
+
+    def test_saved_passphrases_use_the_chosen_algorithm_but_the_vault_stays_on_aes_256(self):
+        self.choose("CAMELLIA256")
+        self.window.vault.create(MASTER)
+        self.window.vault_page.refresh()
+        self.window.vault.add("Taxes", "tax passphrase here")
+        self.window.vault_page.changed.emit()
+        self.window.add_paths([str(self.write("a.txt"))])
+        self.select_method("saved")
+        self.window.start()
+        self.wait_until(lambda: not self.window.running)
+        self.wait_until(lambda: self.window._thread is None)
+        self.assertRegex(self.packets(self.root / "exports" / "a.txt.gpg", "tax passphrase here"), r"cipher 13\b")
+        self.assertRegex(self.packets(self.root / "app" / "vault.gpg", MASTER), r"cipher 9\b")
+
+    def test_a_key_decides_for_itself_and_the_screen_says_so(self):
+        self.choose("TWOFISH")
+        self.window.key_radio.click()
+        self.assertFalse(self.window.algorithm_combo.isEnabled())
+        self.assertIn("key", self.window.algorithm_help.text())
+        self.window.passphrase_radio.click()
+        self.assertTrue(self.window.algorithm_combo.isEnabled())
+        self.assertEqual(self.window.chosen_cipher(), "TWOFISH")
+        self.assertIn("GnuPG opens it", self.window.algorithm_help.text())
+
+    def test_files_encrypted_to_a_key_dont_claim_the_chosen_algorithm(self):
+        self.choose("TWOFISH")
+        self.generate_key("Me <me@example.invalid>")
+        self.window.refresh_keys()
+        self.window.add_paths([str(self.write("a.txt"))])
+        self.select_method("public-key")
+        self.window.start()
+        self.wait_until(lambda: not self.window.running)
+        self.wait_until(lambda: self.window._thread is None)
+        self.assertIn("1 file encrypted", self.window.result_bar.text())
+        self.assertNotIn("Twofish", self.window.result_bar.text())
+
+    def test_key_list_names_each_kind_of_key(self):
+        self.generate_key("Me <me@example.invalid>")
+        self.window.refresh_keys()
+        kind = list_public_keys(self.gpg)[0].algorithm
+        self.assertTrue(kind)
+        self.assertIn(f" · {kind} · ", self.window.key_combo.itemText(0))
+
+    def test_restoring_has_nothing_to_choose(self):
+        shown = (self.window.algorithm_label, self.window.algorithm_combo, self.window.algorithm_help)
+        self.assertEqual([widget.isHidden() for widget in shown], [False] * 3)
+        self.window.set_operation("restore")
+        self.assertEqual([widget.isHidden() for widget in shown], [True] * 3)
+        self.window.set_operation("encrypt")
+        self.assertEqual([widget.isHidden() for widget in shown], [False] * 3)
+
+    def test_the_choice_is_remembered(self):
+        self.choose("CAMELLIA256")
+        self.assertEqual(self.reopen().chosen_cipher(), "CAMELLIA256")
+
+    def test_a_saved_choice_this_app_does_not_offer_is_ignored(self):
+        # Nothing may weaken encryption by editing a setting.
+        for saved in ("CAST5", "3DES", "", "AES256 --s2k-count 1024"):
+            with self.subTest(saved):
+                self.settings.setValue("cipher", saved)
+                window = self.reopen()
+                self.assertEqual(window.algorithm_combo.currentText(), "AES-256 (recommended)")
+                self.assertEqual(window.chosen_cipher(), "AES256")
+                self.assertEqual(self.offered(window), self.offered())
+
+    def test_a_saved_choice_this_gnupg_cannot_use_falls_back_to_the_default(self):
+        self.settings.setValue("cipher", "CAMELLIA256")
+        with patch.object(main_window, "available_ciphers", return_value=CIPHERS[:2]):
+            window = self.reopen()
+        self.assertEqual(self.offered(window), ["AES256", "TWOFISH"])
+        self.assertEqual(window.algorithm_combo.currentText(), "AES-256 (recommended)")
+        self.assertEqual(window.chosen_cipher(), "AES256")
+
+    def test_locating_another_gnupg_updates_the_list(self):
+        self.choose("TWOFISH")
+        with patch.object(main_window.QFileDialog, "getOpenFileName", return_value=(self.gpg, "")), patch.object(
+            main_window, "available_ciphers", return_value=CIPHERS[:1]
+        ):
+            self.window.select_gpg()
+        self.assertEqual(self.offered(), ["AES256"])
+        self.assertEqual(self.window.chosen_cipher(), "AES256")
+
+    def test_the_choice_is_locked_while_a_job_runs(self):
+        self.window.running = True
+        self.window._set_busy(True)
+        self.assertFalse(self.window.algorithm_combo.isEnabled())
+        self.window.running = False
+        self.window._set_busy(False)
+        self.assertTrue(self.window.algorithm_combo.isEnabled())
+        self.window.key_radio.click()
+        self.window.running = True
+        self.window._set_busy(True)
+        self.window.running = False
+        self.window._set_busy(False)
+        self.assertFalse(self.window.algorithm_combo.isEnabled(), "a key still decides after the job")
+
+    def test_each_choice_says_what_it_costs(self):
+        self.assertEqual(set(main_window.CIPHER_HELP), {cipher.name for cipher in CIPHERS})
+        seen = set()
+        for row in range(self.window.algorithm_combo.count()):
+            self.window.algorithm_combo.setCurrentIndex(row)
+            seen.add(self.window.algorithm_help.text())
+        self.assertEqual(len(seen), self.window.algorithm_combo.count())
+        self.assertNotIn("", seen)
+
+    def test_scrolling_past_a_choice_does_not_change_it(self):
+        combo = self.window.algorithm_combo
+        self.assertGreater(combo.count(), 1)
+        event = QWheelEvent(QPointF(5, 5), QPointF(5, 5), QPoint(), QPoint(0, -120), Qt.MouseButton.NoButton,
+                            Qt.KeyboardModifier.NoModifier, Qt.ScrollPhase.NoScrollPhase, False)
+        QApplication.sendEvent(combo, event)
+        self.assertEqual(combo.currentIndex(), 0)
+        for other in (self.window.saved_combo, self.window.key_combo, self.window.collection_combo):
+            self.assertIsInstance(other, SteadyComboBox)
 
 
 class VaultFlowTests(GuiCase):
