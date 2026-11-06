@@ -165,6 +165,21 @@ def find_gpg() -> str | None:
     return None
 
 
+def find_kleopatra() -> str | None:
+    """Kleopatra, if installed, with the same rules as GnuPG so a planted copy never runs."""
+    if os.name == "nt":
+        for name in ("ProgramFiles", "ProgramW6432", "ProgramFiles(x86)", "LOCALAPPDATA"):
+            root = os.environ.get(name, "")
+            for subpath in ("Gpg4win/bin/kleopatra.exe", "Programs/Gpg4win/bin/kleopatra.exe"):
+                if root and (Path(root) / subpath).is_file():
+                    return str(Path(root) / subpath)
+        return None
+    for directory in _absolute_path_entries():
+        if (directory / "kleopatra").is_file():
+            return str(directory / "kleopatra")
+    return None
+
+
 def gpg_version(binary: str) -> tuple[int, ...] | None:
     """Return the version of a GnuPG executable, or None if it isn't GnuPG."""
     if not Path(binary).is_absolute():
@@ -349,6 +364,23 @@ def collect_files(paths: Iterable[str | Path], output_directory: Path,
                 candidate = root_path / filename
                 consider(candidate, Path(path.name) / candidate.relative_to(path))
     return CollectResult(collected, skipped, tuple(unreadable))
+
+
+def peek_protection(path: Path) -> Literal["passphrase", "key"] | None:
+    """Which kind of secret a file expects, judged from its first OpenPGP packet.
+
+    Used only to pre-select an option, so a wrong answer costs one click and no
+    security decision rests on it. Reads a single byte of the outer header.
+    """
+    try:
+        with open(path, "rb") as file:
+            first = file.read(1)
+    except OSError:
+        return None
+    if not first or not first[0] & 0x80:
+        return None
+    tag = first[0] & 0x3F if first[0] & 0x40 else (first[0] & 0x3C) >> 2
+    return {1: "key", 3: "passphrase"}.get(tag)
 
 
 def output_relative(item: SourceItem, operation: Operation) -> Path:

@@ -1,101 +1,151 @@
-"""Main window: navigation, the encrypt/restore queue, and the background job."""
+"""Main window: navigation, menus, the encrypt and restore screen, and the background job."""
 
 from __future__ import annotations
 
+import ctypes
+import itertools
+import re
 import sys
 import threading
 import traceback
 from pathlib import Path
 
-from PySide6.QtCore import QObject, QSettings, Qt, QThread, QUrl, Signal, Slot
-from PySide6.QtGui import QBrush, QColor, QDesktopServices, QFont, QGuiApplication
+from PySide6.QtCore import QObject, QProcess, QSettings, QSize, Qt, QThread, QUrl, Signal, Slot
+from PySide6.QtGui import QBrush, QDesktopServices, QGuiApplication, QKeySequence
 from PySide6.QtWidgets import (
-    QAbstractItemView,
     QApplication,
+    QButtonGroup,
     QComboBox,
     QFileDialog,
     QFrame,
+    QGridLayout,
     QHBoxLayout,
-    QHeaderView,
     QLabel,
     QLineEdit,
     QMainWindow,
+    QMenu,
     QMessageBox,
     QProgressBar,
     QPushButton,
+    QRadioButton,
     QScrollArea,
     QSizePolicy,
     QStackedWidget,
     QTableWidget,
     QTableWidgetItem,
+    QToolButton,
     QVBoxLayout,
     QWidget,
 )
 
 from mindyourownbytes import __version__
 from mindyourownbytes.core import (
+    ENCRYPTED_SUFFIXES,
     MIN_GPG_VERSION,
     JobResult,
     PublicKey,
     SourceItem,
     collect_files,
     find_gpg,
+    find_kleopatra,
+    gpg_version,
     is_valid_gpg,
     list_public_keys,
     looks_cloud_synced,
+    peek_protection,
     process_items,
 )
-from mindyourownbytes.gui.dialogs import PassphraseDialog
+from mindyourownbytes.gui import icons, theme
+from mindyourownbytes.gui.dialogs import PassphraseDialog, ProtectionDialog
 from mindyourownbytes.gui.library_page import LibraryPage
 from mindyourownbytes.gui.vault_page import VaultPage
-from mindyourownbytes.gui.widgets import action_button, human_size, repolish
+from mindyourownbytes.gui.widgets import (
+    EmptyState,
+    FileIcons,
+    InfoBar,
+    action_button,
+    card,
+    configure_table,
+    human_size,
+    label,
+    plural,
+    refresh_icons,
+    repolish,
+    set_icon,
+    step_heading,
+)
 from mindyourownbytes.library import list_collections, validate_collection_name
 from mindyourownbytes.vault import Vault, default_vault_path
 
-STYLESHEET = Path(__file__).resolve().parent.parent / "styles.qss"
 DEFAULT_ROOT = Path.home() / "mindyourownbytes"
-
-ENCRYPT_METHODS = (
-    ("Passphrase · type once for this batch", "once"),
-    ("Passphrase · GnuPG asks for each file", "pinentry"),
-    ("Saved passphrase", "saved"),
-    ("OpenPGP public key", "public-key"),
-)
-RESTORE_METHODS = (
-    ("GnuPG asks (passphrase or private key)", "pinentry"),
-    ("Passphrase · type once for this batch", "once"),
-    ("Saved passphrase", "saved"),
-)
+REPOSITORY_URL = "https://github.com/N-Bermparis/mindyourownbytes"
+GPG4WIN_URL = "https://gpg4win.org/download.html"
 TRY_ALL_SAVED = "\0all"
 
+#: Every word that differs between the two modes of this screen.
+COPY = {
+    "encrypt": {
+        "title": "Encrypt files",
+        "subtitle": "Protect files on this computer, then upload the encrypted copies anywhere.",
+        "files_step": "Choose files",
+        "empty_title": "Drop files or folders here",
+        "empty_body": "Your originals stay exactly as they are.",
+        "method_step": "Choose how to protect them",
+        "passphrase_help": "Type one passphrase for all these files. You'll need it to restore them.",
+        "saved_help": "Use one from your Passphrases list.",
+        "key_title": "OpenPGP key",
+        "key_help": "Encrypt to a key from Kleopatra, so there's no passphrase to type.",
+        "save_step": "Choose where to save them",
+        "save_note": "Upload what lands in this folder. Your cloud provider can see file and collection names.",
+        "add_title": "Choose files to encrypt",
+        "start": "Encrypt {files}",
+        "start_empty": "Encrypt files",
+        "working": "Encrypting {done} of {total}…",
+        "row_done": "Encrypted",
+        "row_working": "Encrypting…",
+        "result_title": "{files} encrypted",
+        "result_detail": "Upload only the .gpg files in this folder to your cloud.",
+    },
+    "restore": {
+        "title": "Restore files",
+        "subtitle": "Turn encrypted .gpg files back into normal files on this computer.",
+        "files_step": "Choose encrypted files",
+        "empty_title": "Drop .gpg files here",
+        "empty_body": "Or pick them from your Library.",
+        "method_step": "Choose how to unlock them",
+        "passphrase_help": "Type it once, and it's tried on all these files.",
+        "saved_help": "Try the ones in your Passphrases list.",
+        "key_title": "My OpenPGP key",
+        "key_help": "For files encrypted to your key. GnuPG asks for the key's passphrase if it has one.",
+        "save_step": "Choose where to save them",
+        "save_note": "Restored files are readable, so choose a folder that no cloud service syncs.",
+        "add_title": "Choose encrypted files",
+        "start": "Restore {files}",
+        "start_empty": "Restore files",
+        "working": "Restoring {done} of {total}…",
+        "row_done": "Restored",
+        "row_working": "Restoring…",
+        "result_title": "{files} restored",
+        "result_detail": "These are readable copies on this computer, so don't keep them in a synced folder.",
+    },
+}
 
-class DropZone(QFrame):
+
+class DropArea(QWidget):
+    """Accepts files dropped anywhere on it, and reports while they're being dragged."""
+
     paths_dropped = Signal(list)
+    hover_changed = Signal(bool)
 
-    def __init__(self, title: str, subtitle: str, on_click) -> None:
+    def __init__(self) -> None:
         super().__init__()
-        self._on_click = on_click
-        self.setObjectName("dropZone")
         self.setAcceptDrops(True)
-        self.setMinimumHeight(96)
-        layout = QVBoxLayout(self)
-        layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        layout.setSpacing(8)
-        symbol = QLabel("⇪")
-        symbol.setObjectName("dropIcon")
-        symbol.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        headline = QLabel(title)
-        headline.setObjectName("dropTitle")
-        headline.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        hint = QLabel(subtitle)
-        hint.setObjectName("mutedLabel")
-        hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        for child in (symbol, headline, hint):
-            layout.addWidget(child)
 
     def dragEnterEvent(self, event):
-        if event.mimeData().hasUrls() and all(url.isLocalFile() for url in event.mimeData().urls()):
+        mime = event.mimeData()
+        if mime.hasUrls() and all(url.isLocalFile() for url in mime.urls()):
             event.acceptProposedAction()
+            self.hover_changed.emit(True)
         else:
             event.ignore()
 
@@ -103,14 +153,29 @@ class DropZone(QFrame):
         if event.mimeData().hasUrls():
             event.acceptProposedAction()
 
+    def dragLeaveEvent(self, event):
+        self.hover_changed.emit(False)
+
     def dropEvent(self, event):
+        self.hover_changed.emit(False)
         paths = [url.toLocalFile() for url in event.mimeData().urls() if url.isLocalFile()]
         if paths:
             self.paths_dropped.emit(paths)
             event.acceptProposedAction()
 
+
+class DropZone(QFrame):
+    """The empty state of the file list. Clicking anywhere opens the file picker."""
+
+    def __init__(self, on_click) -> None:
+        super().__init__()
+        self._on_click = on_click
+        self.setObjectName("dropZone")
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setMinimumHeight(150)
+
     def mouseReleaseEvent(self, event):
-        if event.button() == Qt.MouseButton.LeftButton:
+        if event.button() == Qt.MouseButton.LeftButton and self.rect().contains(event.position().toPoint()):
             self._on_click()
         super().mouseReleaseEvent(event)
 
@@ -164,12 +229,18 @@ class MainWindow(QMainWindow):
         self._keys: dict[str, PublicKey] = {}
         self._failures: list[str] = []
         self._job_output: Path | None = None
+        #: None before a job, then "done" or "incomplete" until the list changes.
+        self._job_state: str | None = None
+        self._unfinished_items: list[SourceItem] = []
+        self._method_chosen_by_user = False
+        self._file_icons = FileIcons()
         self.vault = Vault(self.gpg, vault_path or default_vault_path())
 
         self.setWindowTitle("mindyourownbytes")
+        self.setWindowIcon(icons.app_icon())
         available = QGuiApplication.primaryScreen().availableGeometry()
-        self.resize(min(1100, available.width()), min(760, available.height()))
-        self.setStyleSheet(STYLESHEET.read_text(encoding="utf-8"))
+        self.resize(min(1080, available.width()), min(800, available.height()))
+        self.setStyleSheet(theme.stylesheet())
 
         shell = QWidget()
         shell.setObjectName("shell")
@@ -180,19 +251,38 @@ class MainWindow(QMainWindow):
         frame.addWidget(self._build_sidebar())
 
         self.pages = QStackedWidget()
-        self.pages.setObjectName("body")
         self.transfer_page = self._build_transfer_page()
         self.library_page = LibraryPage(lambda: self.current_output("encrypt"))
         self.library_page.restore_requested.connect(self._restore_from_library)
+        self.library_page.encrypt_requested.connect(lambda: self.set_operation("encrypt"))
         self.vault_page = VaultPage(self.vault)
         self.vault_page.changed.connect(self._on_vault_changed)
         for page in (self.transfer_page, self.library_page, self.vault_page):
             self.pages.addWidget(page)
         frame.addWidget(self.pages, stretch=1)
 
+        self._build_menus()
         self.update_gpg_status()
         self.refresh_keys()
+        self._show_early_version_notice()
         self.set_operation("encrypt")
+        QGuiApplication.styleHints().colorSchemeChanged.connect(self._apply_theme)
+
+    @Slot()
+    def _apply_theme(self):
+        """Follow the system when it switches between light and dark."""
+        app = QApplication.instance()
+        if app is not None:
+            theme.apply_palette(app)
+        self.setStyleSheet(theme.stylesheet())
+        refresh_icons(self)
+        self.vault_page.refresh_theme()
+        self.library_page.refresh_theme()
+        self.empty_state.refresh_icon()
+        self.update_gpg_status()
+        # Redrawing would reset each row to "Waiting", so leave a finished list alone.
+        if not self.running and not self._job_state:
+            self.render_queue()
 
     def _initial_gpg(self) -> str:
         """Use a saved path only while it still works, otherwise look again."""
@@ -201,277 +291,473 @@ class MainWindow(QMainWindow):
             return saved
         return find_gpg() or ""
 
+    # ---------------------------------------------------------------- layout
+
     def _build_sidebar(self) -> QFrame:
         sidebar = QFrame()
         sidebar.setObjectName("sidebar")
-        sidebar.setFixedWidth(236)
+        sidebar.setFixedWidth(210)
         side = QVBoxLayout(sidebar)
-        side.setContentsMargins(24, 31, 22, 23)
-        side.setSpacing(8)
-        logo = QLabel("mind your\nown bytes")
-        logo.setObjectName("brand")
-        side.addWidget(logo)
-        brand_sub = QLabel("ENCRYPT BEFORE UPLOAD")
-        brand_sub.setObjectName("brandSub")
-        side.addWidget(brand_sub)
-        side.addSpacing(24)
-        nav_label = QLabel("WORKSPACE")
-        nav_label.setObjectName("eyebrow")
-        side.addWidget(nav_label)
-        self.encrypt_nav = action_button("⇪   Encrypt files", "navActive")
-        self.restore_nav = action_button("⇩   Restore files", "nav")
-        self.library_nav = action_button("▤   Library", "nav")
-        self.vault_nav = action_button("⚿   Passphrases", "nav")
+        side.setContentsMargins(12, 16, 12, 12)
+        side.setSpacing(3)
+
+        brand = QHBoxLayout()
+        brand.setContentsMargins(8, 0, 0, 14)
+        brand.setSpacing(9)
+        logo = QLabel()
+        logo.setPixmap(self.windowIcon().pixmap(26, 26))
+        brand.addWidget(logo)
+        brand.addWidget(label("mind your own bytes", "brand"))
+        brand.addStretch(1)
+        side.addLayout(brand)
+
+        self.nav_group = QButtonGroup(self)
+        self.nav_group.setExclusive(True)
+        self.encrypt_nav = self._nav_button("Encrypt", "encrypt", "Ctrl+1")
+        self.restore_nav = self._nav_button("Restore", "restore", "Ctrl+2")
+        self.library_nav = self._nav_button("Library", "library", "Ctrl+3")
+        self.vault_nav = self._nav_button("Passphrases", "key", "Ctrl+4")
         self.encrypt_nav.clicked.connect(lambda: self.set_operation("encrypt"))
         self.restore_nav.clicked.connect(lambda: self.set_operation("restore"))
         self.library_nav.clicked.connect(self.show_library)
         self.vault_nav.clicked.connect(self.show_vault)
         for button in (self.encrypt_nav, self.restore_nav, self.library_nav, self.vault_nav):
+            self.nav_group.addButton(button)
             side.addWidget(button)
         side.addStretch(1)
 
-        self.gpg_status = QLabel()
-        self.gpg_status.setWordWrap(True)
-        self.gpg_status.setObjectName("sidebarInfo")
-        side.addWidget(self.gpg_status)
-        choose_gpg = action_button("Locate GnuPG", "subtle")
-        choose_gpg.clicked.connect(self.select_gpg)
-        side.addWidget(choose_gpg)
-        side.addSpacing(14)
-        foot = QLabel(f"LOCAL ONLY  ·  v{__version__}\nNo accounts. No telemetry.")
-        foot.setObjectName("sidebarFoot")
-        side.addWidget(foot)
+        status = QHBoxLayout()
+        status.setContentsMargins(8, 0, 0, 0)
+        status.setSpacing(6)
+        self.gpg_dot = QLabel()
+        status.addWidget(self.gpg_dot)
+        self.gpg_status = label("", "sidebarNote")
+        status.addWidget(self.gpg_status, stretch=1)
+        side.addLayout(status)
+        note = label(
+            f"Version {__version__}<br>Early version, not audited.<br>"
+            "<a href='#protect'>What this protects</a>",
+            "sidebarNote", wrap=True,
+        )
+        note.setContentsMargins(8, 4, 0, 0)
+        note.linkActivated.connect(lambda _link: self.show_protection())
+        side.addWidget(note)
         return sidebar
 
+    def _nav_button(self, text: str, icon_name: str, shortcut: str) -> QPushButton:
+        button = QPushButton(text)
+        button.setObjectName("navItem")
+        button.setCheckable(True)
+        button.setFocusPolicy(Qt.FocusPolicy.TabFocus)
+        button.setToolTip(f"{text} ({shortcut})")
+        button.setIconSize(QSize(18, 18))
+        set_icon(button, icon_name)
+        return button
+
     def _build_transfer_page(self) -> QWidget:
-        body = QWidget()
-        main = QVBoxLayout(body)
-        main.setContentsMargins(34, 27, 34, 24)
-        main.setSpacing(14)
+        self.drop_area = DropArea()
+        self.drop_area.paths_dropped.connect(self.add_paths)
+        self.drop_area.hover_changed.connect(self._show_drag_hover)
+        main = QVBoxLayout(self.drop_area)
+        main.setContentsMargins(24, 16, 24, 4)
+        main.setSpacing(8)
 
-        top = QHBoxLayout()
-        heading_col = QVBoxLayout()
-        heading_col.setSpacing(5)
-        self.heading = QLabel("Encrypt & prepare")
-        self.heading.setObjectName("title")
-        self.subtitle = QLabel()
-        self.subtitle.setObjectName("mutedLabel")
-        heading_col.addWidget(self.heading)
-        heading_col.addWidget(self.subtitle)
-        top.addLayout(heading_col)
-        top.addStretch(1)
-        badge = QLabel("●  ALPHA · NOT YET AUDITED")
-        badge.setObjectName("badge")
-        badge.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        top.addWidget(badge)
-        main.addLayout(top)
+        self.heading = label("", "title")
+        main.addWidget(self.heading)
+        self.subtitle = label("", "muted", wrap=True)
+        main.addWidget(self.subtitle)
 
-        self.drop = DropZone("Drop files or folders here", "Or click to choose files", self.select_files)
-        self.drop.paths_dropped.connect(self.add_paths)
-        main.addWidget(self.drop)
+        self.gpg_bar = InfoBar()
+        main.addWidget(self.gpg_bar)
+        self.notice_bar = InfoBar(on_dismiss=self._remember_notice_dismissed)
+        main.addWidget(self.notice_bar)
+        main.addSpacing(4)
 
-        tools = QHBoxLayout()
-        tools.setSpacing(8)
-        self.add_files_button = action_button("+ Add files")
-        self.add_folder_button = action_button("+ Add folder")
-        self.remove_button = action_button("Remove selected", "subtle")
-        self.clear_button = action_button("Clear", "subtle")
+        self.files_step, self.files_step_title, self.files_step_number = step_heading(1, "")
+        step_row = QHBoxLayout()
+        step_row.setSpacing(6)
+        step_row.addWidget(self.files_step)
+        step_row.addStretch(1)
+        self.queue_count = label("", "muted")
+        step_row.addWidget(self.queue_count)
+        step_row.addSpacing(6)
+        self.add_files_button = action_button("Add files", icon_name="file")
+        self.add_folder_button = action_button("Add folder", icon_name="folder_plus")
+        self.remove_button = action_button("Remove", icon_name="close")
+        self.remove_button.setToolTip("Take the selected files off this list. Nothing is deleted.")
+        self.clear_button = action_button("Clear list")
         self.add_files_button.clicked.connect(self.select_files)
         self.add_folder_button.clicked.connect(self.select_folder)
         self.remove_button.clicked.connect(self.remove_selected)
         self.clear_button.clicked.connect(self.clear_files)
-        for button in (self.add_files_button, self.add_folder_button, self.remove_button, self.clear_button):
-            tools.addWidget(button)
-        tools.addStretch(1)
-        self.queue_count = QLabel("0 files")
-        self.queue_count.setObjectName("mutedLabel")
-        tools.addWidget(self.queue_count)
-        main.addLayout(tools)
+        self.queue_tools = (self.queue_count, self.add_files_button, self.add_folder_button,
+                            self.remove_button, self.clear_button)
+        for button in self.queue_tools[1:]:
+            step_row.addWidget(button)
+        main.addLayout(step_row)
 
+        self.queue_stack = QStackedWidget()
+        self.queue_stack.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        self.drop_zone = DropZone(self.select_files)
+        zone_layout = QVBoxLayout(self.drop_zone)
+        zone_layout.setContentsMargins(0, 0, 0, 0)
+        self.empty_add_files = action_button("Add files", icon_name="file")
+        self.empty_add_folder = action_button("Add folder", icon_name="folder_plus")
+        self.empty_library = action_button("Open Library", icon_name="library")
+        self.empty_add_files.clicked.connect(self.select_files)
+        self.empty_add_folder.clicked.connect(self.select_folder)
+        self.empty_library.clicked.connect(self.show_library)
+        self.empty_state = EmptyState("drop", "", "", (self.empty_add_files, self.empty_add_folder, self.empty_library))
+        zone_layout.addWidget(self.empty_state)
+        self.queue_stack.addWidget(self.drop_zone)
+
+        self.queue_card = card()
+        queue_layout = QVBoxLayout(self.queue_card)
+        queue_layout.setContentsMargins(1, 1, 1, 1)
         self.table = QTableWidget(0, 4)
-        self.table.setHorizontalHeaderLabels(["FILE", "SIZE", "SUBFOLDER", "STATUS"])
-        header = self.table.horizontalHeader()
-        header.setDefaultAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
-        header.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
-        header.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
-        header.setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
-        header.setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
-        self.table.verticalHeader().setVisible(False)
-        self.table.setAlternatingRowColors(True)
-        self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
-        self.table.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
-        self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
-        self.table.setShowGrid(False)
-        self.table.setMinimumHeight(90)
-        self.table.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
-        main.addWidget(self.table, stretch=1)
+        self.table.setObjectName("fileTable")
+        self.table.setHorizontalHeaderLabels(["Name", "Size", "Folder", "Status"])
+        configure_table(self.table, stretch=(0, 3))
+        self.table.setMinimumHeight(110)
+        self.table.setAccessibleName("Files to process")
+        queue_layout.addWidget(self.table)
+        self.queue_stack.addWidget(self.queue_card)
+        main.addWidget(self.queue_stack, stretch=1)
 
-        main.addWidget(self._build_options_card())
+        self.method_step, self.method_step_title, _ = step_heading(2, "")
+        self.method_card = self._build_method_card()
+        main.addSpacing(2)
+        main.addWidget(self.method_step)
+        main.addWidget(self.method_card)
+
+        self.save_step, self.save_step_title, _ = step_heading(3, "")
+        self.save_card = self._build_destination_card()
+        main.addSpacing(2)
+        main.addWidget(self.save_step)
+        main.addWidget(self.save_card)
+
+        # Stays pinned below the scrolling area, so the main action is always in view.
+        footer = QWidget()
+        footer_layout = QVBoxLayout(footer)
+        footer_layout.setContentsMargins(24, 8, 24, 14)
+        footer_layout.setSpacing(8)
+        self.result_bar = InfoBar()
+        footer_layout.addWidget(self.result_bar)
 
         bottom = QHBoxLayout()
-        self.status_text = QLabel("Ready when you are")
-        self.status_text.setObjectName("mutedLabel")
+        bottom.setSpacing(8)
+        self.status_text = label("", "muted")
         bottom.addWidget(self.status_text, stretch=1)
         self.progress_bar = QProgressBar()
-        self.progress_bar.setFixedWidth(140)
+        self.progress_bar.setFixedWidth(180)
         self.progress_bar.setTextVisible(False)
         self.progress_bar.setVisible(False)
         bottom.addWidget(self.progress_bar)
-        self.open_button = action_button("Open output", "secondary")
+        self.open_button = action_button("Open folder", icon_name="folder")
+        self.open_button.setToolTip("Open the folder these files are saved to")
         self.open_button.clicked.connect(self.open_output)
         bottom.addWidget(self.open_button)
-        self.cancel_button = action_button("Cancel", "danger")
+        self.cancel_button = action_button("Cancel")
         self.cancel_button.clicked.connect(self.cancel)
         self.cancel_button.setVisible(False)
         bottom.addWidget(self.cancel_button)
-        self.start_button = action_button("Encrypt files  →", "primary")
-        self.start_button.clicked.connect(self.start)
+        self.start_button = action_button("", "primary")
+        self.start_button.clicked.connect(self._primary_clicked)
         bottom.addWidget(self.start_button)
-        main.addLayout(bottom)
+        footer_layout.addLayout(bottom)
+
         # Scrolls on small screens instead of forcing the window to outgrow them.
-        body.setObjectName("body")
         scroll = QScrollArea()
         scroll.setObjectName("pageScroll")
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QFrame.Shape.NoFrame)
-        scroll.setWidget(body)
-        return scroll
+        scroll.setWidget(self.drop_area)
+        page = QWidget()
+        page_layout = QVBoxLayout(page)
+        page_layout.setContentsMargins(0, 0, 0, 0)
+        page_layout.setSpacing(0)
+        page_layout.addWidget(scroll, stretch=1)
+        page_layout.addWidget(footer)
+        return page
 
-    def _build_options_card(self) -> QFrame:
-        options = QFrame()
-        options.setObjectName("optionsCard")
-        layout = QVBoxLayout(options)
-        layout.setContentsMargins(18, 15, 18, 16)
-        layout.setSpacing(10)
+    def _build_method_card(self) -> QFrame:
+        frame = card()
+        grid = QGridLayout(frame)
+        grid.setContentsMargins(14, 10, 14, 10)
+        grid.setHorizontalSpacing(14)
+        grid.setVerticalSpacing(6)
+        grid.setColumnStretch(1, 1)
 
-        crypto_row = QHBoxLayout()
-        crypto_row.setSpacing(10)
-        self.method_label = QLabel("ENCRYPTION")
-        self.method_label.setObjectName("eyebrow")
-        self.method_label.setFixedWidth(82)
-        crypto_row.addWidget(self.method_label)
-        self.method_combo = QComboBox()
-        self.method_combo.setMinimumWidth(280)
-        self.method_combo.currentIndexChanged.connect(self._update_method)
-        crypto_row.addWidget(self.method_combo)
-        self.key_combo = QComboBox()
-        self.key_combo.setMinimumWidth(180)
-        self.key_combo.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-        crypto_row.addWidget(self.key_combo)
-        self.refresh_keys_button = action_button("↻", "subtle")
-        self.refresh_keys_button.setToolTip("Refresh OpenPGP keys from Kleopatra / GnuPG")
-        self.refresh_keys_button.clicked.connect(self.refresh_keys)
-        crypto_row.addWidget(self.refresh_keys_button)
+        self.method_group = QButtonGroup(self)
+        self.passphrase_radio = QRadioButton("Passphrase")
+        self.saved_radio = QRadioButton("Saved passphrase")
+        self.key_radio = QRadioButton("OpenPGP key")
+        for radio in (self.passphrase_radio, self.saved_radio, self.key_radio):
+            self.method_group.addButton(radio)
+        self.passphrase_radio.setChecked(True)
+        for radio in (self.passphrase_radio, self.saved_radio, self.key_radio):
+            radio.toggled.connect(self._update_method)
+            radio.clicked.connect(self._remember_method_choice)
+
+        self.passphrase_help = label("", "muted", wrap=True)
+        grid.addWidget(self.passphrase_radio, 0, 0)
+        grid.addWidget(self.passphrase_help, 0, 1)
+
+        saved_row = QHBoxLayout()
+        saved_row.setSpacing(6)
+        self.saved_help = label("", "muted", wrap=True)
+        saved_row.addWidget(self.saved_help, stretch=1)
         self.saved_combo = QComboBox()
-        self.saved_combo.setMinimumWidth(180)
         self.saved_combo.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-        crypto_row.addWidget(self.saved_combo)
-        self.vault_button = action_button("Unlock saved passphrases", "secondary")
+        self.saved_combo.setAccessibleName("Saved passphrase to use")
+        saved_row.addWidget(self.saved_combo, stretch=1)
+        self.vault_button = action_button("Unlock")
         self.vault_button.clicked.connect(self._open_vault_for_method)
-        crypto_row.addWidget(self.vault_button)
-        crypto_row.addStretch(1)
-        layout.addLayout(crypto_row)
+        saved_row.addWidget(self.vault_button)
+        grid.addWidget(self.saved_radio, 1, 0)
+        grid.addLayout(saved_row, 1, 1)
 
-        self.collection_row = QWidget()
-        collection_layout = QHBoxLayout(self.collection_row)
-        collection_layout.setContentsMargins(0, 0, 0, 0)
-        collection_layout.setSpacing(10)
-        collection_label = QLabel("COLLECTION")
-        collection_label.setObjectName("eyebrow")
-        collection_label.setFixedWidth(82)
-        collection_layout.addWidget(collection_label)
+        key_row = QHBoxLayout()
+        key_row.setSpacing(6)
+        self.key_help = label("", "muted", wrap=True)
+        key_row.addWidget(self.key_help, stretch=1)
+        self.key_combo = QComboBox()
+        self.key_combo.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.key_combo.setAccessibleName("OpenPGP key to encrypt to")
+        key_row.addWidget(self.key_combo, stretch=1)
+        self.refresh_keys_button = QToolButton()
+        self.refresh_keys_button.setAccessibleName("Refresh the list of keys")
+        self.refresh_keys_button.setToolTip("Look for new keys from Kleopatra or GnuPG")
+        set_icon(self.refresh_keys_button, "refresh")
+        self.refresh_keys_button.clicked.connect(self.refresh_keys)
+        key_row.addWidget(self.refresh_keys_button)
+        grid.addWidget(self.key_radio, 2, 0)
+        grid.addLayout(key_row, 2, 1)
+        return frame
+
+    def _build_destination_card(self) -> QFrame:
+        frame = card()
+        grid = QGridLayout(frame)
+        grid.setContentsMargins(14, 10, 14, 10)
+        grid.setHorizontalSpacing(14)
+        grid.setVerticalSpacing(6)
+        grid.setColumnStretch(1, 1)
+
+        self.save_label = QLabel("Save to")
+        grid.addWidget(self.save_label, 0, 0)
+        self.output_edit = QLineEdit()
+        self.output_edit.setReadOnly(True)
+        self.output_edit.setAccessibleName("Folder to save to")
+        grid.addWidget(self.output_edit, 0, 1)
+        self.browse_button = action_button("Change…")
+        self.browse_button.clicked.connect(self.select_output)
+        grid.addWidget(self.browse_button, 0, 2)
+        self.collection_label = QLabel("Collection")
+        grid.addWidget(self.collection_label, 1, 0)
         self.collection_combo = QComboBox()
         self.collection_combo.setEditable(True)
         self.collection_combo.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
-        self.collection_combo.lineEdit().setPlaceholderText("None. Type a name to create one, e.g. Taxes")
-        collection_layout.addWidget(self.collection_combo, stretch=1)
-        layout.addWidget(self.collection_row)
+        self.collection_combo.lineEdit().setPlaceholderText("None. Type a name to create one, for example Taxes.")
+        self.collection_combo.setAccessibleName("Collection to save into")
+        self.collection_combo.setToolTip(
+            "A subfolder that keeps related files together. Type a new name to create one."
+        )
+        grid.addWidget(self.collection_combo, 1, 1, 1, 2)
+        self.privacy_note = label("", "muted", wrap=True)
+        grid.addWidget(self.privacy_note, 2, 1, 1, 2)
+        return frame
 
-        destination_row = QHBoxLayout()
-        destination_row.setSpacing(10)
-        folder_label = QLabel("OUTPUT")
-        folder_label.setObjectName("eyebrow")
-        folder_label.setFixedWidth(82)
-        destination_row.addWidget(folder_label)
-        self.output_edit = QLineEdit()
-        self.output_edit.setReadOnly(True)
-        destination_row.addWidget(self.output_edit, stretch=1)
-        self.browse_button = action_button("Choose folder", "secondary")
-        self.browse_button.clicked.connect(self.select_output)
-        destination_row.addWidget(self.browse_button)
-        layout.addLayout(destination_row)
+    def _build_menus(self) -> None:
+        bar = self.menuBar()
+        file_menu = bar.addMenu("&File")
+        self._add_action(file_menu, "Add &files…", self.select_files, QKeySequence.StandardKey.Open)
+        self._add_action(file_menu, "Add f&older…", self.select_folder, "Ctrl+Shift+O")
+        self._add_action(file_menu, "Open output &folder", self.open_output)
+        file_menu.addSeparator()
+        self._add_action(file_menu, "E&xit", self.close, "Ctrl+Q")
 
-        self.privacy_note = QLabel()
-        self.privacy_note.setObjectName("mutedLabel")
-        self.privacy_note.setWordWrap(True)
-        layout.addWidget(self.privacy_note)
-        return options
+        go_menu = bar.addMenu("&Go")
+        self._add_action(go_menu, "&Encrypt", lambda: self.set_operation("encrypt"), "Ctrl+1")
+        self._add_action(go_menu, "&Restore", lambda: self.set_operation("restore"), "Ctrl+2")
+        self._add_action(go_menu, "&Library", self.show_library, "Ctrl+3")
+        self._add_action(go_menu, "&Passphrases", self.show_vault, "Ctrl+4")
+
+        tools_menu = bar.addMenu("&Tools")
+        self.pinentry_action = tools_menu.addAction("Let &GnuPG ask for each passphrase")
+        self.pinentry_action.setCheckable(True)
+        self.pinentry_action.setChecked(str(self.settings.value("use_pinentry", "")).lower() == "true")
+        self.pinentry_action.setToolTip("This app never sees your passphrase, but you're asked once for every file.")
+        self.pinentry_action.toggled.connect(self._set_pinentry_preference)
+        tools_menu.addSeparator()
+        self._add_action(tools_menu, "&Locate GnuPG…", self.select_gpg)
+        kleopatra = self._add_action(tools_menu, "Open &Kleopatra", self.open_kleopatra)
+        kleopatra.setEnabled(find_kleopatra() is not None)
+        tools_menu.addSeparator()
+        self._add_action(tools_menu, "Loc&k saved passphrases", self.vault_page.lock, "Ctrl+L")
+
+        help_menu = bar.addMenu("&Help")
+        self._add_action(help_menu, "&What this protects", self.show_protection, "F1")
+        self._add_action(help_menu, "&Report a problem", lambda: self._open_url(f"{REPOSITORY_URL}/issues"))
+        help_menu.addSeparator()
+        self._add_action(help_menu, "&About mindyourownbytes", self.show_about)
+
+    def _add_action(self, menu: QMenu, text: str, slot, shortcut=None):
+        action = menu.addAction(text)
+        action.triggered.connect(lambda _checked=False: slot())
+        if shortcut is not None:
+            action.setShortcut(shortcut)
+        return action
+
+    # ---------------------------------------------------------------- navigation
 
     def current_output(self, operation: str | None = None) -> Path:
         operation = operation or self.operation
         base = DEFAULT_ROOT / ("Encrypted Exports" if operation == "encrypt" else "Restored Files")
         return Path(str(self.settings.value(f"output_{operation}", str(base)))).expanduser()
 
-    def _set_active_nav(self, active: QPushButton) -> None:
-        for button in (self.encrypt_nav, self.restore_nav, self.library_nav, self.vault_nav):
-            button.setProperty("variant", "navActive" if button is active else "nav")
-            repolish(button)
-
     def set_operation(self, operation: str):
         if self.running:
             return
         if self.operation != operation:
-            self.items.clear()
-            self._source_paths.clear()
+            self.items = []
+            self._source_paths = []
+            self._reset_job_state()
+            self.passphrase_radio.setChecked(True)
+            self._method_chosen_by_user = False
         self.operation = operation
+        copy = COPY[operation]
         is_encryption = operation == "encrypt"
         self.pages.setCurrentWidget(self.transfer_page)
-        self._set_active_nav(self.encrypt_nav if is_encryption else self.restore_nav)
-        self.heading.setText("Encrypt & prepare" if is_encryption else "Restore encrypted files")
-        self.subtitle.setText(
-            "Protect files locally, then upload the .gpg exports anywhere."
-            if is_encryption else "Decrypt downloaded .gpg backups into a local folder."
-        )
-        self.method_label.setText("ENCRYPTION" if is_encryption else "UNLOCK WITH")
-        self.method_combo.blockSignals(True)
-        self.method_combo.clear()
-        for label, data in (ENCRYPT_METHODS if is_encryption else RESTORE_METHODS):
-            self.method_combo.addItem(label, data)
-        self.method_combo.blockSignals(False)
-        self.collection_row.setVisible(is_encryption)
+        (self.encrypt_nav if is_encryption else self.restore_nav).setChecked(True)
+        self.heading.setText(copy["title"])
+        self.subtitle.setText(copy["subtitle"])
+        self.files_step_title.setText(copy["files_step"])
+        self.method_step_title.setText(copy["method_step"])
+        self.save_step_title.setText(copy["save_step"])
+        self.empty_state.set_text(copy["empty_title"], copy["empty_body"])
+        self.empty_library.setVisible(not is_encryption)
+        self._show_passphrase_help()
+        self.saved_help.setText(copy["saved_help"])
+        self.key_radio.setText(copy["key_title"])
+        self.key_help.setText(copy["key_help"])
+        self.privacy_note.setText(copy["save_note"])
+        for widget in (self.collection_label, self.collection_combo):
+            widget.setVisible(is_encryption)
         self._refresh_collections()
         self._refresh_saved_combo()
         self._update_method()
-        self.privacy_note.setText(
-            "Only encrypted files go to the output folder. Originals are never changed."
-            if is_encryption
-            else "Restored files are readable. Choose a folder that no cloud service synchronizes."
-        )
         self.output_edit.setText(str(self.current_output()))
-        self.start_button.setText("Encrypt files  →" if is_encryption else "Restore files  →")
-        self.status_text.setText("Ready when you are")
+        self.status_text.setText("")
         self.render_queue()
 
     def show_library(self):
         if self.running:
             return
         self.pages.setCurrentWidget(self.library_page)
-        self._set_active_nav(self.library_nav)
+        self.library_nav.setChecked(True)
         self.library_page.refresh()
 
     def show_vault(self):
         if self.running:
             return
         self.pages.setCurrentWidget(self.vault_page)
-        self._set_active_nav(self.vault_nav)
+        self.vault_nav.setChecked(True)
         self.vault_page.refresh()
+
+    def show_protection(self):
+        ProtectionDialog(self).exec()
+
+    def show_about(self):
+        version = gpg_version(self.gpg) if self.gpg else None
+        engine = f"GnuPG {'.'.join(map(str, version))}" if version else "GnuPG not found"
+        QMessageBox.about(
+            self, "About mindyourownbytes",
+            f"<p style='font-weight:600'>mindyourownbytes {__version__}</p>"
+            "<p>Your files. Your keys. None of their business.</p>"
+            f"<p>Encryption by: {engine}<br>License: GPL-3.0-or-later<br>"
+            f"<a href='{REPOSITORY_URL}'>Source code on GitHub</a></p>"
+            "<p>No accounts, no telemetry, and no network connections.</p>",
+        )
+
+    def open_kleopatra(self):
+        path = find_kleopatra()
+        if path:
+            QProcess.startDetached(path, [])
+
+    def _open_url(self, url: str):
+        QDesktopServices.openUrl(QUrl(url))
+
+    def _show_early_version_notice(self):
+        if str(self.settings.value("early_version_notice_dismissed", "")).lower() == "true":
+            return
+        self.notice_bar.show_message(
+            "info", "This is an early version",
+            "It hasn't been independently audited. Try it with unimportant files first, and keep other backups.",
+            actions=[("What this protects", self.show_protection)],
+        )
+
+    def _remember_notice_dismissed(self):
+        self.settings.setValue("early_version_notice_dismissed", "true")
 
     @Slot(list)
     def _restore_from_library(self, items: list[SourceItem]):
         self.set_operation("restore")
+        self._reset_job_state()
         self.items = list(items)
         self._source_paths = []
+        self._choose_restore_method()
         self.render_queue()
+
+    def _show_drag_hover(self, hovering: bool):
+        for widget in (self.drop_zone, self.queue_card):
+            widget.setProperty("dragging", hovering)
+            repolish(widget)
+
+    # ---------------------------------------------------------------- how to protect or unlock
+
+    @Slot()
+    def _remember_method_choice(self):
+        self._method_chosen_by_user = True
+
+    def method(self) -> str:
+        """The current choice: "once", "pinentry", "saved", or "public-key"."""
+        if self.saved_radio.isChecked():
+            return "saved"
+        if self.key_radio.isChecked():
+            return "public-key" if self.operation == "encrypt" else "pinentry"
+        return "pinentry" if self.pinentry_action.isChecked() else "once"
+
+    def set_method(self, method: str) -> None:
+        if method == "saved":
+            self.saved_radio.setChecked(True)
+        elif method == "public-key" or (method == "pinentry" and self.operation == "restore"):
+            self.key_radio.setChecked(True)
+        else:
+            self.passphrase_radio.setChecked(True)
+            self.pinentry_action.setChecked(method == "pinentry")
+        self._update_method()
+
+    @Slot(bool)
+    def _set_pinentry_preference(self, enabled: bool):
+        self.settings.setValue("use_pinentry", "true" if enabled else "false")
+        self._show_passphrase_help()
+
+    def _show_passphrase_help(self):
+        self.passphrase_help.setText(
+            "GnuPG will ask for the passphrase once for each file." if self.pinentry_action.isChecked()
+            else COPY[self.operation]["passphrase_help"]
+        )
+
+    def _choose_restore_method(self):
+        """Open files the way they were protected, without asking the user to remember.
+
+        Only ever a starting point: anything the user picked themselves stays picked.
+        """
+        if self.operation != "restore" or self._method_chosen_by_user or not self.items:
+            return
+        kinds = {peek_protection(item.source) for item in itertools.islice(self.items, 200)}
+        (self.key_radio if "key" in kinds else self.passphrase_radio).setChecked(True)
+        self._method_chosen_by_user = False
 
     def _refresh_collections(self):
         current = self.collection_combo.currentText()
@@ -497,26 +783,43 @@ class MainWindow(QMainWindow):
         self._update_method()
 
     def _update_method(self):
-        method = self.method_combo.currentData()
-        self.key_combo.setVisible(method == "public-key")
-        self.refresh_keys_button.setVisible(method == "public-key")
-        saved = method == "saved"
-        self.saved_combo.setVisible(saved and self.vault.unlocked)
-        self.vault_button.setVisible(saved and not self.vault.unlocked)
-        self.vault_button.setText("Unlock saved passphrases" if self.vault.exists else "Set up saved passphrases")
+        saved = self.saved_radio.isChecked()
+        key = self.key_radio.isChecked()
+        has_entries = self.vault.unlocked and self.saved_combo.count() > 0
+        choosing_key = key and self.operation == "encrypt"
+        self.saved_help.setVisible(not (saved and has_entries))
+        self.saved_combo.setVisible(saved and has_entries)
+        self.vault_button.setVisible(saved and not has_entries)
+        if self.vault.unlocked:
+            self.vault_button.setText("Add a passphrase")
+        else:
+            self.vault_button.setText("Unlock" if self.vault.exists else "Set up")
+        self.key_help.setVisible(not choosing_key)
+        self.key_combo.setVisible(choosing_key)
+        self.refresh_keys_button.setVisible(choosing_key)
 
     def _open_vault_for_method(self):
-        if self.vault.exists:
+        if self.vault.exists and not self.vault.unlocked:
             self.vault_page.request_unlock()
         else:
             self.show_vault()
 
     def update_gpg_status(self):
+        version = gpg_version(self.gpg) if self.gpg else None
+        ready = version is not None and version >= MIN_GPG_VERSION
+        self.gpg_dot.setPixmap(icons.pixmap("check" if ready else "alert", 14, theme.color("ok" if ready else "warn")))
+        if ready:
+            self.gpg_status.setText(f"GnuPG {'.'.join(map(str, version))} ready")
+            self.gpg_bar.hide()
+            return
         minimum = ".".join(map(str, MIN_GPG_VERSION))
-        self.gpg_status.setText(
-            "●  GnuPG ready\nEncryption engine detected"
-            if self.gpg and is_valid_gpg(self.gpg)
-            else f"●  GnuPG {minimum}+ not found\nInstall Gpg4win or select gpg.exe"
+        self.gpg_status.setText("GnuPG not found")
+        self.gpg_bar.show_message(
+            "warning", "This app needs GnuPG to encrypt and restore files",
+            f"It's free and does all the encryption here. Install Gpg4win (GnuPG {minimum} or newer), "
+            "then restart this app, or locate gpg.exe yourself.",
+            actions=[("Get Gpg4win", lambda: self._open_url(GPG4WIN_URL)), ("Locate GnuPG…", self.select_gpg)],
+            dismissable=False,
         )
 
     def select_gpg(self):
@@ -547,19 +850,20 @@ class MainWindow(QMainWindow):
         except Exception:
             keys = []
         if not keys:
-            self.key_combo.addItem("No encryption keys found", "")
+            self.key_combo.addItem("No keys found. Create one in Kleopatra.", "")
             return
         for key in keys:
             owner = "your key" if key.has_secret else "someone else's key"
             self.key_combo.addItem(f"{key.uid[:48]} · {key.fingerprint[-10:]} · {owner}", key.fingerprint)
             self._keys[key.fingerprint] = key
 
+    # ---------------------------------------------------------------- the file list
+
     def select_files(self):
         if self.running:
             return
         files, _ = QFileDialog.getOpenFileNames(
-            self, "Choose files to encrypt" if self.operation == "encrypt" else "Choose encrypted files",
-            str(Path.home()),
+            self, COPY[self.operation]["add_title"], str(Path.home()),
             "GnuPG files (*.gpg *.pgp);;All files (*)" if self.operation == "restore" else "All files (*)",
         )
         if files:
@@ -586,8 +890,13 @@ class MainWindow(QMainWindow):
     def add_paths(self, new_paths: list[str]):
         if self.running or not new_paths:
             return
+        if self._job_state:
+            # A new batch. Finished rows make way, and anything unfinished stays.
+            self.items = list(self._unfinished_items)
+            self._source_paths = []
+            self._reset_job_state()
         if self.items and not self._source_paths:
-            # The queue was curated (rows removed, or sent from the Library).
+            # The list was curated (rows removed, or sent from the Library).
             # Keep it as it is when adding more files.
             try:
                 added, skipped, unreadable = collect_files(new_paths, self.current_output(), self.operation)
@@ -596,24 +905,19 @@ class MainWindow(QMainWindow):
                 return
             existing = {item.source for item in self.items}
             self.items.extend(item for item in added if item.source not in existing)
-            self.render_queue()
-            if skipped:
-                self.status_text.setText(f"Skipped {skipped} links, duplicates or unsupported files")
-            self._warn_unreadable(unreadable)
-            return
-        inputs = self._source_paths + [path for path in new_paths if path not in self._source_paths]
-        try:
-            items, skipped, unreadable = collect_files(inputs, self.current_output(), self.operation)
-        except (ValueError, OSError) as exc:
-            QMessageBox.warning(self, "Cannot add files", str(exc))
-            return
-        self._source_paths = inputs
-        self.items = items
+        else:
+            inputs = self._source_paths + [path for path in new_paths if path not in self._source_paths]
+            try:
+                items, skipped, unreadable = collect_files(inputs, self.current_output(), self.operation)
+            except (ValueError, OSError) as exc:
+                QMessageBox.warning(self, "Cannot add files", str(exc))
+                return
+            self._source_paths = inputs
+            self.items = items
+        self._choose_restore_method()
         self.render_queue()
         if skipped:
-            self.status_text.setText(
-                f"Added {len(items)} files · skipped {skipped} links, duplicates or unsupported files"
-            )
+            self.status_text.setText(f"Left out {skipped} links, duplicates, or files of the wrong type.")
         self._warn_unreadable(unreadable)
 
     def remove_selected(self):
@@ -622,10 +926,11 @@ class MainWindow(QMainWindow):
         rows = {index.row() for index in self.table.selectedIndexes()}
         if not rows:
             return
-        # Rebuild the queue as individual selected files; preserve the intended
+        # Rebuild the list as individual selected files; preserve the intended
         # relative folder layout instead of rescanning removed parent folders.
         self.items = [item for i, item in enumerate(self.items) if i not in rows]
         self._source_paths = []
+        self._reset_job_state()
         self.render_queue()
 
     def clear_files(self):
@@ -633,26 +938,80 @@ class MainWindow(QMainWindow):
             return
         self.items = []
         self._source_paths = []
+        self._reset_job_state()
+        self.status_text.setText("")
         self.render_queue()
-        self.status_text.setText("Queue cleared")
+
+    def _display_name(self, item: SourceItem) -> str:
+        name = item.source.name
+        return name[:-4] if name.lower().endswith(ENCRYPTED_SUFFIXES) else name
 
     def render_queue(self):
-        self.table.setRowCount(len(self.items))
+        count = len(self.items)
+        self.queue_stack.setCurrentWidget(self.queue_card if count else self.drop_zone)
+        self.queue_count.setVisible(bool(count))
+        for widget in self.queue_tools[1:]:
+            widget.setVisible(bool(count) and self._job_state != "done")
+        self.table.setRowCount(count)
         for row, item in enumerate(self.items):
-            values = [item.source.name, human_size(item.size),
-                      str(item.relative.parent) if str(item.relative.parent) != "." else "—", "Waiting"]
-            for column, value in enumerate(values):
-                cell = QTableWidgetItem(value)
-                if column == 0:
-                    cell.setToolTip(str(item.source))
-                self.table.setItem(row, column, cell)
-            self.table.setRowHeight(row, 34)
-        self.queue_count.setText(f"{len(self.items)} file{'s' if len(self.items) != 1 else ''}")
+            name = QTableWidgetItem(self._file_icons.for_name(item.source.name), self._display_name(item))
+            name.setToolTip(str(item.source))
+            self.table.setItem(row, 0, name)
+            self.table.setItem(row, 1, QTableWidgetItem(human_size(item.size)))
+            folder = str(item.relative.parent)
+            self.table.setItem(row, 2, QTableWidgetItem("—" if folder == "." else folder))
+            self._set_row_status(row, "Waiting", "clock", "muted")
+        total = sum(item.size for item in self.items)
+        self.queue_count.setText(f"{plural(count)} · {human_size(total)}")
+        self._update_primary()
+
+    def _set_row_status(self, row: int, text: str, icon_name: str, color_name: str, tooltip: str = "") -> None:
+        color = theme.color(color_name)
+        cell = QTableWidgetItem(icons.icon(icon_name, color), text)
+        cell.setForeground(QBrush(color))
+        cell.setToolTip(tooltip or text)
+        self.table.setItem(row, 3, cell)
+
+    def _update_primary(self):
+        copy = COPY[self.operation]
+        count = len(self.items)
+        if self._job_state == "done":
+            text = "Start over"
+        elif self._job_state == "incomplete":
+            text = "Try these again"
+        else:
+            text = copy["start"].format(files=plural(count)) if count else copy["start_empty"]
+        self.start_button.setText(text)
+        self.start_button.setEnabled(bool(count))
+
+    def _reset_job_state(self):
+        self._job_state = None
+        self._unfinished_items = []
+        self._job_output = None
+        self.result_bar.hide()
+        self.open_button.show()
+        self._show_results_view(False)
+
+    def _show_results_view(self, finished: bool):
+        """Once everything has succeeded, the steps have nothing left to ask."""
+        for widget in (self.method_step, self.method_card, self.save_step, self.save_card):
+            widget.setVisible(not finished)
+        self.files_step_number.setVisible(not finished)
+        self.files_step_title.setText("Your files" if finished else COPY[self.operation]["files_step"])
+
+    def _primary_clicked(self):
+        if self._job_state == "done":
+            self.clear_files()
+            return
+        if self._job_state == "incomplete":
+            self.items = list(self._unfinished_items)
+            self._source_paths = []
+        self.start()
 
     def select_output(self):
         if self.running:
             return
-        selected = QFileDialog.getExistingDirectory(self, "Choose output folder", str(self.current_output()))
+        selected = QFileDialog.getExistingDirectory(self, "Choose where to save", str(self.current_output()))
         if not selected:
             return
         self.settings.setValue(f"output_{self.operation}", selected)
@@ -660,9 +1019,11 @@ class MainWindow(QMainWindow):
         self._refresh_collections()
 
     def open_output(self):
-        path = self.current_output()
+        path = self._job_output or self.current_output()
         path.mkdir(parents=True, exist_ok=True)
         QDesktopServices.openUrl(QUrl.fromLocalFile(str(path)))
+
+    # ---------------------------------------------------------------- safety checks
 
     def _confirm(self, title: str, text: str) -> bool:
         answer = QMessageBox.warning(
@@ -709,13 +1070,14 @@ class MainWindow(QMainWindow):
             return []
         if method == "once":
             encrypting = self.operation == "encrypt"
+            count = plural(len(self.items))
             dialog = PassphraseDialog(
                 self,
-                "Passphrase for this batch" if encrypting else "Passphrase for these files",
-                "Every file in this batch will use this passphrase. Nobody can recover it for you, "
-                "so make sure you can find it again." if encrypting
-                else "This passphrase will be tried on every file in the queue.",
+                "Choose a passphrase" if encrypting else "Enter the passphrase",
+                f"This passphrase will protect {count}. Nobody can recover it for you, so keep it somewhere safe."
+                if encrypting else f"This passphrase will be tried on {count}.",
                 confirm=encrypting, min_length=8 if encrypting else 1,
+                ok_text="Encrypt" if encrypting else "Restore",
             )
             return [dialog.passphrase()] if dialog.exec() else None
         if not self.vault.unlocked:
@@ -723,7 +1085,7 @@ class MainWindow(QMainWindow):
             # passphrase happens to be selected without having seen the list.
             if self.vault.exists:
                 if self.vault_page.request_unlock():
-                    self.status_text.setText("Vault unlocked. Choose a saved passphrase, then start again.")
+                    self.status_text.setText("Unlocked. Choose a saved passphrase, then start again.")
             else:
                 self.show_vault()
             return None
@@ -749,6 +1111,8 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Check the collection name", str(exc))
             return None
 
+    # ---------------------------------------------------------------- the job
+
     def start(self):
         if self.running:
             return
@@ -756,13 +1120,14 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, "No files selected", "Drag or select files to begin.")
             return
         if not self.gpg or not is_valid_gpg(self.gpg):
+            self.update_gpg_status()
             QMessageBox.warning(
                 self, "GnuPG is required",
                 "Install Gpg4win (https://gpg4win.org/) and restart this application, "
-                "or click 'Locate GnuPG' and select gpg.exe.",
+                "or use Tools > Locate GnuPG to select gpg.exe.",
             )
             return
-        selection = str(self.method_combo.currentData())
+        selection = self.method()
         method = "public-key" if selection == "public-key" else "password"
         fingerprint = str(self.key_combo.currentData() or "") if selection == "public-key" else None
         if selection == "public-key" and not fingerprint:
@@ -783,24 +1148,24 @@ class MainWindow(QMainWindow):
                 self.items, _, unreadable = collect_files(self._source_paths, output, self.operation)
                 self._warn_unreadable(unreadable)
             else:
-                # A curated queue: re-check the files before relying on them.
+                # A curated list: re-check the files before relying on them.
                 for item in self.items:
                     if not item.source.is_file() or item.source.is_symlink():
                         raise ValueError(f"A source file is unavailable: {item.source}")
         except (ValueError, OSError) as exc:
             QMessageBox.warning(self, "Cannot start", str(exc))
             return
+        self._reset_job_state()
         self.render_queue()
         self.running = True
         self._failures = []
         self._job_output = output
+        self._succeeded_rows: set[int] = set()
         self._set_busy(True)
         self.progress_bar.setRange(0, len(self.items))
         self.progress_bar.setValue(0)
-        self.status_text.setText(
-            "Working locally… GnuPG will ask when it needs a passphrase"
-            if selection == "pinentry" else "Working locally…"
-        )
+        self._mark_working(0)
+        self._show_progress(0)
 
         self._thread = QThread(self)
         self.worker = BackupWorker(self.gpg, list(self.items), output, self.operation, method,
@@ -824,27 +1189,46 @@ class MainWindow(QMainWindow):
     def _set_busy(self, is_busy: bool):
         for widget in (self.encrypt_nav, self.restore_nav, self.library_nav, self.vault_nav,
                        self.add_files_button, self.add_folder_button, self.remove_button,
-                       self.clear_button, self.browse_button, self.method_combo, self.key_combo,
-                       self.saved_combo, self.collection_combo, self.refresh_keys_button,
-                       self.vault_button, self.start_button):
+                       self.clear_button, self.browse_button, self.passphrase_radio, self.saved_radio,
+                       self.key_radio, self.key_combo, self.saved_combo,
+                       self.collection_combo, self.refresh_keys_button, self.vault_button, self.menuBar()):
             widget.setEnabled(not is_busy)
+        self.start_button.setVisible(not is_busy)
+        self.open_button.setVisible(not is_busy)
         self.cancel_button.setEnabled(is_busy)
         self.cancel_button.setVisible(is_busy)
         self.progress_bar.setVisible(is_busy)
+        self.drop_area.setAcceptDrops(not is_busy)
+
+    def _mark_working(self, row: int):
+        if row < self.table.rowCount():
+            self._set_row_status(row, COPY[self.operation]["row_working"], "clock", "text")
+            self.table.scrollToItem(self.table.item(row, 0))
+
+    def _show_progress(self, done: int):
+        text = COPY[self.operation]["working"].format(done=min(done + 1, len(self.items)), total=len(self.items))
+        if self.method() == "pinentry":
+            text += " GnuPG may ask for a passphrase."
+        self.status_text.setText(text)
 
     @Slot(int, bool, str, object)
     def _progress(self, index: int, ok: bool, message: str, output):
         cancelled = not ok and message == "Cancelled"
         if index < self.table.rowCount():
-            cell = self.table.item(index, 3)
-            cell.setText("✓ Ready" if ok else "Cancelled" if cancelled else "✕ Error")
-            cell.setToolTip(str(output) if ok else message)
-            cell.setForeground(QBrush(QColor("#71e3ba" if ok else "#9aaec6" if cancelled else "#ff9d97")))
+            if ok:
+                self._set_row_status(index, COPY[self.operation]["row_done"], "check", "ok", str(output))
+                self._succeeded_rows.add(index)
+            elif cancelled:
+                self._set_row_status(index, "Cancelled", "close", "muted")
+            else:
+                short = re.split(r"[,:.]", message, maxsplit=1)[0]
+                self._set_row_status(index, short, "alert", "error", message)
         self.progress_bar.setValue(index + 1)
         if not ok and not cancelled:
-            name = self.items[index].source.name if index < len(self.items) else f"File {index + 1}"
-            self._failures.append(f"{name}: {message}")
-            self.status_text.setText(f"{name}: {message[:110]}")
+            self._failures.append(message)
+        if not cancelled and index + 1 < len(self.items):
+            self._mark_working(index + 1)
+            self._show_progress(index + 1)
 
     @Slot(object)
     def _completed(self, result: JobResult):
@@ -852,8 +1236,15 @@ class MainWindow(QMainWindow):
         self._set_busy(False)
         self._refresh_collections()
         self.status_text.setText(
-            f"{result.succeeded} ready · {result.failed} errors" + (" · cancelled" if result.cancelled else "")
+            f"{result.succeeded} finished · {result.failed} failed" + (" · cancelled" if result.cancelled else "")
         )
+        self._unfinished_items = [item for row, item in enumerate(self.items) if row not in self._succeeded_rows]
+        self._job_state = "incomplete" if self._unfinished_items else "done"
+        self._show_results_view(self._job_state == "done")
+        for widget in self.queue_tools[1:]:
+            widget.setVisible(self._job_state != "done")
+        self._show_result(result)
+        self._update_primary()
         if result.leftovers:
             listed = "\n".join(str(path) for path in result.leftovers[:8])
             QMessageBox.warning(
@@ -861,33 +1252,43 @@ class MainWindow(QMainWindow):
                 "These temporary files could not be removed. After a restore they contain readable data, "
                 f"so please delete them yourself:\n\n{listed}",
             )
-        if result.failed:
-            listed = "\n".join(self._failures[:8])
-            more = f"\n…and {len(self._failures) - 8} more" if len(self._failures) > 8 else ""
-            QMessageBox.warning(
-                self, "Some files failed",
-                f"{result.succeeded} succeeded and {result.failed} failed:\n\n{listed}{more}",
+
+    def _show_result(self, result: JobResult):
+        copy = COPY[self.operation]
+        open_folder = ("Open folder", self.open_output)
+        total = len(self.items)
+        if result.cancelled:
+            self.result_bar.show_message(
+                "warning", "Cancelled", f"{plural(result.succeeded)} finished before you stopped.",
+                actions=[open_folder] if result.succeeded else [],
             )
+        elif result.failed:
+            reasons = set(self._failures)
+            detail = self._failures[0] if len(reasons) == 1 else "See the Status column for the reason for each file."
+            title = (f"{result.failed} of {plural(total)} failed" if result.succeeded
+                     else f"{'That file' if total == 1 else f'All {total} files'} failed")
+            self.result_bar.show_message("error", title, detail, actions=[open_folder] if result.succeeded else [])
         elif result.succeeded:
-            QMessageBox.information(
-                self, "Finished",
-                f"{result.succeeded} file(s) prepared in:\n{self._job_output}\n\n"
-                + ("Upload only the .gpg files to your cloud storage."
-                   if self.operation == "encrypt" else "The restored files are readable, local copies."),
+            self.result_bar.show_message(
+                "success", copy["result_title"].format(files=plural(result.succeeded)),
+                copy["result_detail"], actions=[open_folder],
             )
+        self.open_button.setVisible(not result.succeeded)
 
     @Slot(str)
     def _error(self, message: str):
         self.running = False
         self._set_busy(False)
-        self.status_text.setText("Operation failed")
+        self.status_text.setText("")
+        self._update_primary()
+        self.result_bar.show_message("error", "That didn't work", message)
         QMessageBox.critical(self, "Operation failed", message)
 
     def cancel(self):
         if self.worker and self.running:
             self.worker.cancel_event.set()
             self.cancel_button.setEnabled(False)
-            self.status_text.setText("Cancelling safely after GnuPG stops...")
+            self.status_text.setText("Cancelling after the current file…")
 
     def closeEvent(self, event):
         if self.running:
@@ -913,11 +1314,19 @@ def _show_unexpected_error(exc_type, exc, tb) -> None:
     )
 
 
+def _use_own_taskbar_icon() -> None:
+    """Without this, Windows groups the app under Python and shows Python's icon."""
+    if sys.platform == "win32":
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("mindyourownbytes.app")
+
+
 def main():
+    _use_own_taskbar_icon()
     app = QApplication(sys.argv)
     app.setApplicationName("mindyourownbytes")
     app.setOrganizationName("mindyourownbytes")
-    app.setFont(QFont("Segoe UI", 10))
+    app.setWindowIcon(icons.app_icon())
+    theme.configure_application(app)
     sys.excepthook = _show_unexpected_error
     window = MainWindow()
     window.show()

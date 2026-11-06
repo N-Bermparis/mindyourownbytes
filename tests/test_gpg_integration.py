@@ -7,7 +7,14 @@ import time
 import unittest
 from pathlib import Path
 
-from mindyourownbytes.core import SourceItem, collect_files, gpg_version, list_public_keys, process_items
+from mindyourownbytes.core import (
+    SourceItem,
+    collect_files,
+    gpg_version,
+    list_public_keys,
+    peek_protection,
+    process_items,
+)
 from tests.support import GpgTestCase
 
 PASSPHRASE = "correct horse battery staple"
@@ -115,6 +122,23 @@ class PassphraseRoundTripTests(IntegrationCase):
                               "--output", str(out), "--decrypt", str(encrypted))
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(out.read_bytes(), b"readable forever")
+
+
+class PeekProtectionTests(IntegrationCase):
+    """Only used to pre-select an option, but it should read real files correctly."""
+
+    def test_recognizes_a_passphrase_file(self):
+        self.assertEqual(peek_protection(self.encrypt(self.write("a.txt"))), "passphrase")
+
+    def test_recognizes_a_public_key_file(self):
+        fingerprint = self.generate_key()
+        encrypted = self.job([self.item(self.write("a.txt"))], "exports", "encrypt", "public-key", fingerprint)
+        self.assertEqual(peek_protection(encrypted.outputs[0]), "key")
+
+    def test_anything_else_is_unknown(self):
+        self.assertIsNone(peek_protection(self.write("text.gpg", b"plain text")))
+        self.assertIsNone(peek_protection(self.write("empty.gpg", b"")))
+        self.assertIsNone(peek_protection(self.root / "missing.gpg"))
 
 
 class WrongSecretTests(IntegrationCase):

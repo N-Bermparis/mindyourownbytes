@@ -11,7 +11,7 @@ if errorlevel 1 goto :error
 rem One folder rather than --onefile: nothing unpacks to a temp directory at each
 rem launch, antivirus raises fewer false alarms, and each bundled library stays
 rem visible and replaceable.
-".venv\Scripts\python.exe" -m PyInstaller --noconfirm --clean --onedir --windowed --name "mindyourownbytes" --paths . --add-data "mindyourownbytes\styles.qss;mindyourownbytes" mindyourownbytes\__main__.py
+".venv\Scripts\python.exe" -m PyInstaller --noconfirm --clean --onedir --windowed --name "mindyourownbytes" --icon "packaging\app.ico" --paths . --add-data "mindyourownbytes\styles.qss;mindyourownbytes" mindyourownbytes\__main__.py
 if errorlevel 1 goto :error
 echo.
 echo The application is in dist\mindyourownbytes\

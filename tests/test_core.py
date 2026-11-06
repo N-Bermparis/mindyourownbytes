@@ -13,6 +13,7 @@ from mindyourownbytes.core import (
     collect_files,
     encode_passphrase,
     find_gpg,
+    find_kleopatra,
     gpg_version,
     is_link_or_junction,
     looks_cloud_synced,
@@ -147,6 +148,16 @@ class GpgDiscoveryTests(TempDirCase):
         with patch.dict(os.environ, environment):
             os.environ.pop("NoDefaultCurrentDirectoryInExePath", None)
             self.assertIsNone(find_gpg())
+
+    def test_never_runs_a_kleopatra_planted_in_the_current_directory(self):
+        planted = self.root / ("kleopatra.exe" if os.name == "nt" else "kleopatra")
+        planted.write_bytes(b"not really kleopatra")
+        os.chdir(self.root)
+        self.addCleanup(os.chdir, self.root.parent)
+        environment = {"PATH": f"{os.pathsep}.{os.pathsep}relative", "ProgramFiles": "", "ProgramW6432": "",
+                       "ProgramFiles(x86)": "", "LOCALAPPDATA": ""}
+        with patch.dict(os.environ, environment):
+            self.assertIsNone(find_kleopatra())
 
     def test_skips_git_for_windows_bundled_gpg(self):
         bundled = self.root / "Git" / "usr" / "bin"
