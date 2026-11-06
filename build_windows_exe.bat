@@ -6,11 +6,16 @@ if not exist ".venv\Scripts\python.exe" (
   pause
   exit /b 1
 )
-".venv\Scripts\python.exe" -m pip install pyinstaller
+".venv\Scripts\python.exe" -m pip install --disable-pip-version-check "pyinstaller==6.22.3"
 if errorlevel 1 goto :error
-".venv\Scripts\python.exe" -m PyInstaller --noconfirm --clean --onefile --windowed --name "mindyourownbytes" --add-data "styles.qss;." main.py
+rem One folder rather than --onefile: nothing unpacks to a temp directory at each
+rem launch, antivirus raises fewer false alarms, and each bundled library stays
+rem visible and replaceable.
+".venv\Scripts\python.exe" -m PyInstaller --noconfirm --clean --onedir --windowed --name "mindyourownbytes" --paths . --add-data "mindyourownbytes\styles.qss;mindyourownbytes" mindyourownbytes\__main__.py
 if errorlevel 1 goto :error
-echo Your executable is in the dist folder.
+echo.
+echo The application is in dist\mindyourownbytes\
+echo This build is unsigned, and it is not a security review.
 echo Gpg4win must still be installed on the destination computer.
 pause
 exit /b 0

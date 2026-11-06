@@ -15,13 +15,14 @@ dist/
 *.spec
 *.egg-info/
 
-# Local encrypted exports and recovered plaintext
+# Local encrypted exports, recovered plaintext, and in-progress files
 Encrypted Exports/
 Restored Files/
 vault_output/
 *.gpg
 *.pgp
 *.age
+*.partial
 
 # Secrets, keys, credentials, local databases
 .env

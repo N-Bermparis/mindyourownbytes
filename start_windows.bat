@@ -6,4 +6,4 @@ if not exist ".venv\Scripts\pythonw.exe" (
   pause
   exit /b 1
 )
-start "mindyourownbytes" ".venv\Scripts\pythonw.exe" "%~dp0main.py"
+start "mindyourownbytes" ".venv\Scripts\pythonw.exe" -m mindyourownbytes
