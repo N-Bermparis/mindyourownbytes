@@ -80,11 +80,13 @@ kernel32.OpenProcess.restype = wintypes.HANDLE
 kernel32.QueryFullProcessImageNameW.argtypes = [
     wintypes.HANDLE, wintypes.DWORD, wintypes.LPWSTR, ctypes.POINTER(wintypes.DWORD),
 ]
+user32.PostMessageW.argtypes = [wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM]
 user32.SendMessageW.argtypes = [wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPCWSTR]
 user32.SendMessageW.restype = ctypes.c_ssize_t
 _ENUM_WINDOWS = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
 _SYNCHRONIZE = 0x00100000
 _PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+_WM_CLOSE = 0x0010
 _WM_SETTEXT = 0x000C
 _BM_CLICK = 0x00F5
 
@@ -159,10 +161,27 @@ def _controls(window: int) -> list[tuple[int, str, str]]:
     return found
 
 
-def _process_path(window: int) -> str:
+def _visible_windows() -> list[int]:
+    found = []
+
+    @_ENUM_WINDOWS
+    def visit(window, _parameter):
+        if user32.IsWindowVisible(window):
+            found.append(window)
+        return True
+
+    user32.EnumWindows(visit, 0)
+    return found
+
+
+def _process_id(window: int) -> int:
     process_id = wintypes.DWORD()
     user32.GetWindowThreadProcessId(window, ctypes.byref(process_id))
-    process = kernel32.OpenProcess(_PROCESS_QUERY_LIMITED_INFORMATION, False, process_id.value)
+    return process_id.value
+
+
+def _process_path(window: int) -> str:
+    process = kernel32.OpenProcess(_PROCESS_QUERY_LIMITED_INFORMATION, False, _process_id(window))
     if not process:
         return ""
     path = ctypes.create_unicode_buffer(32768)
@@ -174,16 +193,8 @@ def _process_path(window: int) -> str:
 
 def _passphrase_windows(program: Path) -> list[int]:
     """Only this exact copy's windows, so that nothing else on the computer gets touched."""
-    found = []
-
-    @_ENUM_WINDOWS
-    def visit(window, _parameter):
-        if user32.IsWindowVisible(window) and os.path.normcase(_process_path(window)) == os.path.normcase(program):
-            found.append(window)
-        return True
-
-    user32.EnumWindows(visit, 0)
-    return found
+    return [window for window in _visible_windows()
+            if os.path.normcase(_process_path(window)) == os.path.normcase(program)]
 
 
 def _run_answering_prompts(command: list[str], program: Path, environment: dict[str, str],
@@ -293,6 +304,14 @@ def is_in_use(path: Path) -> bool:
         return True
 
 
+def stops_being_used(path: Path) -> bool:
+    for _attempt in range(40):
+        if not is_in_use(path):
+            return True
+        time.sleep(0.25)
+    return False
+
+
 def start_included_agent(target: Path, environment: dict[str, str]) -> Path:
     agent = target / "gnupg" / "bin" / "gpg-agent.exe"
     subprocess.run([str(target / "gnupg" / "bin" / "gpgconf.exe"), "--launch", "gpg-agent"],
@@ -355,9 +374,17 @@ def check_opening_and_closing(target: Path, environment: dict[str, str], log: Pa
         removed = uninstall(target, environment, log)
         ensure(not removed and (target / "mindyourownbytes.exe").is_file() and installed_entry(),
                "the uninstaller won't remove the app while it's open")
+
+        agent = start_included_agent(target, environment)
+        for visible in _visible_windows():
+            if _process_id(visible) == window.pid:
+                user32.PostMessageW(visible, _WM_CLOSE, 0, 0)
+        ensure(window.wait(timeout=30) == 0, "the app closes cleanly")
+        ensure(stops_being_used(agent), "closing the app stops the included GnuPG")
     finally:
-        window.kill()
-        window.wait(timeout=30)
+        if window.poll() is None:
+            window.kill()
+            window.wait(timeout=30)
 
 
 def check_installer(setup: Path, portable: Path, scratch: Path, environment: dict[str, str], version: str) -> None:
@@ -390,7 +417,7 @@ def check_installer(setup: Path, portable: Path, scratch: Path, environment: dic
         # Installing over the top, with the included GnuPG still running from its folder.
         agent = start_included_agent(target, environment)
         install(setup, target, environment, log)
-        ensure(not is_in_use(agent), "upgrading stops the included GnuPG first")
+        ensure(stops_being_used(agent), "upgrading stops the included GnuPG first")
         self_test(target / "mindyourownbytes.exe", environment, "upgraded", version)
 
         check_opening_and_closing(target, environment, uninstall_log)
@@ -420,12 +447,15 @@ def main() -> None:
     check_checksums()
     with tempfile.TemporaryDirectory(prefix="myob-check-", ignore_cleanup_errors=True) as temporary:
         scratch = Path(temporary).resolve()
-        # Looks like a computer without Gpg4win, and keeps GnuPG away from any real keys on this one.
+        # Looks like a computer without Gpg4win, and keeps GnuPG away from any real keys on this
+        # one. PATH matters too: Windows would load a DLL missing from the download from there.
         (scratch / "gnupg-home").mkdir()
         (scratch / "no-programs").mkdir()
+        windows = os.environ["SYSTEMROOT"]
         environment = {
             **os.environ,
             "GNUPGHOME": str(scratch / "gnupg-home"),
+            "PATH": f"{windows}\\System32;{windows}",
             "ProgramFiles": str(scratch / "no-programs"),
             "ProgramW6432": str(scratch / "no-programs"),
             "ProgramFiles(x86)": str(scratch / "no-programs"),

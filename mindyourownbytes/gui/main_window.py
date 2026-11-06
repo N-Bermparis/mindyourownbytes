@@ -55,6 +55,7 @@ from mindyourownbytes.core import (
     looks_cloud_synced,
     peek_protection,
     process_items,
+    stop_bundled_gnupg,
 )
 from mindyourownbytes.gui import icons, theme
 from mindyourownbytes.gui.dialogs import PassphraseDialog, ProtectionDialog
@@ -1308,6 +1309,7 @@ class MainWindow(QMainWindow):
             self._thread.wait(3000)
         self.vault_page.clipboard.clear()
         self.vault.lock()
+        stop_bundled_gnupg(self.gpg)
         event.accept()
 
 

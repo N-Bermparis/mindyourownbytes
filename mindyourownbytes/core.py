@@ -8,6 +8,7 @@ tested without a display.
 
 from __future__ import annotations
 
+import contextlib
 import os
 import re
 import shutil
@@ -154,9 +155,11 @@ def find_gpg() -> str | None:
     standard install locations come first for the same reason, and because
     someone's keys and Kleopatra already work with the GnuPG they installed.
     After those comes the copy in the Windows download, ahead of PATH, so that a
-    stray PATH entry can't replace it.
+    stray PATH entry can't replace it. An installed GnuPG that is broken or too old
+    to use must not hide that working copy.
     """
     if os.name == "nt":
+        bundled = bundled_gpg()
         roots = [os.environ.get(name, "") for name in
                  ("ProgramFiles", "ProgramW6432", "ProgramFiles(x86)", "LOCALAPPDATA")]
         subpaths = (
@@ -166,9 +169,8 @@ def find_gpg() -> str | None:
         for root in filter(None, roots):
             for subpath in subpaths:
                 candidate = Path(root) / subpath
-                if candidate.is_file():
+                if candidate.is_file() and (bundled is None or is_valid_gpg(str(candidate))):
                     return str(candidate)
-        bundled = bundled_gpg()
         if bundled:
             return bundled
     names = ("gpg.exe",) if os.name == "nt" else ("gpg",)
@@ -178,6 +180,21 @@ def find_gpg() -> str | None:
             if candidate.is_file() and not _is_git_bundled(candidate):
                 return str(candidate)
     return None
+
+
+def stop_bundled_gnupg(binary: str) -> None:
+    """Stop the background helpers of the copy of GnuPG inside the Windows download.
+
+    They would otherwise outlive the app and keep its files locked, so a portable copy
+    couldn't be deleted, or its USB stick ejected. A GnuPG installed separately is left
+    alone, because other programs, such as Kleopatra, rely on it.
+    """
+    if binary != bundled_gpg():
+        return
+    # The app is closing, and a failure here isn't worth interrupting that for.
+    with contextlib.suppress(OSError, subprocess.SubprocessError):
+        subprocess.run([str(Path(binary).with_name("gpgconf.exe")), "--kill", "all"], capture_output=True,
+                       timeout=15, check=False, creationflags=windows_flags())
 
 
 def find_kleopatra() -> str | None:

@@ -212,7 +212,9 @@ file by building it themselves. Code signing and reproducible builds are on the
 carries g10 Code's signature, which you can see under its Properties. Files that reach
 the network (`dirmngr`, `gpg-wks-client`, `libntbtls`) are left out, as are translations,
 and CI fails if any of them, or Qt's or Python's network code, reappear. A GnuPG you
-installed yourself takes priority.
+installed yourself takes priority, unless it's broken or too old to use. When the app
+closes, it stops the included GnuPG's background helpers, which also clears any private
+key passphrase that gpg-agent had remembered.
 
 **Updates are manual.** The app never connects to anything, so it can't tell you when
 there's a new version, and the included GnuPG only updates when the app does. A security

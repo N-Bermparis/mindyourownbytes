@@ -65,6 +65,13 @@ class WithoutGnuPGTests(unittest.TestCase):
         self.assertEqual(window.operation, "restore")
         self.assertIs(window.pages.currentWidget(), window.transfer_page)
 
+    def test_closing_the_window_stops_the_included_gnupg(self):
+        window = MainWindow(self.settings, self.folder / "vault.gpg")
+        window.gpg = "included-gpg"
+        with patch.object(main_window, "stop_bundled_gnupg") as stop:
+            window.close()
+        stop.assert_called_once_with("included-gpg")
+
     def test_about_says_when_gnupg_came_with_the_app(self):
         window = MainWindow(self.settings, self.folder / "vault.gpg")
         self.addCleanup(window.close)
