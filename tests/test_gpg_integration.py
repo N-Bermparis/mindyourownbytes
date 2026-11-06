@@ -103,7 +103,9 @@ class PassphraseRoundTripTests(IntegrationCase):
         self.assertIn("count 65011712", packets)
         # Passphrase mode promises the most widely readable format. If a future
         # GnuPG changes its default, this should fail so the promise gets revisited.
-        self.assertIn("mdc_method: 2", packets, "expected the long-established RFC 4880 format")
+        # (Older GnuPG prints "mdc_method: 2" and newer prints "mdc: 2" for the same packet.)
+        self.assertIn(":encrypted data packet:", packets, "expected the long-established RFC 4880 format")
+        self.assertRegex(packets, r"mdc(_method)?: 2", "expected an MDC integrity check")
 
     def test_plain_gpg_can_decrypt_with_no_help_from_this_app(self):
         # The project's core promise: no lock-in.
