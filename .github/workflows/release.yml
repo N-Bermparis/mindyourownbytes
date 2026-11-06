@@ -1,8 +1,9 @@
 name: Windows download
 
-# Builds the installer and portable zip, then tests them the way people will use them.
-# A pull request stops there, with the files kept as an artifact for anyone to try.
-# A version tag also creates a draft release, which a person checks and then publishes.
+# Builds the installer and portable zip, then tests them the way people will use them, on
+# fresh machines that have only ever seen the finished files. A pull request stops there,
+# with the files kept as an artifact for anyone to try. A version tag also creates a draft
+# release, which a person checks and then publishes.
 
 on:
   push:
@@ -29,7 +30,7 @@ concurrency:
 
 jobs:
   build:
-    name: Build and test
+    name: Build
     # Named rather than windows-latest, so that a release doesn't change build machine by surprise.
     runs-on: windows-2025
     timeout-minutes: 30
@@ -54,18 +55,6 @@ jobs:
             python packaging/build_windows.py
           }
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-      - name: Test it the way people will use it
-        timeout-minutes: 10
-        env:
-          PYTHONUTF8: '1'
-        run: python packaging/check_windows_download.py
-      - name: Keep the test results and pictures
-        if: ${{ !cancelled() }}
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: check-results
-          path: dist/check
-          retention-days: 14
       - name: Keep the download
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
@@ -78,10 +67,42 @@ jobs:
           # The installer and zip are already compressed.
           compression-level: 0
 
+  test:
+    name: Test on ${{ matrix.os }}
+    needs: build
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        # 2025 is close to Windows 11. 2022 has Windows 10's interface and system libraries.
+        os: [windows-2025, windows-2022]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # Only to run the test script. The app brings its own Python, and nothing gets installed for it.
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: '3.14'
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: windows-download
+          path: dist
+      - name: Test it the way people will use it
+        run: python packaging/check_windows_download.py
+      - name: Keep the test results and pictures
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: check-results-${{ matrix.os }}
+          path: dist/check
+          retention-days: 14
+
   publish:
     name: Create a draft release
     if: ${{ github.ref_type == 'tag' }}
-    needs: build
+    needs: test
     # Only this job can write to the repository, and it runs nothing from the repository.
     runs-on: ubuntu-latest
     timeout-minutes: 10

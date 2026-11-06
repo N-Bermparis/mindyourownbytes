@@ -12,6 +12,8 @@ release pull request. Passing this list is not a security certification.
 - [ ] Add a `main` ruleset requiring a pull request and passing CI, with no force pushes.
 - [ ] Enable secret scanning, push protection, and Dependabot alerts.
 - [ ] Upload `docs/assets/social-preview.png` as the social preview (Settings → General → Social preview).
+- [ ] After the first public release, confirm the workflow's attestation step ran, and that
+      `gh attestation verify FILE --repo N-Bermparis/mindyourownbytes` works. It can't run on a private repository.
 
 ## Functional checks with real Pinentry, on Windows
 
@@ -43,7 +45,7 @@ release pull request. Passing this list is not a security certification.
 
   The **Windows download** workflow builds from the tag, tests the result, and creates a **draft**
   pre-release with the files, checksums, and warnings already in place. Nothing is public yet.
-- [ ] In the workflow's `check-results` artifact, look at each `window.png`.
+- [ ] In the workflow's `check-results-*` artifacts, look at the pictures of the window.
 - [ ] Download the installer from the draft onto a clean Windows computer or
       [Windows Sandbox](https://learn.microsoft.com/windows/security/application-security/application-isolation/windows-sandbox/windows-sandbox-overview),
       and go through the warning, the install, an encrypt and restore, and the uninstall.
@@ -57,7 +59,8 @@ release pull request. Passing this list is not a security certification.
 
 The Windows download includes GnuPG, so **a security fix in GnuPG means a new release of this app**.
 Follow the [gnupg-announce](https://lists.gnupg.org/mailman/listinfo/gnupg-announce) list, and release
-promptly when a fix matters to how this app uses GnuPG.
+promptly when a fix matters to how this app uses GnuPG. As a backstop, the **GnuPG update check** workflow
+runs weekly, and fails as soon as there's a newer official build.
 
 1. Find the new Windows installer and its source package on the
    [GnuPG download page](https://gnupg.org/download/).

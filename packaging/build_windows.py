@@ -63,6 +63,8 @@ INNO_SETUP = Download(
     "8a5a6711c3766a6e5fb74f280ba0e3551e719ce94538d901fdbd1f8f9920b3f0",
 )
 
+GNUPG_LISTING = "https://gnupg.org/ftp/gcrypt/binary/"
+
 #: Left out of the app's copy of GnuPG: the only parts that reach the network, which this
 #: app never needs, and the installer's temporary copies of files.
 GNUPG_LEFT_OUT = ("dirmngr*", "gpg-wks-client.exe", "libntbtls-0.dll", "*.tmp")
@@ -120,6 +122,27 @@ def install_gnupg(target: Path) -> None:
     shutil.copytree(package / "bin", target / "bin", ignore=left_out)
     shutil.copytree(package / "share" / "gnupg", target / "share" / "gnupg")
     shutil.copy2(package / "README.txt", target / "README.txt")
+
+
+def read_gnupg_listing() -> str:
+    # The URL is the constant above, so it's always https.
+    with urllib.request.urlopen(GNUPG_LISTING, timeout=60) as response:  # noqa: S310
+        return response.read().decode("utf-8", errors="replace")
+
+
+def newest_gnupg_build(listing: str) -> str:
+    names = set(re.findall(r"gnupg-w32-\d+\.\d+\.\d+_\d+\.exe", listing))
+    if not names:
+        sys.exit(f"Found no Windows builds of GnuPG at {GNUPG_LISTING}. Has the page changed?")
+    return max(names, key=lambda name: [int(number) for number in re.findall(r"\d+", name)])
+
+
+def check_gnupg_is_current() -> None:
+    newest = newest_gnupg_build(read_gnupg_listing())
+    if newest != GNUPG.name:
+        sys.exit(f"{newest} is out, but the download still includes {GNUPG.name}. "
+                 'Follow "Updating GnuPG" in docs/RELEASE_CHECKLIST.md.')
+    print(f"{GNUPG.name} is the newest Windows build of GnuPG.")
 
 
 def app_version() -> str:
@@ -235,8 +258,13 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Build the Windows download.")
     parser.add_argument("--gnupg-only", type=Path, metavar="FOLDER",
                         help="only unpack the GnuPG that ships into FOLDER, and print its bin folder")
+    parser.add_argument("--check-gnupg", action="store_true",
+                        help="only check that the included GnuPG is the newest official build")
     parser.add_argument("--tag", help="the git tag being released, which must match the app's version")
     args = parser.parse_args()
+    if args.check_gnupg:
+        check_gnupg_is_current()
+        return
     if sys.platform != "win32":
         sys.exit("The Windows download can only be built on Windows.")
 

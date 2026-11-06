@@ -3,7 +3,7 @@
 ``mindyourownbytes.exe --self-test FOLDER`` opens the real window and does a real encrypt
 and restore in a throwaway GnuPG home. The release workflow runs it on the finished
 download. A windowed app has no console, so the results go to FOLDER/self-test.json, with
-a picture of the window beside it, and the exit code says whether everything passed.
+pictures of the window beside it, and the exit code says whether everything passed.
 """
 
 from __future__ import annotations
@@ -17,7 +17,6 @@ import tempfile
 import threading
 import traceback
 from pathlib import Path
-from urllib.parse import unquote
 
 from PySide6 import __version__ as pyside_version
 from PySide6.QtCore import QSettings
@@ -25,6 +24,7 @@ from PySide6.QtCore import QSettings
 from mindyourownbytes import __version__, core
 from mindyourownbytes.gui import icons
 from mindyourownbytes.gui.main_window import MainWindow, create_application
+from mindyourownbytes.vault import Vault, WrongMasterPassphrase, generate_passphrase
 
 #: Not a secret: it only ever protects the test data below.
 PASSPHRASE = "self-test passphrase, not a secret"  # noqa: S105
@@ -42,7 +42,7 @@ class _Checks:
         return bool(passed)
 
 
-def _check_interface(checks: _Checks, report: dict, folder: Path, scratch: Path) -> None:
+def _check_interface(checks: _Checks, report: dict, folder: Path, scratch: Path, source: Path) -> None:
     app = create_application()
     style = app.style().objectName()
     report.update(platform=app.platformName(), style=style)
@@ -59,6 +59,10 @@ def _check_interface(checks: _Checks, report: dict, folder: Path, scratch: Path)
     picture = window.grab()
     checks.record("The window draws", not picture.isNull() and picture.save(str(folder / "window.png")))
     checks.record("The window sees GnuPG", "ready" in window.gpg_status.text(), window.gpg_status.text())
+    window.add_paths([str(source)])
+    app.processEvents()
+    checks.record("Added files appear in the list", [item.source.name for item in window.items] == [source.name])
+    window.grab().save(str(folder / "window-with-a-file.png"))
     window.close()
     app.processEvents()
 
@@ -110,18 +114,27 @@ def _check_key_round_trip(checks: _Checks, gpg: str, source: Path, scratch: Path
     checks.record("Restores with the key", _is_restored(restored))
 
 
-def _check_passphrase_prompt(checks: _Checks, gpgconf: Path) -> None:
-    """The window that asks for a passphrase can't be clicked from here, but it can be located."""
-    components = subprocess.run(
-        [str(gpgconf), "--list-components"], capture_output=True, timeout=60, check=False,
-        creationflags=core.windows_flags(),
-    ).stdout.decode(errors="replace")
-    fields = next((line.split(":") for line in components.splitlines() if line.startswith("pinentry:")), [])
-    program = unquote(fields[2]) if len(fields) > 2 else ""
-    checks.record("GnuPG can find its passphrase window", program and Path(program).is_file(), program)
+def _check_vault(checks: _Checks, gpg: str, scratch: Path) -> None:
+    """This also covers Python's random numbers and hashing, which the download's trimming could break."""
+    path = scratch / "vault" / "vault.gpg"
+    path.parent.mkdir()
+    saved = generate_passphrase()
+    vault = Vault(gpg, path)
+    vault.create(PASSPHRASE)
+    vault.add("Self test", saved)
+    vault.lock()
+    reopened = Vault(gpg, path)
+    try:
+        reopened.unlock("not the master passphrase")
+        refused = False
+    except WrongMasterPassphrase:
+        refused = True
+    checks.record("The vault refuses a wrong master passphrase", refused)
+    reopened.unlock(PASSPHRASE)
+    checks.record("Saved passphrases survive being locked", [entry.passphrase for entry in reopened.entries] == [saved])
 
 
-def _check_gnupg(checks: _Checks, report: dict, scratch: Path) -> None:
+def _check_gnupg(checks: _Checks, report: dict, source: Path, scratch: Path) -> None:
     gpg = core.find_gpg()
     included = gpg is not None and gpg == core.bundled_gpg()
     version = core.gpg_version(gpg) if gpg else None
@@ -129,24 +142,17 @@ def _check_gnupg(checks: _Checks, report: dict, scratch: Path) -> None:
     if not checks.record("Finds a working GnuPG", gpg and core.is_valid_gpg(gpg), gpg):
         return
 
-    source = scratch / "originals" / FILE_NAME
-    source.parent.mkdir()
-    source.write_bytes(CONTENT)
     _check_passphrase_round_trip(checks, gpg, source, scratch)
     _check_key_round_trip(checks, gpg, source, scratch)
-    if included:
-        _check_passphrase_prompt(checks, _gpgconf(gpg))
-
-
-def _gpgconf(gpg: str) -> Path:
-    return Path(gpg).with_name("gpgconf.exe" if os.name == "nt" else "gpgconf")
+    _check_vault(checks, gpg, scratch)
 
 
 def _stop_gnupg() -> None:
     """Whatever GnuPG started would otherwise keep its files open, and outlive this process."""
     gpg = core.find_gpg()
     if gpg:
-        subprocess.run([str(_gpgconf(gpg)), "--kill", "all"], capture_output=True, timeout=60, check=False,
+        gpgconf = Path(gpg).with_name("gpgconf.exe" if os.name == "nt" else "gpgconf")
+        subprocess.run([str(gpgconf), "--kill", "all"], capture_output=True, timeout=60, check=False,
                        creationflags=core.windows_flags())
 
 
@@ -168,9 +174,12 @@ def run(folder: Path) -> int:
             home = scratch / "gnupg-home"
             home.mkdir(mode=0o700)
             os.environ["GNUPGHOME"] = str(home)
+            source = scratch / "originals" / FILE_NAME
+            source.parent.mkdir()
+            source.write_bytes(CONTENT)
             try:
-                _check_interface(checks, report, folder, scratch)
-                _check_gnupg(checks, report, scratch)
+                _check_interface(checks, report, folder, scratch, source)
+                _check_gnupg(checks, report, source, scratch)
             finally:
                 _stop_gnupg()
     except Exception:

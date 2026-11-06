@@ -36,8 +36,11 @@ class SelfTestTests(unittest.TestCase):
         self.assertEqual([check for check in report["checks"] if not check["passed"]], [])
         self.assertEqual(code, 0)
         self.assertGreater((self.folder / "window.png").stat().st_size, 0)
+        self.assertGreater((self.folder / "window-with-a-file.png").stat().st_size, 0)
         names = {check["name"] for check in report["checks"]}
-        self.assertLessEqual({"Restores with a passphrase", "Restores with the key", "The window draws"}, names)
+        expected = {"Restores with a passphrase", "Restores with the key", "The window draws",
+                    "Added files appear in the list", "Saved passphrases survive being locked"}
+        self.assertLessEqual(expected, names)
 
     def test_fails_without_gnupg(self):
         code, report = self.run_self_test(PATH=str(self.folder), ProgramFiles="", ProgramW6432="",

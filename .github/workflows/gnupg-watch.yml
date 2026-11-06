@@ -1,0 +1,27 @@
+name: GnuPG update check
+
+# The Windows download includes GnuPG, which Dependabot can't watch. This fails as soon as
+# there's a newer official build, and GitHub emails the maintainer about a failed run. To
+# clear it, follow "Updating GnuPG" in docs/RELEASE_CHECKLIST.md.
+
+on:
+  schedule:
+    - cron: '17 6 * * 1'
+  pull_request:
+    paths:
+      - .github/workflows/gnupg-watch.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: Is the included GnuPG the newest?
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: python3 packaging/build_windows.py --check-gnupg
