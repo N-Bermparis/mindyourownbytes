@@ -1,0 +1,13 @@
+version: 2
+updates:
+  - package-ecosystem: pip
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      qt:
+        patterns: ["PySide6*", "shiboken6"]
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly

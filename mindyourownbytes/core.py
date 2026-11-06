@@ -1,0 +1,660 @@
+"""GnuPG engine for mindyourownbytes: find gpg, expand inputs, encrypt, restore.
+
+Every cryptographic operation is delegated to an installed GnuPG executable.
+This module implements no cipher, KDF, or file format of its own, and it makes
+no network calls. Keeping it free of Qt lets the security-relevant logic be
+tested without a display.
+"""
+
+from __future__ import annotations
+
+import os
+import re
+import shutil
+import subprocess
+import threading
+import uuid
+from collections.abc import Callable, Iterable, Sequence
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Literal, NamedTuple
+
+Operation = Literal["encrypt", "restore"]
+Method = Literal["password", "public-key"]
+
+ENCRYPTED_SUFFIXES = (".gpg", ".pgp")
+
+#: Needed for --no-symkey-cache (2.2.7) and hard failure on missing MDC (2.2.8).
+MIN_GPG_VERSION = (2, 2, 8)
+
+#: Applied to every gpg call. --no-symkey-cache stops gpg-agent keeping a
+#: passphrase after use: without it, a restore right after encrypting succeeds
+#: with no prompt at all. The two --no-auto-key options keep a "local only"
+#: promise even if the user's gpg.conf enables keyserver lookups.
+_BASE_ARGS = (
+    "--batch", "--no-tty", "--status-fd", "2", "--no-symkey-cache",
+    "--no-auto-key-retrieve", "--no-auto-key-locate",
+)
+
+#: Pinned because the implicit defaults are unsafe to rely on: they vary by
+#: GnuPG version and silently fall back to 65,536 iterations when gpg-agent
+#: cannot be reached. These values are the OpenPGP maximum and stay compatible
+#: with every OpenPGP implementation. See docs/THREAT_MODEL.md.
+SYMMETRIC_ARGS = (
+    "--symmetric", "--cipher-algo", "AES256", "--s2k-mode", "3",
+    "--s2k-digest-algo", "SHA512", "--s2k-count", "65011712",
+)
+
+#: Hands gpg the passphrase over stdin, in place of asking through Pinentry.
+_PIPE_ARGS = ("--pinentry-mode", "loopback", "--passphrase-fd", "0")
+
+#: Windows sync clients and macOS keep these exact folder names.
+_SYNC_FOLDER_NAMES = {
+    "box", "box sync", "cloudstorage", "dropbox", "google drive", "googledrive",
+    "icedrive", "icloud drive", "iclouddrive", "internxt", "koofr", "mega",
+    "megasync", "mobile documents", "my drive", "nextcloud", "owncloud",
+    "pcloud", "pcloud drive", "proton drive", "protondrive", "seadrive",
+    "seafile", "sync", "syncthing", "tresorit", "yandex.disk",
+}
+_GPG_ERR_BAD_PASSPHRASE = 11
+_GPG_ERR_CANCELED = 99
+
+#: Sync clients often append an account name, e.g. "OneDrive - Contoso".
+_SYNC_FOLDER_PREFIXES = ("onedrive", "dropbox (", "nextcloud-", "google drive (")
+
+
+@dataclass(frozen=True)
+class SourceItem:
+    source: Path
+    relative: Path
+    size: int
+
+
+@dataclass(frozen=True)
+class JobResult:
+    succeeded: int
+    failed: int
+    cancelled: bool
+    outputs: tuple[Path, ...]
+    #: Staging files that could not be deleted. On restore these are plaintext.
+    leftovers: tuple[Path, ...] = ()
+
+
+class PublicKey(NamedTuple):
+    fingerprint: str
+    uid: str
+    #: False means the matching private key is not on this computer, so the user
+    #: could not decrypt what they encrypt to this key.
+    has_secret: bool
+
+
+class CollectResult(NamedTuple):
+    items: list[SourceItem]
+    #: Links, duplicates, and files of the wrong type: deliberately left out.
+    skipped: int
+    #: Paths that could not be read. Unlike ``skipped``, this means content the
+    #: user asked for is missing, so it must be shown to them.
+    unreadable: tuple[Path, ...]
+
+
+class Cancelled(Exception):
+    pass
+
+
+class GpgFailure(Exception):
+    """gpg ran but the operation failed. The message is safe to show the user.
+
+    ``wrong_secret`` means the file looks fine and the passphrase did not open it.
+    """
+
+    def __init__(self, message: str, wrong_secret: bool = False) -> None:
+        super().__init__(message)
+        self.wrong_secret = wrong_secret
+
+
+def windows_flags() -> int:
+    return getattr(subprocess, "CREATE_NO_WINDOW", 0)
+
+
+def _is_git_bundled(path: Path) -> bool:
+    """Git for Windows ships its own gpg, with a keyring separate from Kleopatra's."""
+    parts = [part.lower() for part in path.parts]
+    return "git" in parts and "usr" in parts
+
+
+def _absolute_path_entries() -> list[Path]:
+    """PATH entries that are absolute.
+
+    Empty and relative entries resolve against the current directory, which is
+    how a planted gpg.exe in, say, Downloads would get executed.
+    """
+    entries = []
+    for entry in os.environ.get("PATH", "").split(os.pathsep):
+        path = Path(entry.strip().strip('"'))
+        if entry.strip() and path.is_absolute():
+            entries.append(path)
+    return entries
+
+
+def find_gpg() -> str | None:
+    """Locate GnuPG without ever searching the current directory.
+
+    ``shutil.which`` is deliberately not used: on Windows it searches the
+    current directory first, so a gpg.exe dropped next to the app would be
+    executed at startup and would then see every file and passphrase. The
+    standard install locations come first for the same reason.
+    """
+    if os.name == "nt":
+        roots = [os.environ.get(name, "") for name in
+                 ("ProgramFiles", "ProgramW6432", "ProgramFiles(x86)", "LOCALAPPDATA")]
+        subpaths = (
+            "GnuPG/bin/gpg.exe", "Gpg4win/bin/gpg.exe", "GnuPG/gpg.exe",
+            "Programs/GnuPG/bin/gpg.exe", "Programs/Gpg4win/bin/gpg.exe",
+        )
+        for root in filter(None, roots):
+            for subpath in subpaths:
+                candidate = Path(root) / subpath
+                if candidate.is_file():
+                    return str(candidate)
+    names = ("gpg.exe",) if os.name == "nt" else ("gpg",)
+    for directory in _absolute_path_entries():
+        for name in names:
+            candidate = directory / name
+            if candidate.is_file() and not _is_git_bundled(candidate):
+                return str(candidate)
+    return None
+
+
+def gpg_version(binary: str) -> tuple[int, ...] | None:
+    """Return the version of a GnuPG executable, or None if it isn't GnuPG."""
+    if not Path(binary).is_absolute():
+        return None
+    try:
+        result = subprocess.run(
+            [binary, "--version"], capture_output=True, encoding="utf-8",
+            errors="replace", timeout=8, check=False, creationflags=windows_flags(),
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    match = re.match(r"gpg \(GnuPG[^)]*\) (\d+)\.(\d+)\.(\d+)", result.stdout)
+    if result.returncode != 0 or not match:
+        return None
+    return tuple(int(part) for part in match.groups())
+
+
+def is_valid_gpg(binary: str) -> bool:
+    """Sanity check only. Running it does not prove a binary is trustworthy."""
+    version = gpg_version(binary)
+    return version is not None and version >= MIN_GPG_VERSION
+
+
+def is_link_or_junction(path: Path) -> bool:
+    """Detect links to elsewhere.
+
+    OneDrive's cloud placeholders are also reparse points, but they are ordinary
+    files that belong in a backup, and ``is_junction`` correctly leaves them alone.
+    """
+    return path.is_symlink() or path.is_junction()
+
+
+def _unescape_colon_field(value: str) -> str:
+    """Undo gpg's ``\\xHH`` escaping in --with-colons output."""
+    raw = re.sub(r"\\x([0-9a-fA-F]{2})", lambda m: chr(int(m.group(1), 16)), value)
+    try:
+        return raw.encode("latin-1").decode("utf-8")
+    except (UnicodeEncodeError, UnicodeDecodeError):
+        return raw
+
+
+def _list_keys(binary: str, command: str) -> str:
+    result = subprocess.run(
+        [binary, "--batch", "--with-colons", "--fingerprint", command],
+        capture_output=True, encoding="utf-8", errors="replace",
+        timeout=15, check=False, creationflags=windows_flags(),
+    )
+    return result.stdout if result.returncode == 0 else ""
+
+
+def _secret_fingerprints(binary: str) -> set[str]:
+    fingerprints: set[str] = set()
+    expecting_primary = False
+    for line in _list_keys(binary, "--list-secret-keys").splitlines():
+        fields = line.split(":")
+        if fields[0] == "sec":
+            expecting_primary = True
+        elif fields[0] == "fpr" and expecting_primary and len(fields) > 9:
+            fingerprints.add(fields[9])
+            expecting_primary = False
+    return fingerprints
+
+
+def list_public_keys(binary: str) -> list[PublicKey]:
+    """List keys usable for encryption, with the user's own keys first.
+
+    Field 12 of a ``pub`` record holds the capabilities. Uppercase letters mean
+    usable right now for the key as a whole, so an expired or revoked key has no
+    ``E``, and ``D`` marks a disabled key.
+    """
+    secret = _secret_fingerprints(binary)
+    keys: list[PublicKey] = []
+    current: dict[str, str] | None = None
+
+    def flush() -> None:
+        if current and current["fingerprint"] and current["usable"]:
+            keys.append(PublicKey(
+                current["fingerprint"], current["uid"] or "Unknown identity",
+                current["fingerprint"] in secret,
+            ))
+
+    for line in _list_keys(binary, "--list-keys").splitlines():
+        fields = line.split(":")
+        record = fields[0]
+        if record == "pub":
+            flush()
+            capabilities = fields[11] if len(fields) > 11 else ""
+            validity = fields[1] if len(fields) > 1 else ""
+            usable = "E" in capabilities and "D" not in capabilities and validity not in tuple("erdni")
+            current = {"fingerprint": "", "uid": "", "usable": "yes" if usable else ""}
+        elif current is not None and record == "fpr" and not current["fingerprint"]:
+            current["fingerprint"] = fields[9] if len(fields) > 9 else ""
+        elif current is not None and record == "uid" and not current["uid"]:
+            current["uid"] = _unescape_colon_field(fields[9]) if len(fields) > 9 else ""
+    flush()
+    return sorted(keys, key=lambda key: not key.has_secret)
+
+
+def looks_cloud_synced(path: str | Path) -> str | None:
+    """Return the folder name that suggests ``path`` is synced, or None.
+
+    A best-effort heuristic used only for warnings. It cannot see every sync
+    client, so the UI must not imply that a clean result means a folder is safe.
+    """
+    resolved = Path(path).expanduser().absolute()
+    for variable in ("OneDrive", "OneDriveConsumer", "OneDriveCommercial"):
+        root = os.environ.get(variable)
+        if root and Path(root) in (resolved, *resolved.parents):
+            return Path(root).name
+    for part in resolved.parts[1:]:
+        lowered = part.lower()
+        if lowered in _SYNC_FOLDER_NAMES or lowered.startswith(_SYNC_FOLDER_PREFIXES):
+            return part
+    return None
+
+
+def _check_root(path: Path, output_directory: Path) -> None:
+    if is_link_or_junction(path):
+        raise ValueError(f"Links or junctions are not supported: {path.name}")
+    if not path.exists():
+        raise ValueError(f"This path no longer exists: {path}")
+    if path.is_dir():
+        source = path.resolve()
+        destination = output_directory.resolve()
+        if destination == source or source in destination.parents:
+            raise ValueError("The output folder cannot be inside a selected input folder.")
+    elif not path.is_file():
+        raise ValueError(f"Not a regular file: {path}")
+
+
+def collect_files(paths: Iterable[str | Path], output_directory: Path,
+                  operation: Operation) -> CollectResult:
+    """Expand dropped files and folders. Links are skipped, never followed."""
+    collected: list[SourceItem] = []
+    seen: set[Path] = set()
+    unreadable: list[Path] = []
+    skipped = 0
+
+    def consider(path: Path, relative: Path) -> None:
+        nonlocal skipped
+        if is_link_or_junction(path) or not path.is_file():
+            skipped += 1
+            return
+        if operation == "restore" and path.suffix.lower() not in ENCRYPTED_SUFFIXES:
+            skipped += 1
+            return
+        try:
+            resolved = path.resolve()
+            size = path.stat().st_size
+        except OSError:
+            unreadable.append(path)
+            return
+        if resolved in seen:
+            skipped += 1
+            return
+        seen.add(resolved)
+        collected.append(SourceItem(resolved, relative, size))
+
+    def on_walk_error(error: OSError) -> None:
+        # os.walk ignores these by default, which would leave a subfolder out
+        # of a backup without anyone being told.
+        unreadable.append(Path(error.filename) if error.filename else Path("(unknown)"))
+
+    for raw in paths:
+        # abspath first: Path("..").name is "..", which would otherwise put
+        # outputs outside the chosen folder.
+        path = Path(os.path.abspath(Path(raw).expanduser()))
+        _check_root(path, output_directory)
+        if path.is_file():
+            consider(path, Path(path.name))
+            continue
+        for root, dirs, files in os.walk(path, topdown=True, followlinks=False, onerror=on_walk_error):
+            root_path = Path(root)
+            kept = []
+            for dirname in sorted(dirs):
+                if is_link_or_junction(root_path / dirname):
+                    skipped += 1
+                else:
+                    kept.append(dirname)
+            dirs[:] = kept
+            for filename in sorted(files):
+                candidate = root_path / filename
+                consider(candidate, Path(path.name) / candidate.relative_to(path))
+    return CollectResult(collected, skipped, tuple(unreadable))
+
+
+def output_relative(item: SourceItem, operation: Operation) -> Path:
+    relative = item.relative
+    if operation == "encrypt":
+        return relative.with_name(relative.name + ".gpg")
+    if relative.suffix.lower() not in ENCRYPTED_SUFFIXES:
+        raise ValueError("The restore input must have a .gpg or .pgp extension")
+    result = relative.with_suffix("")
+    if not result.name or result.name in (".", ".."):
+        raise ValueError("The encrypted file has no safe output filename")
+    return result
+
+
+def unique_target(path: Path) -> Path:
+    """Pick a free name, so earlier backups and restores are never overwritten.
+
+    The counter goes before the inner extension, so ``report.pdf.gpg`` becomes
+    ``report (2).pdf.gpg`` and later restores as ``report (2).pdf``. Placing it
+    last would produce ``report.pdf (2)``, which no application can open.
+    """
+    if not os.path.lexists(path):
+        return path
+    name = path.name
+    outer = ""
+    if name.lower().endswith(ENCRYPTED_SUFFIXES):
+        name, outer = name[:-4], name[-4:]
+    stem, inner = os.path.splitext(name)
+    for number in range(2, 10001):
+        candidate = path.with_name(f"{stem} ({number}){inner}{outer}")
+        if not os.path.lexists(candidate):
+            return candidate
+    raise RuntimeError("Too many backups with the same filename")
+
+
+def publish_no_overwrite(staged: Path, destination: Path) -> None:
+    """Publish a complete file without overwriting a pre-existing destination."""
+    try:
+        os.link(staged, destination)
+    except FileExistsError:
+        raise
+    except OSError:
+        if os.name == "nt":
+            # Windows rename fails when the target already exists and keeps
+            # publication atomic, even on filesystems without hardlinks.
+            os.rename(staged, destination)
+            return
+        # Non-NTFS drives may not permit hardlinks. Exclusive create prevents
+        # replacement; a failure removes only the newly created destination.
+        with destination.open("xb") as target:
+            try:
+                with staged.open("rb") as source:
+                    shutil.copyfileobj(source, target, length=1024 * 1024)
+            except BaseException:
+                target.close()
+                destination.unlink(missing_ok=True)
+                raise
+
+
+def encode_passphrase(passphrase: str) -> bytes:
+    """Encode a passphrase for --passphrase-fd, refusing what gpg would truncate.
+
+    gpg reads a single line, so ``abc\\ndef`` would silently encrypt with
+    ``abc``, and the user would be locked out when they later type the whole
+    thing. Encoding matches what Pinentry sends, so a file encrypted either way
+    can be opened the other way.
+    """
+    if not passphrase:
+        raise ValueError("The passphrase is empty.")
+    if any(character in passphrase for character in "\n\r\0"):
+        raise ValueError("Passphrases cannot contain line breaks or NUL characters.")
+    return passphrase.encode("utf-8")
+
+
+def run_gpg_pipe(binary: str, args: Sequence[str], secret: bytes, data: bytes = b"",
+                 timeout: float = 120) -> tuple[int, bytes, str]:
+    """Run gpg with a passphrase, and optional data, over stdin. Nothing touches disk.
+
+    The passphrase never goes in argv, where any local process could read it.
+    Prefixing it to the data on one pipe is a supported gpg idiom: --passphrase-fd
+    consumes exactly one line and leaves the rest for the message.
+    """
+    result = subprocess.run(
+        [binary, *_BASE_ARGS, *_PIPE_ARGS, *args], input=secret + b"\n" + data,
+        capture_output=True, timeout=timeout, check=False, creationflags=windows_flags(),
+    )
+    return result.returncode, result.stdout, result.stderr.decode("utf-8", errors="replace")
+
+
+def run_gpg(argv: list[str], cancel: threading.Event, secret: bytes | None = None) -> tuple[int, str]:
+    """Run gpg until it exits or ``cancel`` is set. Returns (exit code, stderr)."""
+    process = subprocess.Popen(
+        argv, stdin=subprocess.PIPE if secret is not None else subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, creationflags=windows_flags(),
+    )
+    pending = None if secret is None else secret + b"\n"
+    try:
+        while True:
+            if cancel.is_set():
+                process.terminate()
+                try:
+                    process.communicate(timeout=3)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    process.communicate()
+                raise Cancelled()
+            try:
+                _, stderr = process.communicate(input=pending, timeout=0.25)
+                return process.returncode, stderr.decode("utf-8", errors="replace")
+            except subprocess.TimeoutExpired:
+                # Retrying communicate() keeps any output read so far, but it
+                # may only be given the input once.
+                pending = None
+    finally:
+        if process.poll() is None:
+            process.kill()
+            process.communicate()
+
+
+def _status_lines(stderr: str) -> list[list[str]]:
+    return [line.split()[1:] for line in stderr.splitlines() if line.startswith("[GNUPG:] ")]
+
+
+def _last_diagnostic(stderr: str) -> str:
+    """The last human-readable line. gpg never echoes passphrases here."""
+    lines = [line.strip() for line in stderr.splitlines()
+             if line.strip() and not line.startswith("[GNUPG:] ")]
+    return lines[-1][:300] if lines else "No details"
+
+
+def describe_failure(stderr: str, operation: Operation = "restore") -> GpgFailure:
+    """Turn gpg's machine-readable status lines into one clear explanation.
+
+    The order matters, and it comes from measuring hundreds of corrupted files:
+    the same damage can surface as BADMDC, a zlib error, NODATA, or a low-level
+    filter message depending on where it falls. Status tokens are used because
+    gpg's human-readable text is translated.
+    """
+    lines = _status_lines(stderr)
+    statuses = {line[0] for line in lines if line}
+    # The low 16 bits of a libgpg-error code identify the error.
+    error_codes = {
+        int(line[-1]) & 0xFFFF for line in lines
+        if len(line) > 1 and line[0] in ("ERROR", "FAILURE") and line[-1].isdigit()
+    }
+    bad_passphrase = "BAD_PASSPHRASE" in statuses or _GPG_ERR_BAD_PASSPHRASE in error_codes
+    damaged = "This file is damaged, or it is not a valid encrypted file. Nothing was restored."
+    if _GPG_ERR_CANCELED in error_codes:
+        return GpgFailure("The passphrase prompt was cancelled.")
+    if "BADMDC" in statuses:
+        return GpgFailure("Integrity check failed: this file is damaged or was altered. Nothing was restored.")
+    if "BADSIG" in statuses:
+        return GpgFailure("This file's signature is invalid, so it was altered or forged. Nothing was restored.")
+    if "DECRYPTION_OKAY" in statuses and ("NO_PUBKEY" in statuses or "ERRSIG" in statuses):
+        # Common with files from other tools, such as Kleopatra's sign-and-encrypt.
+        # The file itself is fine, so saying "damaged" here would be false.
+        return GpgFailure("This file decrypted, but it is signed by a key you don't have, so the signature "
+                          "can't be checked. Import the signer's public key and try again.")
+    if "INV_RECP" in statuses:
+        return GpgFailure("GnuPG refused this key. It may be expired, revoked, or not yet certified in Kleopatra.")
+    if operation == "encrypt":
+        # A full disk, say. The rest of these only make sense when reading a file.
+        return GpgFailure(f"GnuPG reported an error: {_last_diagnostic(stderr)}")
+    if "PLAINTEXT" in statuses or "NODATA" in statuses:
+        return GpgFailure(damaged)
+    if "NO_SECKEY" in statuses and not bad_passphrase:
+        # gpg also says NO_SECKEY after a mistyped passphrase. Telling someone
+        # their key is missing when they only made a typo would cause real alarm.
+        return GpgFailure("The private key for this file is not on this computer.")
+    if "DECRYPTION_FAILED" in statuses or bad_passphrase:
+        return GpgFailure("Wrong passphrase, or this file was encrypted with a different secret.", wrong_secret=True)
+    if "BEGIN_DECRYPTION" in statuses or "NEED_PASSPHRASE_SYM" in statuses:
+        # gpg got as far as the encrypted data and then found it malformed.
+        return GpgFailure(damaged)
+    return GpgFailure(f"GnuPG reported an error: {_last_diagnostic(stderr)}")
+
+
+def _check_success(operation: Operation, code: int, stderr: str, staged: Path) -> None:
+    """Decide success from gpg's status lines rather than its exit code alone.
+
+    Exit code 0 is not enough. ``gpg --decrypt`` also "succeeds" on OpenPGP data
+    that was never encrypted, with no key or passphrase needed, so whoever holds
+    the storage could replace a backup with content of their choosing and it
+    would restore as if nothing had happened. DECRYPTION_OKAY proves that
+    decryption really took place.
+    """
+    if code != 0:
+        raise describe_failure(stderr, operation)
+    statuses = {line[0] for line in _status_lines(stderr) if line}
+    if operation == "encrypt":
+        if "END_ENCRYPTION" not in statuses:
+            raise GpgFailure("GnuPG did not confirm that it encrypted this file.")
+        if not staged.is_file() or staged.stat().st_size == 0:
+            raise GpgFailure("GnuPG did not produce a valid output file.")
+    else:
+        if "DECRYPTION_OKAY" not in statuses:
+            raise GpgFailure("This file is not actually encrypted, so it cannot be trusted as your "
+                             "backup. It may have been replaced. Nothing was restored.")
+        # Not checked for size: an encrypted empty file correctly restores empty.
+        if not staged.is_file():
+            raise GpgFailure("GnuPG did not produce an output file.")
+
+
+def _build_command(binary: str, operation: Operation, method: Method, fingerprint: str | None,
+                   staged: Path, source: Path, piped: bool) -> list[str]:
+    command = [binary, *_BASE_ARGS]
+    command += _PIPE_ARGS if piped else ("--pinentry-mode", "ask")
+    command += ["--output", str(staged)]
+    if operation == "restore":
+        command.append("--decrypt")
+    elif method == "password":
+        command += SYMMETRIC_ARGS
+    else:
+        command += ["--encrypt", "--recipient", fingerprint or ""]
+    command += ["--", str(source)]
+    return command
+
+
+def _remove_staged(staged: Path, leftovers: list[Path]) -> None:
+    # A cleanup problem must not abort the rest of the batch, but it must not
+    # stay hidden either: on restore this file holds plaintext.
+    try:
+        staged.unlink(missing_ok=True)
+    except OSError:
+        leftovers.append(staged)
+
+
+def _process_one(binary: str, item: SourceItem, output_directory: Path, operation: Operation,
+                 method: Method, fingerprint: str | None, cancel: threading.Event,
+                 secrets: Sequence[bytes], leftovers: list[Path]) -> Path:
+    target = unique_target(output_directory / output_relative(item, operation))
+    target.parent.mkdir(parents=True, exist_ok=True)
+    failures: list[GpgFailure] = []
+    for secret in secrets or (None,):
+        # A short fixed-length name: embedding the original name pushed long,
+        # perfectly valid filenames past the 255-character limit.
+        staged = target.parent / f".myob-{uuid.uuid4().hex[:16]}.partial"
+        try:
+            command = _build_command(binary, operation, method, fingerprint, staged,
+                                     item.source, piped=secret is not None)
+            code, stderr = run_gpg(command, cancel, secret)
+            _check_success(operation, code, stderr, staged)
+            publish_no_overwrite(staged, target)
+            return target
+        except GpgFailure as exc:
+            # Keep going even after what looks like damage. About 1 wrong
+            # passphrase in 65,536 passes gpg's quick check and then fails like
+            # a corrupt file, so stopping could wrongly report a good backup as
+            # damaged when a later saved passphrase would have opened it.
+            failures.append(exc)
+        finally:
+            _remove_staged(staged, leftovers)
+    other = next((failure for failure in failures if not failure.wrong_secret), None)
+    if other is not None:
+        raise other
+    if len(failures) > 1:
+        raise GpgFailure("None of the saved passphrases opened this file.")
+    raise failures[0]
+
+
+def process_items(
+    binary: str, items: list[SourceItem], output_directory: Path,
+    operation: Operation, method: Method, fingerprint: str | None,
+    cancel: threading.Event, on_progress: Callable[[int, bool, str, Path | None], None],
+    *, passphrases: Sequence[str] = (),
+) -> JobResult:
+    """Process each item independently; failed jobs leave no partial exports.
+
+    With no ``passphrases``, gpg-agent asks through Pinentry, once per file for
+    passphrase encryption. Otherwise the passphrase goes to gpg over a pipe. A
+    restore may pass several, which are tried in order.
+    """
+    if not is_valid_gpg(binary):
+        raise RuntimeError(
+            "The selected GnuPG executable is not available, or is older than "
+            f"{'.'.join(map(str, MIN_GPG_VERSION))}."
+        )
+    if operation == "encrypt" and method == "public-key":
+        if not fingerprint or not re.fullmatch(r"[0-9A-Fa-f]{40,64}", fingerprint):
+            raise ValueError("Select a valid OpenPGP recipient key.")
+        if passphrases:
+            raise ValueError("Public-key encryption does not use a passphrase.")
+    if operation == "encrypt" and len(passphrases) > 1:
+        raise ValueError("Encryption uses exactly one passphrase.")
+    secrets = [encode_passphrase(passphrase) for passphrase in passphrases]
+
+    succeeded = failed = 0
+    outputs: list[Path] = []
+    leftovers: list[Path] = []
+    was_cancelled = False
+    for index, item in enumerate(items):
+        if cancel.is_set():
+            was_cancelled = True
+            break
+        try:
+            target = _process_one(binary, item, output_directory, operation, method,
+                                  fingerprint, cancel, secrets, leftovers)
+        except Cancelled:
+            was_cancelled = True
+            on_progress(index, False, "Cancelled", None)
+            break
+        except Exception as exc:  # Other files should still be processed.
+            failed += 1
+            on_progress(index, False, str(exc), None)
+        else:
+            outputs.append(target)
+            succeeded += 1
+            on_progress(index, True, "Ready", target)
+    return JobResult(succeeded, failed, was_cancelled, tuple(outputs), tuple(leftovers))
