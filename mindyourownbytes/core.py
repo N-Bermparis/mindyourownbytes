@@ -11,7 +11,6 @@ from __future__ import annotations
 import os
 import re
 import shutil
-import stat
 import subprocess
 import threading
 import uuid
@@ -190,21 +189,12 @@ def is_valid_gpg(binary: str) -> bool:
 
 
 def is_link_or_junction(path: Path) -> bool:
-    """Detect symlinks and Windows junctions on every supported Python.
+    """Detect links to elsewhere.
 
-    ``Path.is_junction`` only exists from 3.12, and before then ``os.walk``
-    follows junctions. Only mount-point reparse points are matched, because
-    OneDrive's cloud placeholders are reparse points too and are ordinary files.
+    OneDrive's cloud placeholders are also reparse points, but they are ordinary
+    files that belong in a backup, and ``is_junction`` correctly leaves them alone.
     """
-    if path.is_symlink():
-        return True
-    if os.name != "nt":
-        return False
-    try:
-        tag = getattr(os.lstat(path), "st_reparse_tag", 0)
-    except OSError:
-        return False
-    return tag == stat.IO_REPARSE_TAG_MOUNT_POINT
+    return path.is_symlink() or path.is_junction()
 
 
 def _unescape_colon_field(value: str) -> str:

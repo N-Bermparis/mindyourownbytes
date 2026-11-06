@@ -8,7 +8,7 @@ plain GnuPG, with or without this app.
 
 [![CI](https://github.com/N-Bermparis/mindyourownbytes/actions/workflows/ci.yml/badge.svg)](https://github.com/N-Bermparis/mindyourownbytes/actions/workflows/ci.yml)
 [![License: GPL v3+](https://img.shields.io/badge/license-GPL--3.0--or--later-blue)](LICENSE)
-![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue)
+![Python 3.12+](https://img.shields.io/badge/python-3.12%2B-blue)
 ![Status: alpha](https://img.shields.io/badge/status-alpha-orange)
 
 ![Encrypting a folder with one passphrase, then browsing it in the library](docs/assets/demo.gif)
@@ -62,7 +62,7 @@ No telemetry, no accounts, and no network calls. All cryptography is done by
 
 ## Getting started
 
-You need [Python 3.11+](https://www.python.org/downloads/) and GnuPG, which on Windows means
+You need [Python 3.12+](https://www.python.org/downloads/) and GnuPG, which on Windows means
 [Gpg4win](https://gpg4win.org/download.html).
 
 **Windows**

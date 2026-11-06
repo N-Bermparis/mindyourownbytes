@@ -7,7 +7,7 @@ if not defined PY (
   where python >nul 2>nul && set "PY=python"
 )
 if not defined PY goto :nopython
-%PY% -c "import sys; sys.exit(0 if sys.version_info >= (3, 11) else 1)" >nul 2>nul
+%PY% -c "import sys; sys.exit(0 if sys.version_info >= (3, 12) else 1)" >nul 2>nul
 if errorlevel 1 goto :nopython
 if not exist ".venv\Scripts\python.exe" (
   %PY% -m venv .venv
@@ -21,7 +21,7 @@ echo Setup complete. Run start_windows.bat to launch mindyourownbytes.
 pause
 exit /b 0
 :nopython
-echo Python 3.11 or newer was not found. Install it from https://www.python.org/downloads/
+echo Python 3.12 or newer was not found. Install it from https://www.python.org/downloads/
 echo and then run setup_windows.bat again.
 pause
 exit /b 1

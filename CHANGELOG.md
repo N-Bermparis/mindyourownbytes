@@ -32,6 +32,11 @@ These issues were found and fixed during the pre-release review, before any publ
 - Revoked and expired keys were offered as encryption targets.
 - Keys without a local private key looked the same as your own, risking files you couldn't restore.
 
+### Changed
+
+- Requires Python 3.12 or newer. On Linux, PySide6 6.12.0 loses a reference to `None` on every
+  void Qt call under Python 3.11, which crashes the interpreter during normal use.
+
 ### Known limitations
 
 - **File and folder names, and approximate sizes, are visible to your provider.**

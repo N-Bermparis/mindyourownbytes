@@ -17,7 +17,7 @@ or try the app and tell us where you got stuck. That feedback is valuable in its
 
 ## Setting up
 
-You need Python 3.11+ and GnuPG 2.2.8+ ([Gpg4win](https://gpg4win.org/) on Windows).
+You need Python 3.12+ and GnuPG 2.2.8+ ([Gpg4win](https://gpg4win.org/) on Windows).
 
 ```bash
 python -m venv .venv

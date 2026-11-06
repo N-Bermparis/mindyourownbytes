@@ -2,6 +2,8 @@
 
 import importlib.util
 import os
+import runpy
+import sys
 import tempfile
 import time
 import unittest
@@ -72,6 +74,13 @@ class WithoutGnuPGTests(unittest.TestCase):
         detect.assert_called()
         self.assertEqual(window.gpg, "detected")
 
+    def test_old_python_gets_a_clear_message_instead_of_a_crash_later(self):
+        # Regression: on Linux, Python 3.11 with PySide6 6.12.0 aborts during normal
+        # use. A source checkout never runs pip's requires-python check.
+        with patch.object(sys, "version_info", (3, 11, 9)), self.assertRaises(SystemExit) as caught:
+            runpy.run_module("mindyourownbytes", run_name="__main__")
+        self.assertIn("3.12", str(caught.exception))
+
     def test_vault_explains_when_gnupg_is_missing(self):
         window = MainWindow(self.settings, self.folder / "vault.gpg")
         self.addCleanup(window.close)
@@ -121,6 +130,7 @@ class GuiCase(GpgTestCase):
             if time.monotonic() > deadline:
                 self.fail("timed out waiting for the background job")
             QApplication.processEvents(QEventLoop.ProcessEventsFlag.AllEvents, 50)
+            time.sleep(0.005)
 
     def write(self, name: str, content: bytes = b"private") -> Path:
         path = self.root / "input" / name

@@ -7,7 +7,10 @@ name = "mindyourownbytes"
 dynamic = ["version"]
 description = "Your files. Your keys. None of their business. Encrypt files locally with GnuPG before they reach any cloud."
 readme = "README.md"
-requires-python = ">=3.11"
+# A hard floor, not a preference. PySide6 6.12.0 on Linux loses a reference to None
+# on every void Qt call under Python 3.11, so normal use crashes the interpreter.
+# From 3.12 None is immortal and this cannot happen.
+requires-python = ">=3.12"
 license = "GPL-3.0-or-later"
 license-files = ["LICENSE"]
 authors = [{ name = "Nikolaos Bermparis" }]
@@ -21,7 +24,6 @@ classifiers = [
     "Operating System :: Microsoft :: Windows :: Windows 11",
     "Operating System :: POSIX :: Linux",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
     "Programming Language :: Python :: 3.14",
@@ -53,7 +55,7 @@ mindyourownbytes = ["styles.qss"]
 
 [tool.ruff]
 line-length = 120
-target-version = "py311"
+target-version = "py312"
 
 [tool.ruff.lint]
 select = [
