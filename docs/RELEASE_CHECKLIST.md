@@ -1,41 +1,40 @@
-# Private-to-public release checklist
+# Release checklist
 
-Do not treat this as an automated certification. Each box requires a real
-check and the reviewer/date should be recorded in the release PR.
+Each box needs a real check by a person. Record who checked it, and when, in the
+release pull request. Passing this list is not a security certification.
 
-## Repository governance
+## Before the repository first goes public
 
-- [ ] Choose and add an explicit open-source `LICENSE` file.
-- [ ] Confirm the repository description, owner, visibility, and topics.
+- [ ] Review the whole git history for secrets, ciphertext, and personal or client data.
+- [ ] Confirm every commit uses a no-reply or intended public email address.
 - [ ] Enable Issues and Discussions.
-- [ ] Enable private vulnerability reporting and review `SECURITY.md`.
-- [ ] Enable branch rules requiring review and CI checks on `main`.
-- [ ] Inspect history for accidentally committed secrets, ciphertext, or
-      personal/client data before making the repository public.
+- [ ] Enable private vulnerability reporting, then re-read `SECURITY.md`.
+- [ ] Add a `main` ruleset requiring a pull request and passing CI, with no force pushes.
+- [ ] Enable secret scanning, push protection, and Dependabot alerts.
+- [ ] Upload `docs/assets/social-preview.png` as the social preview (Settings → General → Social preview).
 
-## Functional validation
+## Functional checks with real Pinentry, on Windows
 
-- [ ] Test both encryption modes on Windows with real Gpg4win/Pinentry.
-- [ ] Encrypt, upload manually, download, decrypt, and compare file hashes.
-- [ ] Restore files to a fresh second machine.
-- [ ] Test invalid passwords, missing keys, corrupt ciphertext, and cancel.
-- [ ] Test files/folders with spaces, Unicode, long names, and collisions.
-- [ ] Test on an ordinary user account (non-admin).
+- [ ] Encrypt and restore with each method: type once, GnuPG asks, saved passphrase, public key.
+- [ ] Encrypt, upload manually, download, restore, and compare file hashes.
+- [ ] Restore on a second, clean computer, using only your backup of the passphrase or key.
+- [ ] Open a file and the vault using plain `gpg`, without this app.
+- [ ] Try a wrong passphrase, a missing key, a corrupt file, and Cancel.
+- [ ] Test spaces, Unicode, very long names, and name collisions.
+- [ ] Test from an ordinary, non-administrator account.
+- [ ] Check keyboard use and that every dialog is readable in light and dark Windows themes.
 
 ## Safety and packaging
 
-- [ ] Review the threat model against implementation.
-- [ ] Check dependency and code-security warnings.
-- [ ] Confirm no credentials, filenames from private projects, or test secrets
-      exist in release source/assets.
-- [ ] Audit any binaries and their build provenance; never distribute unsigned
-      binaries as if they were independently verified.
-- [ ] Display prominent alpha/audit disclaimers in release notes.
-- [ ] Release checksums and installation/recovery instructions.
+- [ ] Re-read the threat model against the code, and update whatever has changed.
+- [ ] `pip-audit -r requirements.txt` reports nothing unexplained.
+- [ ] CI is green on every platform, with no skipped GnuPG tests.
+- [ ] Publish checksums for any binaries, and build them in CI from a tagged commit.
+- [ ] Do not present unsigned binaries as verified.
+- [ ] State "alpha" and "not independently audited" prominently in the release notes.
 
-## Launch
+## Releasing
 
-- [ ] Switch repository visibility to Public only after explicit owner approval.
-- [ ] Publish a pre-release with known limitations, not a stable 1.0 label.
-- [ ] Start an introductory Discussion explaining the project and asking for
-      safe feature feedback (without posting real sensitive data).
+- [ ] Update the version in `mindyourownbytes/__init__.py` and in `CHANGELOG.md`.
+- [ ] Tag the release and mark it as a pre-release until an independent review has happened.
+- [ ] Do not describe the project as audited or production-ready unless that has been established.

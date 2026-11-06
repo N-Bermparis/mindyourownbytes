@@ -1,39 +1,49 @@
 # Roadmap
 
-The roadmap is community-driven and intentionally has no guaranteed dates.
+Community-driven, with no guaranteed dates. Priorities can change, so open a
+Discussion if you think something should move up or down.
 
-## 0.1.x — Prove the basics
+We do **not** plan to require an account, add telemetry, or upload files to any
+specific provider. Those are not missing features; they are the point.
 
-- [x] Local GUI and drag-and-drop files/folders
-- [x] AES-256 password encryption using GnuPG
-- [x] Public-key encryption using local OpenPGP keys
-- [x] Restore and output collision protection
-- [x] Initial test suite and documentation
-- [ ] Validate the complete GUI workflow on Windows 10/11 with Gpg4win 5.x
-- [ ] Verify password and private-key recovery on a second computer
-- [ ] Expand negative tests and security analysis
+## Now: 0.1 — Earn trust
 
-## 0.2 — Quality and usability
+- [x] Drag-and-drop encryption for files and folders
+- [x] Passphrase mode with pinned, verified settings
+- [x] Public-key mode with Kleopatra and GnuPG keys
+- [x] Restore that rejects forged and tampered files
+- [x] Encrypted vault for saved passphrases
+- [x] Library with collections, search, and move
+- [x] Real-GnuPG test suite on Windows and Linux
+- [ ] Hands-on testing on Windows 10 and 11 with real Pinentry
+- [ ] Restore on a second, clean computer
+- [ ] **Independent review of the GnuPG invocation and vault design**
 
-- [ ] Accessibility and keyboard navigation review
-- [ ] File-level verification and clearer diagnostics
-- [ ] Optional filename obfuscation / encrypted metadata manifest
-- [ ] Safer handling of cloud-synced restore directories
-- [ ] Internationalization
+## Next: 0.2 — Close the biggest privacy gap
 
-## 0.3 — Packaging and trust
+- [ ] **Hide file and folder names** (encrypted archive mode or name mapping)
+- [ ] Sign-and-encrypt, so public-key restores can detect forged files
+- [ ] Optional `--throw-keyids`, to hide the recipient in public-key mode
+- [ ] Verify each file after encrypting it
+- [ ] Encrypt to several recipients, such as yourself and a recovery key
+- [ ] Preserve file timestamps and empty folders
 
-- [ ] Windows signed release workflow
-- [ ] Reproducible-build and checksum instructions
-- [ ] Release compatibility matrix and migration guidance
-- [ ] Threat-model review and community security testing
+## Then: 0.3 — Easier to install and trust
 
-## Ideas for later
+- [ ] Signed Windows releases with published checksums
+- [ ] Reproducible builds
+- [ ] Linux and macOS packages (Flatpak, Homebrew)
+- [ ] A command-line interface for scripting
+- [ ] Copy Mark-of-the-Web onto restored files
 
-- [ ] Encrypted folder archive mode that hides internal filenames
-- [ ] Platform-native macOS/Linux front ends
-- [ ] Multiple recipients and key selection improvements
-- [ ] Optional integrity manifests and periodic restore-test reminders
+## Quality and reach
 
-We intentionally do **not** plan to require an account or upload files to any
-specific provider. Open a Discussion to suggest alternatives or priorities.
+- [ ] Accessibility and full keyboard navigation
+- [ ] Translations
+- [ ] Move folder scanning off the UI thread for very large trees
+- [ ] Better detection of cloud-synced folders
+- [ ] Periodic restore-test reminders
+- [ ] Input fuzzing
+
+Items that are good places to start are labelled
+[`good first issue`](https://github.com/N-Bermparis/mindyourownbytes/labels/good%20first%20issue).

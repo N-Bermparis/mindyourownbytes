@@ -1,58 +1,80 @@
 # Contributing to mindyourownbytes
 
-Thanks for helping people keep readable copies of their files off cloud
-providers. Contributions of code, testing, translations, accessibility, and
-documentation are welcome.
+Thanks for helping people keep readable copies of their files away from cloud
+providers. Code is only one way to help: testing on different setups, translations,
+accessibility fixes, documentation, and security review are all just as welcome.
 
-## Before opening a contribution
+**New here?** Look for [`good first issue`](https://github.com/N-Bermparis/mindyourownbytes/labels/good%20first%20issue),
+or try the app and tell us where you got stuck. That feedback is valuable in itself.
 
-- Search existing Issues and Discussions to avoid duplication.
-- For small fixes, open a pull request with a clear explanation.
-- For major changes to cryptographic behavior, storage layout, dependencies,
-  or the threat model, open a design discussion **before** implementation.
-- **Never include personal documents, private keys, credentials, passwords, or
-  genuine sensitive ciphertext in issues, screenshots, tests, or PRs.**
-- Do not post exploit details publicly. See [SECURITY.md](SECURITY.md).
+## Three rules
 
-## Local development
+1. **Never share real data.** No personal documents, private keys, passphrases, or real
+   ciphertext in issues, screenshots, tests, or pull requests.
+2. **Report vulnerabilities privately.** See [SECURITY.md](SECURITY.md).
+3. **Discuss before changing the cryptography.** Anything touching encryption, the vault
+   format, stored data, or new dependencies needs a design discussion first.
 
-Requirements: Python 3.10+, PySide6, and GnuPG/Gpg4win.
+## Setting up
+
+You need Python 3.11+ and GnuPG 2.2.8+ ([Gpg4win](https://gpg4win.org/) on Windows).
 
 ```bash
 python -m venv .venv
-python -m pip install -r requirements.txt
-python -m unittest discover -s tests -v
-python main.py
+.venv\Scripts\activate             # Linux and macOS: source .venv/bin/activate
+python -m pip install --require-hashes -r requirements.txt
+python -m pip install --require-hashes -r requirements-dev.txt
+python -m mindyourownbytes
 ```
 
-On Windows, activate your environment first (or run the provided `.bat`
-scripts). If GnuPG is not available on the testing machine, the integration
-test may skip; note this explicitly in your PR.
+## Running the checks
+
+```bash
+python -m unittest discover -s tests -t . -v
+python -m ruff check .
+```
+
+The tests use a temporary GnuPG home and never touch your real keyring. Without GnuPG,
+the cryptography tests are skipped, so if that happens please say so in your pull request.
+CI always runs them.
+
+## Where things live
+
+| Path | Purpose |
+| --- | --- |
+| `mindyourownbytes/core.py` | Finding GnuPG, expanding inputs, encrypting, restoring |
+| `mindyourownbytes/vault.py` | The saved passphrase vault |
+| `mindyourownbytes/library.py` | Collections and the library scan |
+| `mindyourownbytes/gui/` | The PySide6 interface. No cryptography goes here |
+| `tests/` | One test file per module, plus real-GnuPG integration tests |
+| `docs/THREAT_MODEL.md` | What is and isn't protected. Keep this accurate |
 
 ## Pull request checklist
 
-1. Explain the user problem and the behavior change.
-2. Add or update tests, including failure and recovery cases.
-3. If the change touches encryption, decryption, paths, or process invocation,
-   explain the security implications and update the threat model.
-4. Confirm plaintext is never unexpectedly exported to the encrypted folder.
-5. Confirm errors do not overwrite prior backups or leave misleading outputs.
-6. Keep new dependencies minimal and document why each is needed.
-7. Include Windows screenshots for visible GUI changes, with only dummy data.
+1. Explain the user's problem and how the behaviour changes.
+2. Add tests, including failure and recovery cases.
+3. If you touch encryption, decryption, paths, or how processes are started, explain the
+   security implications and update the threat model.
+4. Confirm plaintext can't reach the export folder, and that errors can't overwrite or lose data.
+5. Keep dependencies to a minimum and explain any you add. Lock files are generated with
+   [`uv pip compile --universal --generate-hashes`](https://docs.astral.sh/uv/pip/compile/),
+   from `pyproject.toml` and `requirements-dev.in`.
+6. For visible changes, attach Windows screenshots using dummy data only.
 
-Please use descriptive commit messages (e.g. `fix: keep incomplete exports
-out of backup folder`). This project uses reviewable feature branches and
-pull requests, not direct pushes to the protected `main` branch once CI rules
-are enabled.
+Commit messages follow a light convention, for example
+`fix: keep incomplete exports out of the backup folder`.
 
-## Design philosophy
+## Design principles
 
-- **Local first:** no service account, telemetry, or mandatory network access.
-- **Established cryptography:** use GnuPG; do not implement custom ciphers.
-- **No silent data loss:** never delete or overwrite user content by default.
-- **Small attack surface:** validate paths, avoid shell invocation, and ask
-  for explicit permission before changing backup locations or behavior.
-- **Honest security claims:** document metadata leakage, unsupported cases,
-  and things we have not independently verified.
+- **Local first.** No accounts, telemetry, or required network access. Ever.
+- **Established cryptography only.** GnuPG does the work; we never write our own.
+- **No lock-in.** Everything must stay readable with plain `gpg`, with or without this app.
+- **No silent data loss.** Never overwrite or delete user files. Tell the user about anything that was skipped.
+- **Small attack surface.** No shell invocation, validated paths, and few dependencies.
+- **Honest claims.** Document what we don't protect, as clearly as what we do.
 
-By contributing, you agree to follow our [Code of Conduct](CODE_OF_CONDUCT.md).
+## License
+
+This project is licensed under the [GNU General Public License v3.0 or later](LICENSE).
+By contributing, you agree that your contributions are licensed the same way, and that
+you have the right to submit them. Please also follow our [Code of Conduct](CODE_OF_CONDUCT.md).

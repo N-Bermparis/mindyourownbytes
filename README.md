@@ -2,155 +2,192 @@
 
 **Your files. Your keys. None of their business.**
 
-Cloud providers can store your bytes. They don't need to read them.
+Encrypt your files on your own computer, then put them on any cloud you like. No
+account, no API keys, no new file format: just standard OpenPGP files that open with
+plain GnuPG, with or without this app.
 
-**mindyourownbytes** is a local-only Windows desktop utility that encrypts files
-*before* you upload them to any cloud provider. Drag in individual files or
-folders, create `.gpg` copies using the same GnuPG engine as Kleopatra, and
-upload the encrypted exports wherever you choose. To restore, download the
-`.gpg` files and decrypt them locally.
+[![CI](https://github.com/N-Bermparis/mindyourownbytes/actions/workflows/ci.yml/badge.svg)](https://github.com/N-Bermparis/mindyourownbytes/actions/workflows/ci.yml)
+[![License: GPL v3+](https://img.shields.io/badge/license-GPL--3.0--or--later-blue)](LICENSE)
+![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue)
+![Status: alpha](https://img.shields.io/badge/status-alpha-orange)
+
+![Encrypting a folder with one passphrase, then browsing it in the library](docs/assets/demo.gif)
 
 > [!CAUTION]
-> **Pre-alpha software (0.1.0-alpha.1). Not independently audited.**
-> Windows integration, GnuPG Pinentry behavior, and recovery scenarios still
-> need broad validation. Test with non-sensitive files first and keep other
-> verified backups. Do not rely on this prototype as the only protection for
-> confidential or irreplaceable data.
+> **Alpha software, not independently audited.** Security review is exactly what this
+> release is asking for. Please test with non-sensitive files first, keep other verified
+> backups, and read [what it does and doesn't protect](#what-it-protects-and-what-it-doesnt).
 
 ## Why this exists
 
-You shouldn't need to trust a storage provider with readable copies of your
-private reports, photos, code, or records. This project gives you a small GUI
-for preparing encrypted backups **without a cloud account, API token, browser
-extension, telemetry service, or backend**.
+Mainstream cloud storage can read what you upload, because the provider holds the keys.
+This isn't a secret, and it's right there in the terms:
 
-It does not replace cloud storage. It puts encryption under your control first.
+- [Dropbox's terms](https://www.dropbox.com/terms) say it accesses and scans stored files
+  to provide features such as search and previews.
+- [Google's terms](https://policies.google.com/terms) describe automated systems analyzing
+  content, including while it is stored.
+- [Microsoft's Services Agreement](https://www.microsoft.com/en-us/servicesagreement) says
+  automated systems and people may review content for things like spam and fraud.
+- [Apple holds the keys to iCloud Drive](https://support.apple.com/en-us/102651) unless you
+  turn on Advanced Data Protection.
+
+These are mostly about features, abuse, and legal duties rather than someone reading your
+tax return for fun. But whatever a company *can* read can also be breached, subpoenaed,
+misused by an insider, or fed into next year's product.
+
+The fix is old and simple: encrypt before you upload, so the provider stores only bytes it
+can't read. This app makes that a drag and drop.
 
 ## What it does
 
-| Feature | Current status |
+- **Drag in files or folders** and get encrypted `.gpg` copies, with folder structure kept.
+  Your originals are never changed, and existing files are never overwritten.
+- **One passphrase for a whole batch**, typed once.
+- **Save different passphrases** for different kinds of documents, in an optional vault
+  encrypted under one master passphrase. It can also generate strong ones.
+- **Organize into collections** such as Taxes or Medical, then browse, search, and move files
+  in the Library. Collections are plain folders, so they work in Explorer and on any cloud too.
+- **Or use OpenPGP keys** you already manage in Kleopatra.
+- **Restore safely.** Forged, tampered, and truncated files are rejected, with nothing written.
+- **Works with any storage**, because it never talks to any: Google Drive, OneDrive, Dropbox,
+  iCloud, a NAS, or a USB stick. You upload the files yourself.
+
+| Library | Saved passphrases |
 | --- | --- |
-| Drag-and-drop files and folders | Implemented |
-| Encrypt files individually to `.gpg` | Implemented |
-| Password encryption with AES-256 | Implemented via GnuPG |
-| Public-key encryption using Kleopatra-managed keys | Implemented via GnuPG |
-| Downloaded `.gpg` file restoration | Implemented |
-| Preserve relative directory layout | Implemented |
-| Never overwrite existing outputs | Implemented |
-| Cloud upload integration | Intentionally not included |
-| Windows installer / signed binary | Planned |
-| Independent security review | Needed before stable release |
+| ![The library, showing files grouped in collections](docs/assets/screenshot-library.png) | ![The vault, listing saved passphrases by name](docs/assets/screenshot-vault.png) |
 
-### Encryption and restoration
+No telemetry, no accounts, and no network calls. All cryptography is done by
+[GnuPG](https://gnupg.org/): this project does not implement any of its own.
 
-```text
-LOCAL ORIGINALS             LOCAL APP                  YOUR STORAGE
-report.pdf           ──▶   GnuPG encrypts  ──▶   report.pdf.gpg
-code/main.cpp        ──▶   GnuPG encrypts  ──▶   code/main.cpp.gpg
+## Getting started
 
-Downloaded .gpg file ──▶   GnuPG decrypts  ──▶   local restored file
-```
+You need [Python 3.11+](https://www.python.org/downloads/) and GnuPG, which on Windows means
+[Gpg4win](https://gpg4win.org/download.html).
 
-The application never automatically uploads, modifies, or deletes an original
-file. Only you decide when and where to copy the encrypted exports.
+**Windows**
 
-## Install on Windows
+1. [Download the code](https://github.com/N-Bermparis/mindyourownbytes/archive/refs/heads/main.zip) and unzip it.
+2. Run `setup_windows.bat` once. It needs internet access to install the interface library, with
+   every package checked against a hash in `requirements.txt`.
+3. Run `start_windows.bat`.
 
-Requires:
-
-1. Windows 10/11 (64-bit recommended).
-2. [Python 3.10+](https://www.python.org/downloads/).
-3. [Gpg4win](https://gpg4win.org/download.html) including Kleopatra and GnuPG.
-
-Then:
-
-1. Download the project ZIP (or clone the repository).
-2. Run **`setup_windows.bat`** once. It creates a local `.venv` and installs
-   PySide6; internet access is needed for this first dependency install only.
-3. Run **`start_windows.bat`** to open the GUI.
-4. If the GnuPG engine is not detected, click **Locate GnuPG** and choose
-   `gpg.exe` from your Gpg4win installation.
-
-The Python application itself makes **no network calls** during encryption or
-restoration.
-
-## Usage
-
-### Encrypt
-
-1. Open the **Encrypt files** screen.
-2. Drop files/folders into the window or use **Add files / Add folder**.
-3. Select **Password · AES-256** or **OpenPGP public key**.
-4. Choose an output folder if desired. Default:
-   `%USERPROFILE%\mindyourownbytes\Encrypted Exports`.
-5. Click **Encrypt files**. GnuPG's Pinentry dialog will request a passphrase
-   when required.
-6. Upload only the generated `.gpg` files to your cloud or other backup media.
-
-### Restore
-
-1. Download the encrypted files from your storage provider.
-2. Select the **Restore files** screen.
-3. Drop `.gpg` or `.pgp` files into the application.
-4. Choose a **local-only** destination (not a cloud-synced folder). Default:
-   `%USERPROFILE%\mindyourownbytes\Restored Files`.
-5. Click **Restore files** and provide the relevant passphrase if asked.
-6. Open the restored originals. Existing names are preserved safely by adding
-   a numbered suffix rather than overwriting files.
-
-Dragging a folder preserves its relative layout. For example:
-
-```text
-Research/QKD/report.pdf     →     Research/QKD/report.pdf.gpg
-Research/QKD/plot.png       →     Research/QKD/plot.png.gpg
-```
-
-## What it protects—and what it doesn't
-
-- The contents of successfully encrypted files are protected by GnuPG.
-- **File and folder names, sizes, timestamps, and the number of files can still
-  be visible** in the exported structure.
-- Password strength and private-key backup practices are critical. The app does
-  not store your passphrase, although GnuPG's agent may cache it temporarily.
-- This tool does not protect plaintext while it is open or stored on your own
-  computer. It also cannot protect against a compromised local machine.
-- Restoring into a synced folder can upload decrypted data to a cloud service.
-- OpenPGP public-key encryption is **not automatically quantum-resistant**;
-  algorithm and key selection matter.
-- It is not an authorized workaround for organizational data-handling policies.
-
-Read the [threat model](docs/THREAT_MODEL.md) and [security policy](SECURITY.md)
-before evaluating the utility for sensitive data.
-
-## Develop and test
+**Linux and macOS (experimental)**
 
 ```bash
-python -m pip install -r requirements.txt
-python -m unittest discover -s tests -v
-python main.py
+git clone https://github.com/N-Bermparis/mindyourownbytes.git
+cd mindyourownbytes
+python3 -m venv .venv && source .venv/bin/activate
+pip install --require-hashes -r requirements.txt
+python -m mindyourownbytes
 ```
 
-The GUI uses **PySide6**, and the cryptographic operations call an installed
-**GnuPG** executable. No custom cryptographic primitive is implemented.
+CI runs the tests on Linux, but the app is mainly developed and used on Windows, and it hasn't
+been tested on macOS. Reports are very welcome.
 
-The optional `build_windows_exe.bat` packages a Windows EXE using PyInstaller;
-it is not a code-signing or security-audit process. Gpg4win is still required.
+## How to use it
 
-## Roadmap and community
+**Encrypt**
 
-- [Roadmap](docs/ROADMAP.md): Windows validation, signing, packaging, metadata
-  privacy, and accessibility.
-- [Contributing](CONTRIBUTING.md): issues, pull requests, tests, and review.
-- [Security](SECURITY.md): please report vulnerabilities privately.
-- [Code of Conduct](CODE_OF_CONDUCT.md): respectful community participation.
+1. Drop files or folders into the window.
+2. Choose how to protect them. *Type once for this batch* is the simplest.
+3. Optionally type a collection name, such as `Taxes`.
+4. Click **Encrypt files**, and upload what appears in the output folder. By default that's
+   `%USERPROFILE%\mindyourownbytes\Encrypted Exports`.
 
-Use **Issues** for reproducible bugs and concrete feature requests. Use
-**Discussions** for questions, ideas, and roadmap proposals once enabled.
+**Restore**
 
-## Licensing
+1. Download your `.gpg` files, or select them in the **Library**.
+2. Choose how to unlock them, then a folder that no cloud service syncs.
+3. Click **Restore files**.
 
-A permanent open-source license will be selected before the repository is
-made public. While this repository is private and unlicensed, do not assume
-permission to redistribute its contents.
+### Which method should I choose?
 
-Maintained by [Nikolaos Bermparis](https://github.com/N-Bermparis).
+| Method | Good for | Trade-off |
+| --- | --- | --- |
+| **Type once for this batch** | Most people | The passphrase passes through this app |
+| **GnuPG asks for each file** | Keeping passphrases away from this app | One prompt per file, so slow for folders |
+| **Saved passphrase** | Different secrets for different documents | One master passphrase guards them all |
+| **OpenPGP public key** | Existing Kleopatra users | You must back up your private key, and forged files aren't detected ([why](docs/THREAT_MODEL.md#tampering)) |
+
+## No lock-in
+
+Your data never depends on this project still existing. With this app gone, plain GnuPG
+still works:
+
+```bash
+gpg --output report.pdf --decrypt report.pdf.gpg
+```
+
+The vault is the same kind of file. This prints every saved passphrase:
+
+```bash
+gpg --decrypt "%APPDATA%\mindyourownbytes\vault.gpg"
+```
+
+During review, files from both encryption modes were also decrypted byte for byte by
+[OpenPGP.js](https://openpgpjs.org/), an entirely separate implementation. For the details on
+file formats, see the [threat model](docs/THREAT_MODEL.md#how-the-design-defends-you).
+
+**Back up your passphrases, master passphrase, and private keys somewhere other than the
+cloud you're protecting against.** If you lose them, nobody can recover your files. That
+is the point, and also the risk.
+
+## What it protects and what it doesn't
+
+**Protected:** the contents of your files, from your cloud provider and from anyone who gets
+a copy of your cloud data, as long as your passphrase is strong.
+
+**Not protected:**
+
+- ⚠️ **File and folder names and approximate sizes are visible.** `divorce-settlement.pdf.gpg`
+  says plenty by itself. Keep names vague, or use one of the tools below until
+  [this gets fixed](docs/ROADMAP.md).
+- **Files already in a synced folder.** If your originals live in OneDrive or Dropbox, the provider
+  likely has them already. The app warns when it recognizes such a folder.
+- **Rollback and swaps.** A provider could serve an old version of a file, or swap two files that
+  share a passphrase. Neither is detected.
+- **A compromised computer.** Malware can read whatever you can.
+- **A weak passphrase.** Use five or more random words, or the Generate button.
+
+The [threat model](docs/THREAT_MODEL.md) has the full picture, including the vault's trade-offs.
+
+## How it compares
+
+Many good tools already exist, so here's an honest comparison.
+
+| | mindyourownbytes | [Cryptomator](https://cryptomator.org/) | [rclone crypt](https://rclone.org/crypt/) | [Kleopatra](https://www.openpgp.org/software/kleopatra/) |
+| --- | --- | --- | --- | --- |
+| **Interface** | Desktop app | Desktop and mobile apps | Command line | Desktop app |
+| **File format** | Standard OpenPGP | Its own documented format | Its own documented format | Standard OpenPGP |
+| **Open without the app** | GnuPG or other OpenPGP tools | A compatible tool | rclone or a compatible tool | GnuPG or other OpenPGP tools |
+| **Hides file names** | ❌ Not yet | ✅ | ✅ On by default | ❌ |
+| **Saved passphrases by purpose** | ✅ | One per vault | Per remote | ❌ |
+| **Independent audit** | ❌ Not yet | ✅ [2017](https://community.cryptomator.org/t/has-there-been-a-security-review-audit-of-cryptomator/44) | | |
+
+**Choose this if** you want plain, durable `.gpg` files you can open with anything, without
+mounting a vault. **Choose [Cryptomator](https://cryptomator.org/) if** you need hidden file names
+or an audited tool today, as it's excellent at both. **Choose rclone crypt if** you're comfortable
+on the command line and want automated sync.
+
+## Get involved
+
+This project needs people who care about privacy, and not all of them write code.
+
+- **Review the security.** Try to break it. The [threat model](docs/THREAT_MODEL.md) is a good
+  starting point, and vulnerabilities go through [private reporting](SECURITY.md).
+- **Test it** on your setup and say what confused you.
+- **Pick up an issue.** Start with [`good first issue`](https://github.com/N-Bermparis/mindyourownbytes/labels/good%20first%20issue),
+  or take on the big one: [hiding file names](docs/ROADMAP.md).
+- **Help with** translations, accessibility, and packaging.
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for setup, and the [roadmap](docs/ROADMAP.md) for where this
+is going. Please follow the [Code of Conduct](CODE_OF_CONDUCT.md).
+
+## License
+
+[GNU General Public License v3.0 or later](LICENSE). Anyone who distributes a modified version
+must publish its source, so nobody can ship a closed copy of a privacy tool that can't be audited.
+
+Maintained by [Nikolaos Bermparis](https://github.com/N-Bermparis). Not affiliated with any cloud
+provider, or with the GnuPG project.

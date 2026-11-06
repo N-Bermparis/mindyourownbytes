@@ -19,8 +19,10 @@ Maintainers may edit or remove abusive content, close discussions, reject
 contributions, or restrict participation when necessary. Decisions should be
 proportionate, explained when appropriate, and applied consistently.
 
-For serious abuse, use GitHub's reporting features or a private channel to
-the repository maintainer. Do not publish sensitive reports in public issues.
+To report abuse, use GitHub's [report content](https://docs.github.com/en/communities/maintaining-your-safety-on-github/reporting-abuse-or-spam)
+feature. To reach the maintainer privately instead, open a
+[private advisory](https://github.com/N-Bermparis/mindyourownbytes/security/advisories/new)
+and say that it concerns conduct. Please do not publish sensitive reports in public issues.
 
 This policy applies to project repositories, pull requests, discussions,
 issue trackers, and official community spaces.

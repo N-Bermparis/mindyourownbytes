@@ -1,65 +1,190 @@
-# Threat model (draft)
+# Threat model
 
-This is a description of the intended security boundaries, not an audit.
+This describes what mindyourownbytes is designed to protect against and what it
+is not. It is a design document, **not an audit**. No independent party has
+reviewed this software. If you find a gap, please see [SECURITY.md](../SECURITY.md).
 
-## Assets
+## What is being protected
 
-- Confidential file contents before cloud upload.
-- Recoverability of encrypted backups and original files.
-- OpenPGP private keys and password-based encryption passphrases.
+- The contents of your files, before and after they reach a cloud provider.
+- Your ability to get those files back, including without this application.
+- The passphrases and private keys that protect them.
 
-## Intended threat
+## The adversaries
 
-An untrusted or curious storage provider—or someone who obtains a copy of the
-encrypted cloud backup—should not be able to read the underlying file content
-without the necessary decryption secret.
-
-The user encrypts locally, uploads only the resulting `.gpg` files, and later
-downloads and decrypts them locally.
+| Adversary | Can do | Designed to stop them? |
+| --- | --- | --- |
+| **Curious provider or employee** reads what you stored | Read every byte and all metadata | **Yes** for contents. **No** for names and sizes (see below) |
+| **Attacker with a leaked copy** of your cloud data | Same, offline, indefinitely | **Yes** for contents, if your passphrase is strong |
+| **Active provider** alters what it serves you | Replace, corrupt, or remove files; serve old versions | **Partly** (see "Tampering") |
+| **Someone at your unlocked computer** | Use anything you have open | **Partly** (auto-lock, no agent cache) |
+| **Malware on your computer** | Everything you can do | **No.** Nothing here can defend against this |
 
 ## Trust assumptions
 
-1. The user's operating system and local machine are not compromised.
-2. The installed GnuPG executable and Gpg4win components are authentic and
-   supported; the local keyring and Pinentry are trusted.
-3. For password encryption, the user chooses a sufficiently strong passphrase.
-4. For public-key encryption, recipients verify keys and protect private keys.
-5. The user uploads **ciphertext only**, not readable originals.
-6. Recovery destinations are not automatically synchronized to third-party
-   cloud services.
+1. Your operating system and computer are not compromised.
+2. The GnuPG you installed is authentic. Everything rests on it.
+3. Your passphrases are strong, and you can find them again.
+4. For public-key mode, you protect and back up your private key.
+5. You upload only `.gpg` files, never originals.
+6. You restore to a folder no cloud service synchronizes.
 
-## Protections currently implemented
+## How the design defends you
 
-- No cloud credentials, telemetry, uploads, or remote backend.
-- `subprocess` argument arrays; no shell command string interpolation.
-- GnuPG does the cryptography rather than application-defined ciphers.
-- Individual-file processing isolates most failures to one item.
-- Unique output names prevent intentional overwrites.
-- Temporary ciphertext/output paths are removed after failed operations.
-- Symlinks are skipped; user-visible relative paths are constructed from
-  dropped files, and the app does not follow linked directories.
-- Decryption explicitly chooses an output path instead of trusting an
-  embedded ciphertext filename.
+**Cryptography is GnuPG's job.** This project implements no cipher, KDF, or file
+format, and a test confirms that plain `gpg` can decrypt its output with no help from
+this application. During review, files from both encryption modes were also decrypted
+byte for byte by OpenPGP.js 6.3.2, an independent implementation.
 
-## Out of scope / remaining exposure
+The two modes differ in format. Passphrase mode produces the long-established RFC 4880
+format (AES-256 with an MDC integrity check), which is the most widely readable. Public-key
+mode uses whatever the recipient's key asks for. With keys made by GnuPG 2.4 or later,
+that is a newer OCB packet, which GnuPG older than 2.3 and some other tools cannot read.
 
-| Issue | Implication |
+**Explicit, verified encryption settings.** Passphrase mode pins these options
+rather than relying on defaults:
+
+```text
+--symmetric --cipher-algo AES256
+--s2k-mode 3 --s2k-digest-algo SHA512 --s2k-count 65011712
+```
+
+GnuPG's defaults are not safe to rely on here. During review, the same command
+produced 37,748,736 S2K iterations with one GnuPG build and only **65,536** with
+another, because the fallback applies whenever gpg-agent can't be reached.
+
+**Restores must prove decryption happened.** `gpg --decrypt` exits successfully on
+OpenPGP data that was never encrypted, without asking for a key or passphrase.
+Trusting the exit code would let anyone who controls your storage replace a backup
+with content of their choosing, and it would restore as if nothing had happened. The
+app requires GnuPG's `DECRYPTION_OKAY` status and rejects anything without it. The
+vault applies the same check when it loads.
+
+**Nothing lingers in gpg-agent.** Every call uses `--no-symkey-cache`. Without it,
+encrypting a file leaves the passphrase cached, so anyone at the keyboard could
+decrypt the file with no prompt for as long as the cache lasts.
+
+**Passphrases never appear on a command line.** Command lines are visible to other
+local processes. Passphrases reach GnuPG through Pinentry or a stdin pipe.
+
+**GnuPG is located safely.** The current directory is never searched, and standard
+install locations are checked first, so a `gpg.exe` planted in a folder such as
+Downloads will not be executed.
+
+**Failures stay contained.** Files are staged under a temporary name and published
+only after success, without overwriting anything. A failed file leaves nothing behind
+and doesn't stop the rest of the batch. Links and junctions are never followed, and
+folders that can't be read are reported rather than silently left out.
+
+**Decrypted filenames come from you.** Output paths are chosen by the app, so a name
+embedded in a malicious file cannot write outside the restore folder.
+
+## What is NOT protected
+
+Please read this section. These are real limits, not fine print.
+
+### Names and sizes are visible
+
+| Visible to your provider | Why it matters |
 | --- | --- |
-| Visible filenames and directories | Provider can infer topics/projects from the encrypted path |
-| File sizes, count, timestamps | Metadata remains visible |
-| Weak password or lost private key | Confidentiality or recoverability can fail |
-| Malware/compromised endpoint | Can read local plaintext or steal passphrases |
-| Cloud-synced restore destination | Decrypted plaintext may be uploaded |
-| Corrupt, truncated, or malicious input | Decryption must fail safely; broad fuzz testing is pending |
-| GnuPG or package compromise | Encryption security depends on the installed supply chain |
-| Classical OpenPGP recipient keys | No automatic post-quantum resistance |
-| No independent audit | Undiscovered vulnerabilities are possible |
+| File and folder names | `divorce-settlement.pdf.gpg` reveals a great deal |
+| Collection names | They are ordinary folders |
+| File sizes, approximately | Can help identify known files |
+| File count and timestamps | Reveal activity patterns |
+| Your account, IP, and upload times | Encryption cannot hide these |
 
-## Future hardening
+Encrypting a name would need an archive mode or a name-mapping layer, which is on the
+[roadmap](ROADMAP.md). **If you need hidden names today, use a tool that encrypts them,
+such as [Cryptomator](https://cryptomator.org/) or
+[rclone crypt](https://rclone.org/crypt/).** In the meantime, keep names vague, or put
+files in an archive before encrypting it.
 
-- Independent Windows encryption/decryption interoperability tests.
-- Better filename/metadata privacy through archive mode.
-- Explicit restore-location cloud-sync detection and warnings.
-- Signed Windows releases and reproducible-build documentation.
-- Input fuzzing, unusual path testing, Windows filesystem edge cases.
-- A documented key-recovery drill and backup verification UX.
+### Tampering
+
+| Attack | Status |
+| --- | --- |
+| Corrupting or altering a file | **Detected**: integrity check fails, nothing restored |
+| Replacing a file with unencrypted data | **Detected**: rejected on restore |
+| Deleting files | **Not preventable**: keep other copies |
+| Serving an older version (rollback) | **Not detected** |
+| Swapping two files encrypted with the same secret | **Not detected**: names aren't bound to contents |
+| **Public-key mode only:** replacing a file with new content encrypted to your public key | **Not detected** |
+
+The last row deserves emphasis. Public keys are public and files are not signed, so
+anyone who has your public key can create a file that decrypts perfectly. Passphrase
+mode is not affected, because creating a valid file requires the passphrase. Sign-and-encrypt
+is on the roadmap.
+
+### Your recipient key ID is visible in public-key mode
+
+Each file records the key ID it is encrypted to, without any encryption. A provider can
+link all such files together and, if your key is on a public keyserver, to your identity.
+Passphrase mode has no such identifier.
+
+### Passphrase strength is on you
+
+OpenPGP's S2K function is deliberately slow but **not memory-hard**, so it resists
+GPU cracking far less than modern functions such as Argon2. A strong passphrase is what
+really protects you. Use five or more random words, or the Generate button, which gives
+about 147 bits. A weak passphrase cannot be fixed by any setting.
+
+### The saved passphrase vault
+
+The vault is optional. Its design:
+
+- One GnuPG-encrypted JSON file, with the settings above. Plaintext exists only in
+  pipes and in memory, and each save is decrypted and compared before it replaces
+  the previous version.
+- `gpg --decrypt vault.gpg` opens it without this application, so nothing is locked in.
+
+Its costs, which you should weigh:
+
+- **It is a single point of failure.** One weak master passphrase exposes every saved
+  passphrase. One forgotten master passphrase loses all of them, with no recovery.
+- **Secrets stay in memory while it is unlocked.** Python cannot reliably erase strings,
+  and memory can reach the pagefile or a hibernation file. Locking drops the app's
+  references, but copies may persist until that memory is reused. Full-disk encryption
+  reduces this risk.
+- **Typed passphrases pass through this app.** Choosing "GnuPG asks for each file" keeps
+  them in Pinentry, so the app never sees them, at the cost of one prompt per file.
+- **The clipboard is exposed while a secret is on it.** Copying is cleared after 30 seconds
+  and requests exclusion from Windows clipboard history and cloud sync, but other software
+  on your computer can still read it, and not every clipboard tool honors the request.
+- **A deleted entry may survive for one save** in `vault.bak.gpg`, encrypted under the
+  same master passphrase. Changing the master passphrase removes that backup. Neither
+  operation securely erases old disk sectors.
+
+### Your own computer
+
+- Originals and restored files are ordinary, unencrypted files.
+- **If your originals sit in OneDrive, Dropbox, or similar, your provider likely already has
+  them.** Encrypting a copy doesn't undo that. The app warns when it recognizes such a
+  folder, but detection is a heuristic and misses clients it doesn't know.
+- Restoring into a synced folder would upload the plaintext. The app warns about this too,
+  with the same limitation.
+- A crash or power cut during a restore can leave a hidden `.myob-*.partial` file containing
+  plaintext in the restore folder.
+- The operating system may keep traces such as thumbnails, search indexes, and recent-file lists.
+- Restored files do not carry Windows' Mark-of-the-Web, so SmartScreen will not warn about
+  them. Be careful running anything you restored, particularly in public-key mode.
+
+### Other limits
+
+- **Malicious compressed input** can expand hugely on restore and fill your disk. It cannot
+  overwrite anything, and the partial output is removed.
+- **Quantum computers.** AES-256 is considered comfortable against known quantum attacks,
+  so passphrase mode has a good margin. Classical public keys (RSA, ECC) are not safe against
+  a future quantum attacker who has saved your ciphertext. GnuPG 2.5 and later can create
+  post-quantum Kyber keys, which this app can use like any other key, but that path has had
+  little testing here.
+- **Signed files from other tools** will not restore until you import the signer's public
+  key, because GnuPG reports the unverifiable signature as an error. The app explains this
+  rather than restoring a file whose signature it can't check.
+- **This is not a backup system.** It has no versioning or scheduling, and it doesn't verify that
+  files reached your provider. It is also not a workaround for your organization's data-handling policies.
+
+## Testing
+
+The test suite runs against real GnuPG and covers forged, tampered, truncated, and
+garbage input, plus the agent cache via a scripted Pinentry. See `tests/`. **Passing tests
+are not a security audit.** An independent review is needed before a stable release.
