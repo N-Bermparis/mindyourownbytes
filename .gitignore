@@ -41,3 +41,6 @@ token.json
 Thumbs.db
 .idea/
 .vscode/
+
+# Recipes that belong in the repository
+!packaging/*.spec

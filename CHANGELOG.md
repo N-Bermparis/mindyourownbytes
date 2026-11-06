@@ -20,6 +20,9 @@ First public version. Not independently audited.
 - Warnings before restoring into a synced folder, when originals already appear to be in
   one, and before encrypting to a key you can't decrypt with.
 - Real-GnuPG test suite, including forged, tampered, and truncated input.
+- A Windows installer and portable download with GnuPG included, so there's nothing else to
+  install. Both are built by CI, with published checksums, and tested by installing, upgrading,
+  and uninstalling for real.
 
 ### Security
 
@@ -43,6 +46,8 @@ These issues were found and fixed during the pre-release review, before any publ
 - **File and folder names, and approximate sizes, are visible to your provider.**
 - Rollback and swapping of files aren't detected, and public-key files aren't signed.
 - Hands-on testing with real Pinentry dialogs on a wider range of systems is still needed.
-- No signed or reproducible installer yet.
+- The Windows download isn't code-signed yet, so Windows warns about it, and Smart App Control
+  blocks it. Its builds aren't reproducible yet either.
+- The GnuPG included in the Windows download only updates when the app does.
 
 See the [threat model](docs/THREAT_MODEL.md) for the full list.

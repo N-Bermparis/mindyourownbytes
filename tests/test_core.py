@@ -2,6 +2,7 @@
 
 import os
 import subprocess
+import sys
 import tempfile
 import threading
 import unittest
@@ -10,6 +11,7 @@ from unittest.mock import patch
 
 from mindyourownbytes.core import (
     SourceItem,
+    bundled_gpg,
     collect_files,
     encode_passphrase,
     find_gpg,
@@ -19,6 +21,7 @@ from mindyourownbytes.core import (
     looks_cloud_synced,
     output_relative,
     process_items,
+    stop_bundled_gnupg,
     unique_target,
 )
 from tests.support import stderr_with_statuses
@@ -167,6 +170,92 @@ class GpgDiscoveryTests(TempDirCase):
                        "ProgramFiles(x86)": "", "LOCALAPPDATA": ""}
         with patch.dict(os.environ, environment):
             self.assertIsNone(find_gpg())
+
+    def _download_folder(self) -> Path:
+        """Lay out what the Windows download holds, and pretend to be running from it."""
+        folder = self.root / "app"
+        (folder / "gnupg" / "bin").mkdir(parents=True)
+        (folder / "gnupg" / "bin" / "gpg.exe").write_bytes(b"x")
+        for name, value in (("frozen", True), ("executable", str(folder / "mindyourownbytes.exe"))):
+            patcher = patch.object(sys, name, value, create=True)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        return folder
+
+    def test_source_checkouts_have_no_included_gnupg(self):
+        self.assertIsNone(bundled_gpg())
+
+    def test_included_gnupg_can_be_missing_from_the_download(self):
+        folder = self._download_folder()
+        self.assertEqual(bundled_gpg(), str(folder / "gnupg" / "bin" / "gpg.exe"))
+        (folder / "gnupg" / "bin" / "gpg.exe").unlink()
+        self.assertIsNone(bundled_gpg())
+
+    @unittest.skipUnless(os.name == "nt", "only the Windows download includes GnuPG")
+    def test_download_uses_its_own_gnupg_ahead_of_path(self):
+        folder = self._download_folder()
+        elsewhere = self.root / "elsewhere"
+        elsewhere.mkdir()
+        (elsewhere / "gpg.exe").write_bytes(b"x")
+        environment = {"PATH": str(elsewhere), "ProgramFiles": "", "ProgramW6432": "",
+                       "ProgramFiles(x86)": "", "LOCALAPPDATA": ""}
+        with patch.dict(os.environ, environment):
+            self.assertEqual(find_gpg(), str(folder / "gnupg" / "bin" / "gpg.exe"))
+
+    @unittest.skipUnless(os.name == "nt", "only the Windows download includes GnuPG")
+    def test_download_prefers_a_gnupg_the_user_installed(self):
+        self._download_folder()
+        installed = self.root / "Program Files" / "GnuPG" / "bin"
+        installed.mkdir(parents=True)
+        (installed / "gpg.exe").write_bytes(b"x")
+        environment = {"PATH": "", "ProgramFiles": str(self.root / "Program Files"), "ProgramW6432": "",
+                       "ProgramFiles(x86)": "", "LOCALAPPDATA": ""}
+        with patch.dict(os.environ, environment), patch("mindyourownbytes.core.is_valid_gpg", return_value=True):
+            self.assertEqual(find_gpg(), str(installed / "gpg.exe"))
+
+    @unittest.skipUnless(os.name == "nt", "only the Windows download includes GnuPG")
+    def test_an_unusable_installed_gnupg_does_not_hide_the_included_one(self):
+        folder = self._download_folder()
+        installed = self.root / "Program Files" / "GnuPG" / "bin"
+        installed.mkdir(parents=True)
+        (installed / "gpg.exe").write_bytes(b"x")
+        environment = {"PATH": "", "ProgramFiles": str(self.root / "Program Files"), "ProgramW6432": "",
+                       "ProgramFiles(x86)": "", "LOCALAPPDATA": ""}
+        with patch.dict(os.environ, environment), patch("mindyourownbytes.core.is_valid_gpg", return_value=False):
+            self.assertEqual(find_gpg(), str(folder / "gnupg" / "bin" / "gpg.exe"))
+
+    @unittest.skipUnless(os.name == "nt", "the standard install locations are only searched on Windows")
+    def test_without_a_download_an_unusable_gnupg_is_still_found_and_reported(self):
+        installed = self.root / "Program Files" / "GnuPG" / "bin"
+        installed.mkdir(parents=True)
+        (installed / "gpg.exe").write_bytes(b"x")
+        environment = {"PATH": "", "ProgramFiles": str(self.root / "Program Files"), "ProgramW6432": "",
+                       "ProgramFiles(x86)": "", "LOCALAPPDATA": ""}
+        with patch.dict(os.environ, environment), patch("mindyourownbytes.core.is_valid_gpg", return_value=False):
+            self.assertEqual(find_gpg(), str(installed / "gpg.exe"))
+
+    def test_closing_stops_only_the_included_gnupg(self):
+        folder = self._download_folder()
+        bin_folder = folder / "gnupg" / "bin"
+        with patch("mindyourownbytes.core.subprocess.run") as run:
+            stop_bundled_gnupg(str(self.root / "Program Files" / "GnuPG" / "bin" / "gpg.exe"))
+            stop_bundled_gnupg("")
+            run.assert_not_called()
+            stop_bundled_gnupg(str(bin_folder / "gpg.exe"))
+        self.assertEqual(run.call_args.args[0], [str(bin_folder / "gpgconf.exe"), "--kill", "all"])
+
+    def test_source_checkouts_never_stop_anyones_gnupg(self):
+        with patch("mindyourownbytes.core.subprocess.run") as run:
+            stop_bundled_gnupg("gpg")
+            stop_bundled_gnupg("")
+        run.assert_not_called()
+
+    def test_failing_to_stop_gnupg_does_not_interrupt_closing(self):
+        folder = self._download_folder()
+        included = str(folder / "gnupg" / "bin" / "gpg.exe")
+        for failure in (OSError("gone"), subprocess.TimeoutExpired("gpgconf", 15)):
+            with patch("mindyourownbytes.core.subprocess.run", side_effect=failure):
+                stop_bundled_gnupg(included)
 
     def test_relative_binary_is_never_executed(self):
         with patch("mindyourownbytes.core.subprocess.run") as run:

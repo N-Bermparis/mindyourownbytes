@@ -23,7 +23,8 @@ reviewed this software. If you find a gap, please see [SECURITY.md](../SECURITY.
 ## Trust assumptions
 
 1. Your operating system and computer are not compromised.
-2. The GnuPG you installed is authentic. Everything rests on it.
+2. The GnuPG in use is authentic, whether you installed it or it came with the Windows
+   download. Everything rests on it.
 3. Your passphrases are strong, and you can find them again.
 4. For public-key mode, you protect and back up your private key.
 5. You upload only `.gpg` files, never originals.
@@ -68,8 +69,8 @@ decrypt the file with no prompt for as long as the cache lasts.
 local processes. Passphrases reach GnuPG through Pinentry or a stdin pipe.
 
 **GnuPG is located safely.** The current directory is never searched, and standard
-install locations are checked first, so a `gpg.exe` planted in a folder such as
-Downloads will not be executed.
+install locations are checked first, then the copy inside the Windows download, then
+PATH. A `gpg.exe` planted in a folder such as Downloads will not be executed.
 
 **Failures stay contained.** Files are staged under a temporary name and published
 only after success, without overwriting anything. A failed file leaves nothing behind
@@ -184,6 +185,46 @@ Its costs, which you should weigh:
   rather than restoring a file whose signature it can't check.
 - **This is not a backup system.** It has no versioning or scheduling, and it doesn't verify that
   files reached your provider. It is also not a workaround for your organization's data-handling policies.
+
+## The Windows download
+
+Running a download means trusting whoever built it, so here is exactly what you're trusting.
+
+**Who builds it.** GitHub Actions builds it from a tagged commit, using this repository's
+public workflow. Python packages are checked against hashes, and GnuPG and the installer
+tool against pinned SHA-256 checksums. A person checks each release and publishes it.
+
+**It isn't code-signed yet.** Windows therefore warns about it and can't tell you who made
+it. The published checksums show that your file matches the release page, but someone who
+took over the GitHub account could change both. Once this repository is public, each file
+also gets a [build attestation](https://docs.github.com/actions/security-for-github-actions/using-artifact-attestations),
+which ties it to the workflow and commit that produced it:
+
+```bash
+gh attestation verify FILE --repo N-Bermparis/mindyourownbytes
+```
+
+That still trusts GitHub, and builds aren't reproducible yet, so nobody can yet confirm a
+file by building it themselves. Code signing and reproducible builds are on the
+[roadmap](ROADMAP.md).
+
+**The included GnuPG.** These are the official Windows files, unmodified, and each one
+carries g10 Code's signature, which you can see under its Properties. Files that reach
+the network (`dirmngr`, `gpg-wks-client`, `libntbtls`) are left out, as are translations,
+and CI fails if any of them, or Qt's or Python's network code, reappear. A GnuPG you
+installed yourself takes priority, unless it's broken or too old to use. When the app
+closes, it stops the included GnuPG's background helpers, which also clears any private
+key passphrase that gpg-agent had remembered.
+
+**Updates are manual.** The app never connects to anything, so it can't tell you when
+there's a new version, and the included GnuPG only updates when the app does. A security
+fix in GnuPG leads to a new release, but you have to install it. If you'd rather get
+GnuPG updates separately, install Gpg4win, and the app will use it.
+
+**It installs for your account only.** That avoids asking for administrator rights, but
+it means that anything running as you could replace the app or its GnuPG. Such a program
+could also do much else, as [your own computer](#your-own-computer) explains. Gpg4win in
+Program Files can't be changed that way, so it's somewhat better protected.
 
 ## Testing
 

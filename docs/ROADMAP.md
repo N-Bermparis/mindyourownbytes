@@ -30,7 +30,8 @@ specific provider. Those are not missing features; they are the point.
 
 ## Then: 0.3 — Easier to install and trust
 
-- [ ] Signed Windows releases with published checksums
+- [x] A Windows installer with GnuPG included, built in CI with published checksums
+- [ ] Code-signed Windows releases, so that Windows stops warning about them
 - [ ] Reproducible builds
 - [ ] Linux and macOS packages (Flatpak, Homebrew)
 - [ ] A command-line interface for scripting

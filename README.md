@@ -6,6 +6,8 @@ Encrypt your files on your own computer, then put them on any cloud you like. No
 account, no API keys, no new file format: just standard OpenPGP files that open with
 plain GnuPG, with or without this app.
 
+**[Download for Windows](https://github.com/N-Bermparis/mindyourownbytes/releases)** · [Linux and macOS](#run-from-source)
+
 [![CI](https://github.com/N-Bermparis/mindyourownbytes/actions/workflows/ci.yml/badge.svg)](https://github.com/N-Bermparis/mindyourownbytes/actions/workflows/ci.yml)
 [![License: GPL v3+](https://img.shields.io/badge/license-GPL--3.0--or--later-blue)](LICENSE)
 ![Python 3.12+](https://img.shields.io/badge/python-3.12%2B-blue)
@@ -60,20 +62,60 @@ can't read. This app makes that a drag and drop.
 | --- | --- |
 | ![The library, showing files grouped in collections](docs/assets/screenshot-library.png) | ![The vault, listing saved passphrases by name](docs/assets/screenshot-vault.png) |
 
-No telemetry, no accounts, and no network calls. All cryptography is done by
-[GnuPG](https://gnupg.org/): this project does not implement any of its own.
+No telemetry, no accounts, and no network calls. The Windows download doesn't even contain
+the network code from its libraries. All cryptography is done by [GnuPG](https://gnupg.org/):
+this project does not implement any of its own.
 
 ## Getting started
 
-You need [Python 3.12+](https://www.python.org/downloads/) and GnuPG, which on Windows means
-[Gpg4win](https://gpg4win.org/download.html).
+**On Windows 10 or 11:**
+
+1. [Download the installer](https://github.com/N-Bermparis/mindyourownbytes/releases), the file ending in `-setup.exe`.
+2. Run it and click **Install**. It needs no administrator rights, and there's nothing else to
+   install: [GnuPG](https://gnupg.org/) is included.
+
+To update, run a newer installer over the old one. To remove the app, use Settings > Apps. Neither
+touches your encrypted files, keys, or saved passphrases. Prefer not to install anything? The
+`-portable.zip` is the same app: unzip it and open `mindyourownbytes.exe`.
+
+If you already have [Gpg4win](https://gpg4win.org/), the app uses that instead of its own copy, so
+your keys and Kleopatra keep working as they are. Keys are optional: you only need Gpg4win to create
+one, and most people can use a passphrase.
+
+### Windows will warn you
+
+The downloads aren't code-signed yet, so Windows doesn't recognize who published them.
+
+- **"Windows protected your PC":** after [checking your download](#check-your-download), click
+  **More info**, then **Run anyway**.
+- **Smart App Control** blocks unsigned apps with no way to continue. If it's on, wait for signed
+  builds, or [run from source](#run-from-source).
+
+### Check your download
+
+Each [release](https://github.com/N-Bermparis/mindyourownbytes/releases) lists the SHA-256 checksum of every file. In PowerShell, run this on the
+file you downloaded, and compare the result:
+
+```powershell
+Get-FileHash .\mindyourownbytes-*-setup.exe
+```
+
+A match shows that you have the file published there, which is what matters if it reached you some
+other way or was damaged on the way. It can't help if the GitHub account itself were compromised:
+the [threat model](docs/THREAT_MODEL.md#the-windows-download) explains what you're trusting.
+
+### Run from source
+
+For Linux and macOS, or if you'd rather not run a download. You need
+[Python 3.12+](https://www.python.org/downloads/) and GnuPG.
 
 **Windows**
 
-1. [Download the code](https://github.com/N-Bermparis/mindyourownbytes/archive/refs/heads/main.zip) and unzip it.
-2. Run `setup_windows.bat` once. It needs internet access to install the interface library, with
+1. Install [Gpg4win](https://gpg4win.org/download.html).
+2. [Download the code](https://github.com/N-Bermparis/mindyourownbytes/archive/refs/heads/main.zip) and unzip it.
+3. Run `setup_windows.bat` once. It needs internet access to install the interface library, with
    every package checked against a hash in `requirements.txt`.
-3. Run `start_windows.bat`.
+4. Run `start_windows.bat`.
 
 **Linux and macOS (experimental)**
 

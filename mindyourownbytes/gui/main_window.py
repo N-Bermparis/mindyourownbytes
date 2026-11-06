@@ -45,6 +45,7 @@ from mindyourownbytes.core import (
     JobResult,
     PublicKey,
     SourceItem,
+    bundled_gpg,
     collect_files,
     find_gpg,
     find_kleopatra,
@@ -54,6 +55,7 @@ from mindyourownbytes.core import (
     looks_cloud_synced,
     peek_protection,
     process_items,
+    stop_bundled_gnupg,
 )
 from mindyourownbytes.gui import icons, theme
 from mindyourownbytes.gui.dialogs import PassphraseDialog, ProtectionDialog
@@ -670,6 +672,8 @@ class MainWindow(QMainWindow):
     def show_about(self):
         version = gpg_version(self.gpg) if self.gpg else None
         engine = f"GnuPG {'.'.join(map(str, version))}" if version else "GnuPG not found"
+        if version and self.gpg == bundled_gpg():
+            engine += " (included with this app)"
         QMessageBox.about(
             self, "About mindyourownbytes",
             f"<p style='font-weight:600'>mindyourownbytes {__version__}</p>"
@@ -850,7 +854,7 @@ class MainWindow(QMainWindow):
         except Exception:
             keys = []
         if not keys:
-            self.key_combo.addItem("No keys found. Create one in Kleopatra.", "")
+            self.key_combo.addItem("No keys found. Create one in Kleopatra, part of Gpg4win.", "")
             return
         for key in keys:
             owner = "your key" if key.has_secret else "someone else's key"
@@ -1131,7 +1135,11 @@ class MainWindow(QMainWindow):
         method = "public-key" if selection == "public-key" else "password"
         fingerprint = str(self.key_combo.currentData() or "") if selection == "public-key" else None
         if selection == "public-key" and not fingerprint:
-            QMessageBox.warning(self, "No encryption key", "Create an OpenPGP key in Kleopatra, then refresh the list.")
+            QMessageBox.warning(
+                self, "No encryption key",
+                "Create an OpenPGP key in Kleopatra, then refresh the list. Kleopatra comes with Gpg4win "
+                "(https://gpg4win.org/). If you don't use keys, choose Passphrase instead.",
+            )
             return
         output = self._job_directory()
         if output is None or not self._confirm_locations(output):
@@ -1301,6 +1309,7 @@ class MainWindow(QMainWindow):
             self._thread.wait(3000)
         self.vault_page.clipboard.clear()
         self.vault.lock()
+        stop_bundled_gnupg(self.gpg)
         event.accept()
 
 
@@ -1320,13 +1329,29 @@ def _use_own_taskbar_icon() -> None:
         ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("mindyourownbytes.app")
 
 
-def main():
+def _mark_as_running() -> None:
+    """Lets the Windows installer and uninstaller see that the app is open.
+
+    They ask people to close it first, rather than replacing files in the middle of a batch.
+    """
+    if sys.platform == "win32":
+        # Never closed on purpose: Windows releases it when the app exits.
+        ctypes.windll.kernel32.CreateMutexW(None, False, "mindyourownbytes-running")
+
+
+def create_application() -> QApplication:
     _use_own_taskbar_icon()
     app = QApplication(sys.argv)
     app.setApplicationName("mindyourownbytes")
     app.setOrganizationName("mindyourownbytes")
     app.setWindowIcon(icons.app_icon())
     theme.configure_application(app)
+    return app
+
+
+def main():
+    _mark_as_running()
+    app = create_application()
     sys.excepthook = _show_unexpected_error
     window = MainWindow()
     window.show()
