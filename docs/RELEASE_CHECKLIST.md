@@ -12,8 +12,7 @@ release pull request. Passing this list is not a security certification.
 - [ ] Add a `main` ruleset requiring a pull request and passing CI, with no force pushes.
 - [ ] Enable secret scanning, push protection, and Dependabot alerts.
 - [ ] Upload `docs/assets/social-preview.png` as the social preview (Settings → General → Social preview).
-- [ ] After the first public release, confirm the workflow's attestation step ran, and that
-      `gh attestation verify FILE --repo N-Bermparis/mindyourownbytes` works. It can't run on a private repository.
+- [ ] Have the first release ready to publish, because the README's download link leads to the Releases page.
 
 ## Functional checks with real Pinentry, on Windows
 
@@ -53,6 +52,9 @@ release pull request. Passing this list is not a security certification.
       new unsigned downloads attract them.
 - [ ] Read the draft's notes, then publish it. Keep it marked as a pre-release until an independent
       review has happened.
+- [ ] On the first release after the repository goes public, confirm that the workflow's attestation step
+      ran, and that `gh attestation verify FILE --repo N-Bermparis/mindyourownbytes` works. It can't run
+      on a private repository.
 - [ ] Do not describe the project as audited or production-ready unless that has been established.
 
 ## Updating GnuPG
