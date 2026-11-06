@@ -7,7 +7,7 @@ import time
 import unittest
 from pathlib import Path
 
-from mindyourownbytes.core import SourceItem, collect_files, list_public_keys, process_items
+from mindyourownbytes.core import SourceItem, collect_files, gpg_version, list_public_keys, process_items
 from tests.support import GpgTestCase
 
 PASSPHRASE = "correct horse battery staple"
@@ -256,6 +256,20 @@ class PublicKeyTests(IntegrationCase):
         result = self.job([self.item(self.write("a.txt"))], "exports", "encrypt", "public-key", foreign.fingerprint)
         self.assertEqual((result.succeeded, result.failed), (0, 1))
         self.assertIn("refused this key", self.progress[-1][2])
+
+    def test_post_quantum_key_round_trip(self):
+        version = gpg_version(self.gpg)
+        if version is None or version < (2, 5, 0):
+            self.skipTest("Kyber keys need GnuPG 2.5 or later")
+        fingerprint = self.generate_key("Quantum <quantum@example.invalid>", algorithm="pqc")
+        self.assertEqual([key.fingerprint for key in list_public_keys(self.gpg)], [fingerprint])
+        encrypted = self.job([self.item(self.write("a.txt", b"harvest now, decrypt later"))], "exports",
+                             "encrypt", "public-key", fingerprint)
+        self.assertEqual((encrypted.succeeded, encrypted.failed), (1, 0), self.progress)
+        self.assertRegex(self.packets(encrypted.outputs[0]), r"pubkey enc packet: version \d+, algo 8\b",
+                         "expected a Kyber recipient")
+        restored = self.job([self.item(encrypted.outputs[0])], "restored", "restore", "public-key")
+        self.assertEqual(restored.outputs[0].read_bytes(), b"harvest now, decrypt later")
 
     def signed_by_someone_else(self, tamper: bool = False) -> Path:
         """A file signed by an outside key, like Kleopatra's sign-and-encrypt produces."""

@@ -48,7 +48,8 @@ can't read. This app makes that a drag and drop.
   encrypted under one master passphrase. It can also generate strong ones.
 - **Organize into collections** such as Taxes or Medical, then browse, search, and move files
   in the Library. Collections are plain folders, so they work in Explorer and on any cloud too.
-- **Or use OpenPGP keys** you already manage in Kleopatra.
+- **Or use OpenPGP keys** you already manage in Kleopatra, including post-quantum Kyber keys
+  with GnuPG 2.5 or later.
 - **Restore safely.** Forged, tampered, and truncated files are rejected, with nothing written.
 - **Works with any storage**, because it never talks to any: Google Drive, OneDrive, Dropbox,
   iCloud, a NAS, or a USB stick. You upload the files yourself.

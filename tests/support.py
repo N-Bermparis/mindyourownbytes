@@ -53,10 +53,11 @@ class GpgTestCase(unittest.TestCase):
         return subprocess.run([self.gpg, "--batch", "--no-tty", *args], capture_output=True,
                               check=False, timeout=60, **kwargs)
 
-    def generate_key(self, uid: str = "Test <test@example.invalid>", expire: str = "1y", passphrase: str = "") -> str:
+    def generate_key(self, uid: str = "Test <test@example.invalid>", expire: str = "1y", passphrase: str = "",
+                     algorithm: str = "default") -> str:
         """Create a key in the isolated home, with no passphrase by default. Returns its fingerprint."""
         result = self.run_gpg("--passphrase", passphrase, "--pinentry-mode", "loopback",
-                              "--quick-generate-key", uid, "default", "default", expire)
+                              "--quick-generate-key", uid, algorithm, "default", expire)
         if result.returncode != 0:
             self.skipTest(f"gpg-agent could not create a key here: {result.stderr[-200:]!r}")
         listing = self.run_gpg("--with-colons", "--fingerprint", "--list-keys", uid).stdout.decode()

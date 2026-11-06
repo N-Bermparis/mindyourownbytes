@@ -175,8 +175,9 @@ Its costs, which you should weigh:
 - **Quantum computers.** AES-256 is considered comfortable against known quantum attacks,
   so passphrase mode has a good margin. Classical public keys (RSA, ECC) are not safe against
   a future quantum attacker who has saved your ciphertext. GnuPG 2.5 and later can create
-  post-quantum Kyber keys, which this app can use like any other key, but that path has had
-  little testing here.
+  post-quantum Kyber keys (`gpg --quick-generate-key "You <you@example.com>" pqc`), and a test
+  runs one through this app whenever GnuPG is new enough. These keys are still new, and older
+  GnuPG and other OpenPGP tools may not be able to read the files they produce.
 - **Signed files from other tools** will not restore until you import the signer's public
   key, because GnuPG reports the unverifiable signature as an error. The app explains this
   rather than restoring a file whose signature it can't check.
