@@ -5,12 +5,21 @@ import os
 import runpy
 import sys
 import tempfile
+import threading
 import time
 import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from mindyourownbytes.core import CIPHERS, READY, JobResult, available_ciphers, list_public_keys
+from mindyourownbytes.core import (
+    CIPHERS,
+    READY,
+    JobResult,
+    SourceItem,
+    available_ciphers,
+    list_public_keys,
+    process_items,
+)
 from tests.support import GpgTestCase
 
 HAS_QT = importlib.util.find_spec("PySide6") is not None
@@ -34,10 +43,13 @@ def app() -> "QApplication":
     return QApplication.instance() or QApplication([])
 
 
-def isolated_settings(folder: Path) -> "QSettings":
+def isolated_settings(folder: Path, advanced: bool = True) -> "QSettings":
+    """Advanced by default, because most of these tests are about what only advanced mode offers."""
     settings = QSettings(str(folder / "settings.ini"), QSettings.Format.IniFormat)
     settings.setValue("output_encrypt", str(folder / "exports"))
     settings.setValue("output_restore", str(folder / "restored"))
+    if advanced:
+        settings.setValue("advanced", "true")
     return settings
 
 
@@ -834,6 +846,107 @@ class CheckAfterEncryptingTests(GuiCase):
         self.assertFalse(self.window.menuBar().isEnabled())
         self.window._set_busy(False)
         self.assertTrue(self.window.menuBar().isEnabled())
+
+
+class SimpleAndAdvancedModeTests(GuiCase):
+    """Simple by default, with safe settings. One remembered switch shows everything else."""
+
+    def fresh(self, **saved):
+        """A window as on a computer where this switch was never set."""
+        folder = Path(tempfile.mkdtemp(dir=self.root))
+        settings = isolated_settings(folder, advanced=False)
+        settings.setValue("output_encrypt", str(self.root / "exports"))
+        settings.setValue("output_restore", str(self.root / "restored"))
+        for name, value in saved.items():
+            settings.setValue(name, value)
+        window = MainWindow(settings, folder / "vault.gpg")
+        self.addCleanup(window.close)
+        return window, settings
+
+    def advanced_widgets_hidden(self, window) -> list[bool]:
+        return [window.key_radio.isHidden(), window.algorithm_combo.isHidden(), window.algorithm_label.isHidden(),
+                window.check_action.isVisible(), window.pinentry_action.isVisible()]
+
+    def test_a_new_installation_starts_simple_and_remembers_it(self):
+        window, settings = self.fresh()
+        self.assertFalse(window.advanced())
+        self.assertEqual(settings.value("advanced"), "false")
+        self.assertEqual(self.advanced_widgets_hidden(window), [True, True, True, False, False])
+        self.assertFalse(window.more_options.isHidden())
+        self.assertTrue(window.passphrase_radio.isVisibleTo(window.method_card))
+        self.assertTrue(window.saved_radio.isVisibleTo(window.method_card))
+        self.assertEqual(window.method(), "once")
+
+    def test_anyone_relying_on_an_advanced_option_starts_advanced(self):
+        for saved in ({"cipher": "TWOFISH"}, {"use_pinentry": "true"}, {"check_after_encrypting": "false"}):
+            with self.subTest(saved):
+                window, settings = self.fresh(**saved)
+                self.assertTrue(window.advanced())
+                self.assertEqual(settings.value("advanced"), "true")
+                self.assertTrue(window.more_options.isHidden())
+
+    def test_someone_with_a_key_of_their_own_starts_advanced(self):
+        self.generate_key("Me <me@example.invalid>")
+        window, _ = self.fresh()
+        self.assertTrue(window.advanced())
+        self.assertFalse(window.key_radio.isHidden())
+
+    def test_a_saved_choice_of_mode_wins_over_any_guess(self):
+        window, _ = self.fresh(advanced="false", cipher="TWOFISH", use_pinentry="true")
+        self.assertFalse(window.advanced())
+
+    def test_simple_mode_uses_safe_settings_whatever_was_chosen_before(self):
+        window, _ = self.fresh(advanced="false", cipher="TWOFISH", use_pinentry="true",
+                               check_after_encrypting="false")
+        self.assertEqual((window.method(), window.chosen_cipher()), ("once", "AES256"))
+        window.add_paths([str(self.write("a.txt", b"simple"))])
+        dialog = MagicMock()
+        dialog.exec.return_value = True
+        dialog.passphrase.return_value = PASSPHRASE
+        with patch.object(main_window, "PassphraseDialog", return_value=dialog):
+            window.start()
+        self.wait_until(lambda: not window.running)
+        self.wait_until(lambda: window._thread is None)
+        self.assertRegex(self.packets(self.root / "exports" / "a.txt.gpg", PASSPHRASE), r"cipher 9\b")
+        self.assertIn("with AES-256 and checked", window.result_bar.title_label.text())
+
+    def test_more_options_turns_on_advanced_and_keeps_earlier_choices(self):
+        window, settings = self.fresh(advanced="false", cipher="TWOFISH")
+        window.more_options.linkActivated.emit("#more")
+        self.assertTrue(window.advanced())
+        self.assertEqual(settings.value("advanced"), "true")
+        self.assertEqual(self.advanced_widgets_hidden(window), [False, False, False, True, True])
+        self.assertEqual(window.chosen_cipher(), "TWOFISH", "the earlier choice was kept, not lost")
+
+    def test_switching_to_simple_never_leaves_a_key_chosen(self):
+        self.window.set_method("public-key")
+        self.assertEqual(self.window.method(), "public-key")
+        self.window.advanced_action.setChecked(False)
+        self.assertEqual(self.window.method(), "once")
+        self.assertTrue(self.window.passphrase_radio.isChecked())
+        self.assertEqual(self.settings.value("advanced"), "false")
+
+    def test_simple_mode_still_restores_files_for_a_key(self):
+        window, _ = self.fresh()
+        self.assertFalse(window.advanced())
+        fingerprint = self.generate_key("Me <me@example.invalid>")
+        source = self.write("k.txt", b"for the key")
+        encrypted = process_items(self.gpg, [SourceItem(source, Path("k.txt"), source.stat().st_size)],
+                                  self.root / "exports", "encrypt", "public-key", fingerprint, threading.Event(),
+                                  lambda *args: None)
+        window.set_operation("restore")
+        window.add_paths([str(encrypted.outputs[0])])
+        self.assertFalse(window.key_radio.isHidden(), "restoring offers the key when the files need it")
+        self.assertEqual(window.method(), "pinentry")
+        window.start()
+        self.wait_until(lambda: not window.running)
+        self.wait_until(lambda: window._thread is None)
+        self.assertEqual((self.root / "restored" / "k.txt").read_bytes(), b"for the key")
+
+    def test_the_switch_is_first_in_the_tools_menu_and_explains_itself(self):
+        tools = self.window.menuBar().actions()[2].menu()
+        self.assertIs(tools.actions()[0], self.window.advanced_action)
+        self.assertIn("AES-256", self.window.advanced_action.toolTip())
 
 
 class AlgorithmChoiceTests(GuiCase):

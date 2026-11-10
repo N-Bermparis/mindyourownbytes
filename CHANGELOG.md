@@ -10,6 +10,9 @@ First public version. Not independently audited.
 ### Added
 
 - A guided, plain-language desktop app using native controls, with the system's light or dark mode.
+- Simple and advanced modes. New installations start simple, with a passphrase or a saved one,
+  AES-256, and the check after encrypting. Tools > Show advanced options adds OpenPGP keys, the
+  algorithm, and GnuPG's own prompt. Anyone already using those starts in advanced mode.
 - Drag-and-drop encryption of files and folders to standard OpenPGP `.gpg` files.
 - **Encrypt with mindyourownbytes** in File Explorer's right-click menu, added by the installer for
   your account only. It adds the files to the list in the open window, and encrypts nothing by itself.
