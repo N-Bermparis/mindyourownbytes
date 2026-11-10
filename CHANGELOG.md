@@ -14,6 +14,9 @@ First public version. Not independently audited.
 - Passphrase encryption with a choice of AES-256 (the default), Twofish, or Camellia-256, and
   public-key encryption with Kleopatra/GnuPG keys, with each key's type shown in the list.
 - Type one passphrase for a whole batch, instead of one prompt per file.
+- Each file encrypted with a typed or saved passphrase is decrypted again and compared with its
+  original before it's reported as done. A copy that fails is deleted, with the reason shown.
+  It's on by default, and can be turned off in the Tools menu.
 - Encrypted vault for saved passphrases, with generation and auto-lock. Stored as a plain
   GnuPG file that opens without this application.
 - Library screen with collections, search, and moving files between collections.
@@ -47,6 +50,10 @@ These issues were found and fixed during the pre-release review, before any publ
 
 - **File and folder names, and approximate sizes, are visible to your provider.**
 - Rollback and swapping of files aren't detected, and public-key files aren't signed.
+- Files encrypted to an OpenPGP key, or through GnuPG's own passphrase prompt, aren't checked after
+  encrypting. Nothing checks that an upload reached your provider intact.
+- With `textmode` in `gpg.conf`, GnuPG changes line endings in what it encrypts. The check after
+  encrypting refuses such files, but files that aren't checked are affected without any warning.
 - Hands-on testing with real Pinentry dialogs on a wider range of systems is still needed.
 - The Windows download isn't code-signed yet, so Windows warns about it, and Smart App Control
   blocks it. Its builds aren't reproducible yet either.

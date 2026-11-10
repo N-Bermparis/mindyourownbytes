@@ -46,6 +46,8 @@ can't read. This app makes that a drag and drop.
 - **Drag in files or folders** and get encrypted `.gpg` copies, with folder structure kept.
   Your originals are never changed, and existing files are never overwritten.
 - **One passphrase for a whole batch**, typed once.
+- **Every file is checked before it's called done.** The app decrypts each new file again and
+  compares it with your original. A copy that doesn't match is thrown away, and you're told why.
 - **Choose the algorithm** for passphrase encryption: AES-256 (recommended), Twofish, or Camellia-256.
 - **Save different passphrases** for different kinds of documents, in an optional vault
   encrypted under one master passphrase. It can also generate strong ones.
@@ -139,8 +141,10 @@ been tested on macOS. Reports are very welcome.
 2. Choose how to protect them. *Passphrase* is the simplest. You can also pick an algorithm, but
    AES-256 suits nearly everyone.
 3. Optionally type a collection name, such as `Taxes`.
-4. Click **Encrypt**. When it's done, click **Open folder** and upload what's there. By default
-   that's `%USERPROFILE%\mindyourownbytes\Encrypted Exports`.
+4. Click **Encrypt**. Each file is encrypted, then decrypted again and compared with your original,
+   and its row then says **Encrypted and checked**.
+5. When it's done, click **Open folder** and upload what's there. By default that's
+   `%USERPROFILE%\mindyourownbytes\Encrypted Exports`.
 
 **Restore**
 
@@ -158,7 +162,24 @@ been tested on macOS. Reports are very welcome.
 | **OpenPGP key** | Existing Kleopatra users | You must back up your private key, and forged files aren't detected ([why](docs/THREAT_MODEL.md#tampering)) |
 
 Would you rather this app never saw your passphrase? Turn on **Tools > Let GnuPG ask for each
-passphrase**. You'll then be asked once for every file, so it's slower for folders.
+passphrase**. You'll then be asked once for every file, so it's slower for folders, and the app
+can't check the new files.
+
+### What "Encrypted and checked" means
+
+The new file decrypted back to exactly your original, on this computer, a moment ago. That's worth
+knowing before you delete an original, but it has limits:
+
+- **It can't see your upload.** Nothing here checks that a file reached your cloud intact.
+- **Files for an OpenPGP key aren't checked**, and neither are files that GnuPG asked about itself.
+  Checking them would mean asking you again, so they're marked **Encrypted, not checked**.
+- **A file that fails is not kept.** Its row says why, and **Try these again** runs it again. If the
+  original changed while it was being encrypted, the app says that instead.
+
+The check is on by default, and it takes time. On one test computer, a 256 MB file took 9 seconds
+in place of 6, and 200 small files took 56 seconds in place of 34. You can turn it off under
+**Tools > Check each file after encrypting it**.
+The [threat model](docs/THREAT_MODEL.md#how-the-design-defends-you) has the details.
 
 ### Which algorithm should I choose?
 

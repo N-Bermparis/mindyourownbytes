@@ -24,7 +24,8 @@ specific provider. Those are not missing features; they are the point.
 - [ ] **Hide file and folder names** (encrypted archive mode or name mapping)
 - [ ] Sign-and-encrypt, so public-key restores can detect forged files
 - [ ] Optional `--throw-keyids`, to hide the recipient in public-key mode
-- [ ] Verify each file after encrypting it
+- [x] Verify each file after encrypting it, wherever the app has the passphrase
+- [ ] Verify files encrypted to your own key, without asking for anything extra
 - [ ] Encrypt to several recipients, such as yourself and a recovery key
 - [ ] Preserve file timestamps and empty folders
 

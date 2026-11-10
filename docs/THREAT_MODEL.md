@@ -94,6 +94,43 @@ only after success, without overwriting anything. A failed file leaves nothing b
 and doesn't stop the rest of the batch. Links and junctions are never followed, and
 folders that can't be read are reported rather than silently left out.
 
+**Each new file is checked before it counts.** People may delete an original once its copy is
+reported as encrypted, so that report has to be true. Whenever the app has the passphrase (typed
+once for a batch, or saved), GnuPG decrypts each new file again while it still has its temporary
+name. The passphrase goes over a pipe, as it does for encrypting. The decrypted bytes come back over
+another pipe, are hashed with SHA-256 a piece at a time, and are never written to disk. The file gets
+its final name only if GnuPG exits without an error, reports `DECRYPTION_OKAY`, and the hash equals a
+hash of the original, which is read last. Otherwise the file is deleted, that row fails with the
+reason, and the rest of the batch carries on. If the original changed while this was happening, the
+app says so, rather than calling anything damaged.
+
+During review this caught a real case. With `textmode` in `gpg.conf`, GnuPG encrypts and decrypts
+without complaint, but the file that comes back has different line endings.
+
+What a passed check shows: at that moment, on this computer, with this GnuPG and the passphrase the
+app was given, the file decrypts to exactly the bytes of the original. What it can't show:
+
+- **That an upload reached your provider intact**, or that a file stays intact afterwards. The check
+  happens once, before the file leaves your computer.
+- **That the passphrase is the one you meant.** The same passphrase is used both ways, so a typing
+  mistake made in both boxes still passes.
+- **Anything about files it doesn't check.** That's every file encrypted to an OpenPGP key, or
+  through "Let GnuPG ask for each passphrase", because checking those would mean asking you again.
+  They're marked "Encrypted, not checked". It's also every file if you turn the check off in the
+  Tools menu.
+- **That another OpenPGP tool can open the file.** Only the GnuPG in use is asked.
+- **That GnuPG is honest.** The same program encrypts and decrypts, so this adds nothing against a
+  GnuPG that has been tampered with.
+- **A change to the original after its check.** The copy holds the file as it was then.
+
+The check costs time, because each file is decrypted once more and its passphrase is stretched once
+more. Measured on one computer with the Windows download's own hashing: one 256 MB file took 9.3
+seconds in place of 6.5, and 200 files of 4 KB took 56 seconds in place of 34.
+
+Two smaller limits: the decrypted bytes pass through this app's memory, a megabyte at a time, on
+their way to being hashed. And on Linux and macOS, a drive that doesn't support hard links gets the
+final file as a copy of the checked one, and that copy isn't checked again.
+
 **Decrypted filenames come from you.** Output paths are chosen by the app, so a name
 embedded in a malicious file cannot write outside the restore folder.
 
@@ -165,7 +202,8 @@ Its costs, which you should weigh:
   reduces this risk.
 - **Typed passphrases pass through this app.** Turning on "Let GnuPG ask for each passphrase"
   in the Tools menu keeps
-  them in Pinentry, so the app never sees them, at the cost of one prompt per file.
+  them in Pinentry, so the app never sees them, at the cost of one prompt per file. The app then
+  can't check the new files either, because it has no passphrase to decrypt them with.
 - **The clipboard is exposed while a secret is on it.** Copying is cleared after 30 seconds
   and requests exclusion from Windows clipboard history and cloud sync, but other software
   on your computer can still read it, and not every clipboard tool honors the request.
@@ -202,7 +240,7 @@ Its costs, which you should weigh:
   key, because GnuPG reports the unverifiable signature as an error. The app explains this
   rather than restoring a file whose signature it can't check.
 - **This is not a backup system.** It has no versioning or scheduling, and it doesn't verify that
-  files reached your provider. It is also not a workaround for your organization's data-handling policies.
+  files reached your provider. The check after encrypting ends on your own computer. It is also not a workaround for your organization's data-handling policies.
 
 ## The Windows download
 
