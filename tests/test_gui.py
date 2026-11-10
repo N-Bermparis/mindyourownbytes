@@ -5,12 +5,21 @@ import os
 import runpy
 import sys
 import tempfile
+import threading
 import time
 import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from mindyourownbytes.core import CIPHERS, READY, JobResult, available_ciphers, list_public_keys
+from mindyourownbytes.core import (
+    CIPHERS,
+    READY,
+    JobResult,
+    SourceItem,
+    available_ciphers,
+    list_public_keys,
+    process_items,
+)
 from tests.support import GpgTestCase
 
 HAS_QT = importlib.util.find_spec("PySide6") is not None
@@ -34,10 +43,13 @@ def app() -> "QApplication":
     return QApplication.instance() or QApplication([])
 
 
-def isolated_settings(folder: Path) -> "QSettings":
+def isolated_settings(folder: Path, advanced: bool = True) -> "QSettings":
+    """Advanced by default, because most of these tests are about what only advanced mode offers."""
     settings = QSettings(str(folder / "settings.ini"), QSettings.Format.IniFormat)
     settings.setValue("output_encrypt", str(folder / "exports"))
     settings.setValue("output_restore", str(folder / "restored"))
+    if advanced:
+        settings.setValue("advanced", "true")
     return settings
 
 
@@ -633,6 +645,22 @@ class ArchiveModeTests(GuiCase):
         self.assertEqual(self.window.result_bar.title_label.text(), "1 file encrypted into one archive")
         self.assertIn("Not checked", self.window.result_bar.text())
 
+    def test_the_provider_view_shows_the_one_archive_they_get(self):
+        from mindyourownbytes.gui import provider_view
+        self.write("Taxes/return.pdf", b"return")
+        self.write("Taxes/scan.jpg", b"scan")
+        self.window.add_paths([str(self.root / "input" / "Taxes")])
+        self.window.collection_combo.setCurrentText("Paperwork")
+        self.choose_archive("Year end")
+        with patch.object(provider_view, "ProviderView") as view:
+            self.window.provider_link.linkActivated.emit("#provider")
+        self.assertEqual(view.call_args.args[2], "Paperwork/Year end.zip.gpg")
+        self.assertEqual(len(view.call_args.args[1]), 2, "your own view still lists every file")
+        self.window.separate_radio.click()
+        with patch.object(provider_view, "ProviderView") as view:
+            self.window.provider_link.linkActivated.emit("#provider")
+        self.assertEqual(view.call_args.args[2], "")
+
     def test_the_choice_is_locked_while_a_job_runs(self):
         self.choose_archive()
         self.window.running = True
@@ -642,6 +670,148 @@ class ArchiveModeTests(GuiCase):
         self.window.running = False
         self.window._set_busy(False)
         self.assertTrue(self.window.archive_name_edit.isEnabled())
+
+
+@unittest.skipUnless(HAS_QT, "PySide6 is not installed")
+class ProviderViewTests(unittest.TestCase):
+    """The same files, as you see them and as your provider does."""
+
+    def setUp(self):
+        app()
+        temp = tempfile.TemporaryDirectory(prefix="myobtest")
+        self.addCleanup(temp.cleanup)
+        self.root = Path(temp.name)
+
+    def keep_until_the_end_of_this_test(self, widget):
+        """Destroyed while Qt is running. A widget with no parent, left for Python's exit, can crash it."""
+        from shiboken6 import delete
+        self.addCleanup(delete, widget)
+        return widget
+
+    def open(self, files=()):
+        from mindyourownbytes.gui import provider_view
+        return self.keep_until_the_end_of_this_test(provider_view.ProviderView(None, files))
+
+    def column(self, view, column):
+        return [view.table.item(row, column).text() for row in range(view.table.rowCount())]
+
+    def test_with_nothing_of_yours_it_shows_examples_and_starts_on_the_providers_view(self):
+        from mindyourownbytes.gui import provider_view
+        view = self.open()
+        self.assertTrue(view.examples)
+        self.assertTrue(view.providers_view())
+        self.assertEqual(self.column(view, 0), [shown.stored_name for shown in provider_view.EXAMPLES])
+        self.assertIn("divorce-settlement.pdf.gpg", self.column(view, 0))
+        self.assertEqual(self.column(view, 3), ["Unreadable once encrypted"] * 3)
+
+    def test_switching_shows_what_changes_and_what_doesnt(self):
+        from mindyourownbytes.gui import provider_view, theme
+        view = self.open(provider_view.EXAMPLES)
+        self.assertEqual(self.column(view, 1), ["Legal", "Medical", "—"])
+        self.assertEqual(view.table.item(0, 0).foreground().color(), theme.color("warn"))
+        self.assertEqual(view.table.item(0, 3).foreground().color(), theme.color("ok"))
+        self.assertIn("can see this name", view.table.item(0, 0).toolTip())
+        self.assertTrue(self.column(view, 2)[0].startswith("about "))
+        view.yours.click()
+        self.assertFalse(view.providers_view())
+        self.assertEqual(self.column(view, 0), ["divorce-settlement.pdf", "scan-001.jpg", "notes.txt"])
+        self.assertEqual(self.column(view, 3), ["Readable, on this computer"] * 3)
+        self.assertFalse(self.column(view, 2)[0].startswith("about"))
+        view.theirs.click()
+        self.assertEqual(self.column(view, 0)[0], "divorce-settlement.pdf.gpg")
+
+    def test_says_plainly_what_they_can_and_cant_see(self):
+        view = self.open()
+        text = " ".join(child.text() for child in view.findChildren(QLabel))
+        for phrase in ("File names", "Folder and collection names", "Roughly how big", "Which algorithm",
+                       "which key the files are for", "internet address", "What's inside any file",
+                       "never leave this computer", "keep them vague"):
+            self.assertIn(phrase, text)
+
+    def test_files_about_to_be_encrypted_show_the_names_they_will_get(self):
+        from mindyourownbytes.core import SourceItem
+        from mindyourownbytes.gui import provider_view
+        items = [SourceItem(self.root / "return.pdf", Path("Taxes 2026/return.pdf"), 1000),
+                 SourceItem(self.root / "notes.txt", Path("notes.txt"), 20)]
+        shown = provider_view.from_items(items, "Paperwork")
+        self.assertEqual([(s.name, s.folder, s.stored_as, s.encrypted) for s in shown], [
+            ("return.pdf", "Taxes 2026", "Paperwork/Taxes 2026/return.pdf.gpg", None),
+            ("notes.txt", "", "Paperwork/notes.txt.gpg", None)])
+        self.assertEqual(provider_view.from_items(items[1:])[0].stored_as, "notes.txt.gpg")
+
+    def test_files_already_encrypted_show_real_bytes_from_their_middle(self):
+        from mindyourownbytes.gui import provider_view
+        from mindyourownbytes.library import scan_library
+        (self.root / "Taxes").mkdir()
+        big = bytes([0x8C, 0x0D] * 8) + bytes(range(256)) * 4
+        (self.root / "Taxes" / "return.pdf.gpg").write_bytes(big)
+        (self.root / "tiny.txt.gpg").write_bytes(b"\x01\x02\x03")
+        shown = sorted(provider_view.from_library(scan_library(self.root)), key=lambda s: s.name)
+        self.assertEqual([(s.name, s.folder, s.stored_as) for s in shown],
+                         [("return.pdf", "Taxes", "Taxes/return.pdf.gpg"), ("tiny.txt", "", "tiny.txt.gpg")])
+        middle = len(big) // 2
+        expected = " ".join(f"{byte:02x}" for byte in big[middle:middle + 16])
+        self.assertEqual(provider_view.sample_bytes(shown[0].encrypted), f"… {expected} …")
+        self.assertEqual(provider_view.sample_bytes(shown[1].encrypted), "… 01 02 03 …")
+        self.assertEqual(provider_view.sample_bytes(self.root / "gone.gpg"), "")
+        view = self.open(shown)
+        self.assertEqual(view.table.item(0, 3).text(), f"… {expected} … (unreadable)")
+        self.assertIn("real bytes from the middle", view.table.item(0, 3).toolTip())
+
+    def test_the_window_offers_it_with_your_own_files(self):
+        from mindyourownbytes.gui import provider_view
+        folder = Path(tempfile.mkdtemp(prefix="myobtest"))
+        window = self.keep_until_the_end_of_this_test(MainWindow(isolated_settings(folder), folder / "vault.gpg"))
+        self.addCleanup(window.close)
+        titles = [action.text().replace("&", "") for action in window.findChildren(QAction)]
+        self.assertIn("What your provider sees", titles)
+        self.assertFalse(window.provider_link.isHidden())
+        window.set_operation("restore")
+        self.assertTrue(window.provider_link.isHidden())
+        window.set_operation("encrypt")
+        original = folder / "input" / "return.pdf"
+        original.parent.mkdir()
+        original.write_bytes(b"x")
+        window.add_paths([str(original)])
+        window.collection_combo.setCurrentText("Taxes")
+        with patch.object(provider_view, "ProviderView") as view:
+            window.provider_link.linkActivated.emit("#provider")
+        files = view.call_args.args[1]
+        self.assertEqual([shown.stored_as for shown in files], ["Taxes/return.pdf.gpg"])
+        view.return_value.exec.assert_called_once()
+
+    def test_with_one_archive_your_provider_sees_one_file(self):
+        from mindyourownbytes.gui import provider_view
+        files = [provider_view.Shown("return.pdf", "Taxes", 1000, "Paperwork/Taxes/return.pdf.gpg"),
+                 provider_view.Shown("scan.jpg", "Taxes", 3000, "Paperwork/Taxes/scan.jpg.gpg")]
+        view = self.open_archive(files, "Paperwork/Year end.zip.gpg")
+        self.assertEqual(view.table.rowCount(), 1)
+        self.assertEqual([view.table.item(0, column).text() for column in range(4)],
+                         ["Year end.zip.gpg", "Paperwork", "about 3.9 KB", "2 files, unreadable once encrypted"])
+        text = " ".join(child.text() for child in view.findChildren(QLabel))
+        self.assertIn("The names, folders, sizes, and number of the files inside", text)
+        self.assertNotIn("File names, exactly as they are", text)
+        view.yours.click()
+        self.assertEqual(self.column(view, 0), ["return.pdf", "scan.jpg"])
+
+    def open_archive(self, files, stored):
+        from mindyourownbytes.gui import provider_view
+        return self.keep_until_the_end_of_this_test(provider_view.ProviderView(None, files, stored))
+
+    def test_the_library_offers_it_for_the_files_chosen(self):
+        from mindyourownbytes.gui import library_page
+        exports = self.root / "exports"
+        (exports / "Taxes").mkdir(parents=True)
+        (exports / "Taxes" / "a.pdf.gpg").write_bytes(b"x" * 100)
+        (exports / "b.txt.gpg").write_bytes(b"y" * 100)
+        page = self.keep_until_the_end_of_this_test(library_page.LibraryPage(lambda: exports))
+        page.refresh()
+        with patch.object(library_page, "ProviderView") as view:
+            page.privacy_line.linkActivated.emit("#provider")
+            self.assertEqual(len(view.call_args.args[1]), 2, "every file shown, when none is selected")
+            page.table.selectRow(0)
+            page.privacy_line.linkActivated.emit("#provider")
+            self.assertEqual(len(view.call_args.args[1]), 1)
 
 
 class FromFileExplorerTests(GuiCase):
@@ -982,6 +1152,107 @@ class CheckAfterEncryptingTests(GuiCase):
         self.assertFalse(self.window.menuBar().isEnabled())
         self.window._set_busy(False)
         self.assertTrue(self.window.menuBar().isEnabled())
+
+
+class SimpleAndAdvancedModeTests(GuiCase):
+    """Simple by default, with safe settings. One remembered switch shows everything else."""
+
+    def fresh(self, **saved):
+        """A window as on a computer where this switch was never set."""
+        folder = Path(tempfile.mkdtemp(dir=self.root))
+        settings = isolated_settings(folder, advanced=False)
+        settings.setValue("output_encrypt", str(self.root / "exports"))
+        settings.setValue("output_restore", str(self.root / "restored"))
+        for name, value in saved.items():
+            settings.setValue(name, value)
+        window = MainWindow(settings, folder / "vault.gpg")
+        self.addCleanup(window.close)
+        return window, settings
+
+    def advanced_widgets_hidden(self, window) -> list[bool]:
+        return [window.key_radio.isHidden(), window.algorithm_combo.isHidden(), window.algorithm_label.isHidden(),
+                window.check_action.isVisible(), window.pinentry_action.isVisible()]
+
+    def test_a_new_installation_starts_simple_and_remembers_it(self):
+        window, settings = self.fresh()
+        self.assertFalse(window.advanced())
+        self.assertEqual(settings.value("advanced"), "false")
+        self.assertEqual(self.advanced_widgets_hidden(window), [True, True, True, False, False])
+        self.assertFalse(window.more_options.isHidden())
+        self.assertTrue(window.passphrase_radio.isVisibleTo(window.method_card))
+        self.assertTrue(window.saved_radio.isVisibleTo(window.method_card))
+        self.assertEqual(window.method(), "once")
+
+    def test_anyone_relying_on_an_advanced_option_starts_advanced(self):
+        for saved in ({"cipher": "TWOFISH"}, {"use_pinentry": "true"}, {"check_after_encrypting": "false"}):
+            with self.subTest(saved):
+                window, settings = self.fresh(**saved)
+                self.assertTrue(window.advanced())
+                self.assertEqual(settings.value("advanced"), "true")
+                self.assertTrue(window.more_options.isHidden())
+
+    def test_someone_with_a_key_of_their_own_starts_advanced(self):
+        self.generate_key("Me <me@example.invalid>")
+        window, _ = self.fresh()
+        self.assertTrue(window.advanced())
+        self.assertFalse(window.key_radio.isHidden())
+
+    def test_a_saved_choice_of_mode_wins_over_any_guess(self):
+        window, _ = self.fresh(advanced="false", cipher="TWOFISH", use_pinentry="true")
+        self.assertFalse(window.advanced())
+
+    def test_simple_mode_uses_safe_settings_whatever_was_chosen_before(self):
+        window, _ = self.fresh(advanced="false", cipher="TWOFISH", use_pinentry="true",
+                               check_after_encrypting="false")
+        self.assertEqual((window.method(), window.chosen_cipher()), ("once", "AES256"))
+        window.add_paths([str(self.write("a.txt", b"simple"))])
+        dialog = MagicMock()
+        dialog.exec.return_value = True
+        dialog.passphrase.return_value = PASSPHRASE
+        with patch.object(main_window, "PassphraseDialog", return_value=dialog):
+            window.start()
+        self.wait_until(lambda: not window.running)
+        self.wait_until(lambda: window._thread is None)
+        self.assertRegex(self.packets(self.root / "exports" / "a.txt.gpg", PASSPHRASE), r"cipher 9\b")
+        self.assertIn("with AES-256 and checked", window.result_bar.title_label.text())
+
+    def test_more_options_turns_on_advanced_and_keeps_earlier_choices(self):
+        window, settings = self.fresh(advanced="false", cipher="TWOFISH")
+        window.more_options.linkActivated.emit("#more")
+        self.assertTrue(window.advanced())
+        self.assertEqual(settings.value("advanced"), "true")
+        self.assertEqual(self.advanced_widgets_hidden(window), [False, False, False, True, True])
+        self.assertEqual(window.chosen_cipher(), "TWOFISH", "the earlier choice was kept, not lost")
+
+    def test_switching_to_simple_never_leaves_a_key_chosen(self):
+        self.window.set_method("public-key")
+        self.assertEqual(self.window.method(), "public-key")
+        self.window.advanced_action.setChecked(False)
+        self.assertEqual(self.window.method(), "once")
+        self.assertTrue(self.window.passphrase_radio.isChecked())
+        self.assertEqual(self.settings.value("advanced"), "false")
+
+    def test_simple_mode_still_restores_files_for_a_key(self):
+        window, _ = self.fresh()
+        self.assertFalse(window.advanced())
+        fingerprint = self.generate_key("Me <me@example.invalid>")
+        source = self.write("k.txt", b"for the key")
+        encrypted = process_items(self.gpg, [SourceItem(source, Path("k.txt"), source.stat().st_size)],
+                                  self.root / "exports", "encrypt", "public-key", fingerprint, threading.Event(),
+                                  lambda *args: None)
+        window.set_operation("restore")
+        window.add_paths([str(encrypted.outputs[0])])
+        self.assertFalse(window.key_radio.isHidden(), "restoring offers the key when the files need it")
+        self.assertEqual(window.method(), "pinentry")
+        window.start()
+        self.wait_until(lambda: not window.running)
+        self.wait_until(lambda: window._thread is None)
+        self.assertEqual((self.root / "restored" / "k.txt").read_bytes(), b"for the key")
+
+    def test_the_switch_is_first_in_the_tools_menu_and_explains_itself(self):
+        tools = self.window.menuBar().actions()[2].menu()
+        self.assertIs(tools.actions()[0], self.window.advanced_action)
+        self.assertIn("AES-256", self.window.advanced_action.toolTip())
 
 
 class AlgorithmChoiceTests(GuiCase):
@@ -1408,6 +1679,13 @@ class PassphraseDialogTests(unittest.TestCase):
     def setUp(self):
         app()
 
+    def dialog(self, *args, **kwargs):
+        """A dialog with no parent, destroyed at the end of the test, on this thread, while Qt runs."""
+        from shiboken6 import delete
+        dialog = PassphraseDialog(None, *args, **kwargs)
+        self.addCleanup(delete, dialog)
+        return dialog
+
     def ok_enabled(self, dialog) -> bool:
         from PySide6.QtWidgets import QDialogButtonBox
         return dialog.buttons.button(QDialogButtonBox.StandardButton.Ok).isEnabled()
@@ -1436,6 +1714,77 @@ class PassphraseDialogTests(unittest.TestCase):
         dialog.first.setText("pasted with a trailing space ")
         self.assertTrue(self.ok_enabled(dialog))
         self.assertIn("space", dialog.hint.text())
+
+    def test_a_generated_passphrase_says_how_strong_it_is_and_must_be_saved_first(self):
+        dialog = self.dialog("t", "m", confirm=True, min_length=8)
+        self.assertIsNotNone(dialog.generator)
+        dialog.generator.generate()
+        phrase = dialog.first.text()
+        self.assertEqual(dialog.second.text(), phrase)
+        self.assertEqual(len(phrase.split("-")) >= 7, True)
+        self.assertEqual(dialog.first.echoMode(), dialog.first.EchoMode.Normal, "it has to be seen to be saved")
+        self.assertIn("about 90 bits", dialog.generator.strength.text())
+        self.assertFalse(dialog.generator.strength.isHidden())
+        self.assertFalse(self.ok_enabled(dialog))
+        self.assertIn("Save it before you continue", dialog.hint.text())
+        self.assertFalse(dialog.saved_box.isHidden())
+        dialog.saved_box.setChecked(True)
+        self.assertTrue(self.ok_enabled(dialog))
+        self.assertEqual(dialog.passphrase(), phrase)
+
+    def test_changing_a_generated_passphrase_makes_it_an_ordinary_one(self):
+        dialog = self.dialog("t", "m", confirm=True, min_length=8)
+        dialog.generator.kind.setCurrentIndex(dialog.generator.kind.findData("characters"))
+        dialog.generator.generate()
+        self.assertIn("about 147 bits", dialog.generator.strength.text())
+        dialog.first.setText(dialog.first.text() + "x")
+        dialog.second.setText(dialog.first.text())
+        self.assertTrue(dialog.saved_box.isHidden())
+        self.assertTrue(dialog.generator.strength.isHidden(), "its strength is no longer known")
+        self.assertTrue(self.ok_enabled(dialog))
+
+    def test_a_dialog_with_the_generator_is_freed_as_soon_as_it_is_dropped(self):
+        # Regression: a callback into the dialog made a reference cycle, so the dialog was freed whenever
+        # Python's collector ran, which can be on a worker thread. That crashed the tests on Linux.
+        import gc
+        import weakref
+
+        from mindyourownbytes.gui.dialogs import VaultEntryDialog
+        gc.disable()
+        self.addCleanup(gc.enable)
+        for make in (lambda: PassphraseDialog(None, "t", "m", confirm=True), lambda: VaultEntryDialog(None)):
+            dialog = make()
+            dialog.generator.generate()
+            alive = weakref.ref(dialog)
+            del dialog
+            self.assertIsNone(alive(), "only reference counting may free it, on the thread that dropped it")
+
+    def test_typing_a_passphrase_to_unlock_offers_no_generator(self):
+        dialog = self.dialog("t", "m")
+        self.assertIsNone(dialog.generator)
+        self.assertTrue(dialog.saved_box.isHidden())
+
+    def test_a_problem_generating_leaves_the_fields_alone(self):
+        dialog = self.dialog("t", "m", confirm=True)
+        with patch("mindyourownbytes.gui.dialogs.generator.generate", side_effect=RuntimeError("no list")), \
+                patch.object(QMessageBox, "warning") as warning:
+            dialog.generator.generate()
+        self.assertEqual(dialog.first.text(), "")
+        self.assertIn("no list", warning.call_args.args[2])
+
+    def test_saved_passphrases_can_be_generated_too(self):
+        from shiboken6 import delete
+
+        from mindyourownbytes.gui.dialogs import VaultEntryDialog
+        dialog = VaultEntryDialog(None)
+        self.addCleanup(delete, dialog)
+        dialog.label.setText("Taxes")
+        dialog.generator.generate()
+        self.assertTrue(dialog.passphrase_field.text())
+        self.assertTrue(dialog.show_box.isChecked())
+        self.assertIn("bits", dialog.generator.strength.text())
+        dialog.passphrase_field.setText("typed by hand")
+        self.assertTrue(dialog.generator.strength.isHidden())
 
     def test_input_is_masked_by_default(self):
         from PySide6.QtWidgets import QLineEdit
