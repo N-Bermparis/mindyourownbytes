@@ -1260,6 +1260,13 @@ class PassphraseDialogTests(unittest.TestCase):
     def setUp(self):
         app()
 
+    def dialog(self, *args, **kwargs):
+        """A dialog with no parent, destroyed at the end of the test, on this thread, while Qt runs."""
+        from shiboken6 import delete
+        dialog = PassphraseDialog(None, *args, **kwargs)
+        self.addCleanup(delete, dialog)
+        return dialog
+
     def ok_enabled(self, dialog) -> bool:
         from PySide6.QtWidgets import QDialogButtonBox
         return dialog.buttons.button(QDialogButtonBox.StandardButton.Ok).isEnabled()
@@ -1290,7 +1297,7 @@ class PassphraseDialogTests(unittest.TestCase):
         self.assertIn("space", dialog.hint.text())
 
     def test_a_generated_passphrase_says_how_strong_it_is_and_must_be_saved_first(self):
-        dialog = PassphraseDialog(None, "t", "m", confirm=True, min_length=8)
+        dialog = self.dialog("t", "m", confirm=True, min_length=8)
         self.assertIsNotNone(dialog.generator)
         dialog.generator.generate()
         phrase = dialog.first.text()
@@ -1307,7 +1314,7 @@ class PassphraseDialogTests(unittest.TestCase):
         self.assertEqual(dialog.passphrase(), phrase)
 
     def test_changing_a_generated_passphrase_makes_it_an_ordinary_one(self):
-        dialog = PassphraseDialog(None, "t", "m", confirm=True, min_length=8)
+        dialog = self.dialog("t", "m", confirm=True, min_length=8)
         dialog.generator.kind.setCurrentIndex(dialog.generator.kind.findData("characters"))
         dialog.generator.generate()
         self.assertIn("about 147 bits", dialog.generator.strength.text())
@@ -1317,13 +1324,29 @@ class PassphraseDialogTests(unittest.TestCase):
         self.assertTrue(dialog.generator.strength.isHidden(), "its strength is no longer known")
         self.assertTrue(self.ok_enabled(dialog))
 
+    def test_a_dialog_with_the_generator_is_freed_as_soon_as_it_is_dropped(self):
+        # Regression: a callback into the dialog made a reference cycle, so the dialog was freed whenever
+        # Python's collector ran, which can be on a worker thread. That crashed the tests on Linux.
+        import gc
+        import weakref
+
+        from mindyourownbytes.gui.dialogs import VaultEntryDialog
+        gc.disable()
+        self.addCleanup(gc.enable)
+        for make in (lambda: PassphraseDialog(None, "t", "m", confirm=True), lambda: VaultEntryDialog(None)):
+            dialog = make()
+            dialog.generator.generate()
+            alive = weakref.ref(dialog)
+            del dialog
+            self.assertIsNone(alive(), "only reference counting may free it, on the thread that dropped it")
+
     def test_typing_a_passphrase_to_unlock_offers_no_generator(self):
-        dialog = PassphraseDialog(None, "t", "m")
+        dialog = self.dialog("t", "m")
         self.assertIsNone(dialog.generator)
         self.assertTrue(dialog.saved_box.isHidden())
 
     def test_a_problem_generating_leaves_the_fields_alone(self):
-        dialog = PassphraseDialog(None, "t", "m", confirm=True)
+        dialog = self.dialog("t", "m", confirm=True)
         with patch("mindyourownbytes.gui.dialogs.generator.generate", side_effect=RuntimeError("no list")), \
                 patch.object(QMessageBox, "warning") as warning:
             dialog.generator.generate()
@@ -1331,8 +1354,11 @@ class PassphraseDialogTests(unittest.TestCase):
         self.assertIn("no list", warning.call_args.args[2])
 
     def test_saved_passphrases_can_be_generated_too(self):
+        from shiboken6 import delete
+
         from mindyourownbytes.gui.dialogs import VaultEntryDialog
         dialog = VaultEntryDialog(None)
+        self.addCleanup(delete, dialog)
         dialog.label.setText("Taxes")
         dialog.generator.generate()
         self.assertTrue(dialog.passphrase_field.text())

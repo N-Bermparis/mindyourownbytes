@@ -2,8 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
-
+from PySide6.QtCore import Signal
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -36,11 +35,17 @@ def _password_field() -> QLineEdit:
 
 
 class GeneratorRow(QWidget):
-    """Pick words or characters, generate, and say exactly how strong the result is."""
+    """Pick words or characters, generate, and say exactly how strong the result is.
 
-    def __init__(self, on_generated: Callable[[str], None]) -> None:
+    The passphrase goes out as a signal. Keeping a callback into the dialog instead would tie the two
+    in a reference cycle, which Python frees whenever its collector happens to run, even on a worker
+    thread, where Qt must never destroy a window.
+    """
+
+    generated = Signal(str)
+
+    def __init__(self) -> None:
         super().__init__()
-        self._on_generated = on_generated
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(4)
@@ -73,7 +78,7 @@ class GeneratorRow(QWidget):
             return
         self.strength.setText(generator.describe(kind))
         self.strength.show()
-        self._on_generated(passphrase)
+        self.generated.emit(passphrase)
 
     def forget(self) -> None:
         """The passphrase was changed by hand, so its strength is no longer known."""
@@ -123,7 +128,8 @@ class PassphraseDialog(QDialog):
         self.saved_box.hide()
         if confirm:
             # Only when choosing a new passphrase. There's nothing to generate when entering one.
-            self.generator = GeneratorRow(self._use_generated)
+            self.generator = GeneratorRow()
+            self.generator.generated.connect(self._use_generated)
             layout.addWidget(self.generator)
             self.saved_box.toggled.connect(self._validate)
             layout.addWidget(self.saved_box)
@@ -218,7 +224,8 @@ class VaultEntryDialog(QDialog):
         self.passphrase_field.setAccessibleName("Passphrase")
         form.addRow("Passphrase", self.passphrase_field)
         self._generated = ""
-        self.generator = GeneratorRow(self._use_generated)
+        self.generator = GeneratorRow()
+        self.generator.generated.connect(self._use_generated)
         self.generate_button = self.generator.button
         form.addRow("", self.generator)
 
