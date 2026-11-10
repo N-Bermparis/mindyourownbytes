@@ -45,6 +45,7 @@ can't read. This app makes that a drag and drop.
 
 - **Drag in files or folders** and get encrypted `.gpg` copies, with folder structure kept.
   Your originals are never changed, and existing files are never overwritten.
+- **Or right-click them in File Explorer** and choose **Encrypt with mindyourownbytes**.
 - **One passphrase for a whole batch**, typed once.
 - **Every file is checked before it's called done.** The app decrypts each new file again and
   compares it with your original. A copy that doesn't match is thrown away, and you're told why.
@@ -75,11 +76,13 @@ this project does not implement any of its own.
 
 1. [Download the installer](https://github.com/N-Bermparis/mindyourownbytes/releases), the file ending in `-setup.exe`.
 2. Run it and click **Install**. It needs no administrator rights, and there's nothing else to
-   install: [GnuPG](https://gnupg.org/) is included.
+   install: [GnuPG](https://gnupg.org/) is included. It also adds **Encrypt with mindyourownbytes**
+   to File Explorer's right-click menu, unless you untick that.
 
 To update, run a newer installer over the old one. To remove the app, use Settings > Apps. Neither
 touches your encrypted files, keys, or saved passphrases. Prefer not to install anything? The
-`-portable.zip` is the same app: unzip it and open `mindyourownbytes.exe`.
+`-portable.zip` is the same app: unzip it and open `mindyourownbytes.exe`. It doesn't add the right-click
+entry, because it changes nothing on your computer.
 
 If you already have [Gpg4win](https://gpg4win.org/), the app uses that instead of its own copy, so
 your keys and Kleopatra keep working as they are. Keys are optional: you only need Gpg4win to create
@@ -137,7 +140,10 @@ been tested on macOS. Reports are very welcome.
 
 **Encrypt**
 
-1. Drop files or folders onto the window.
+1. Drop files or folders onto the window. Or, in File Explorer, right-click them and choose
+   **Encrypt with mindyourownbytes**. On Windows 11, that's under **Show more options**. They're
+   added to the list, and nothing is encrypted until you click **Encrypt**. For a lot of files at
+   once, right-click their folder instead, because Windows can leave the entry out for a large selection.
 2. Choose how to protect them. *Passphrase* is the simplest. You can also pick an algorithm, but
    AES-256 suits nearly everyone.
 3. Optionally type a collection name, such as `Taxes`.
