@@ -11,11 +11,13 @@ from __future__ import annotations
 import json
 import os
 import platform
+import shutil
 import subprocess
 import sys
 import tempfile
 import threading
 import traceback
+from collections.abc import Callable
 from pathlib import Path
 
 from PySide6 import __version__ as pyside_version
@@ -86,6 +88,7 @@ def _check_passphrase_round_trip(checks: _Checks, gpg: str, source: Path, scratc
                      passphrases=(PASSPHRASE,))
     if not checks.record("Encrypts with a passphrase", encrypted.succeeded == 1):
         return
+    checks.record("Checks each file after encrypting it", encrypted.checked == 1)
     output = encrypted.outputs[0]
     checks.record("The encrypted file doesn't contain the original",
                   CONTENT[:1024] not in output.read_bytes() and core.peek_protection(output) == "passphrase")
@@ -96,6 +99,49 @@ def _check_passphrase_round_trip(checks: _Checks, gpg: str, source: Path, scratc
                   and not (wrong_folder.exists() and any(wrong_folder.iterdir())))
     restored = _job(gpg, output, scratch / "passphrase-restored", "restore", "password", passphrases=(PASSPHRASE,))
     checks.record("Restores with a passphrase", _is_restored(restored))
+
+
+def _refuses(gpg: str, source: Path, folder: Path, spoil: Callable[[Path], None]) -> tuple[bool, str]:
+    """Encrypt, but change the new file just before it's checked, as a failing disk could.
+
+    Returns whether the check then refused the file and kept nothing, with what it said.
+    """
+    said: list[str] = []
+
+    def spoil_the_new_file(_index: int) -> None:
+        spoil(next(folder.glob(".myob-*.partial")))
+
+    items = core.collect_files([source], folder, "encrypt").items
+    result = core.process_items(gpg, items, folder, "encrypt", "password", None, threading.Event(),
+                                lambda _index, _ok, message, _output: said.append(message),
+                                passphrases=(PASSPHRASE,), on_checking=spoil_the_new_file)
+    refused = result.failed == 1 and not result.outputs and said[-1].startswith("Check failed")
+    return refused and not any(folder.iterdir()), said[-1]
+
+
+def _check_the_check(checks: _Checks, gpg: str, source: Path, scratch: Path) -> None:
+    """A check that can't fail proves nothing, so each of these gives it something wrong to find."""
+    def damage(staged: Path) -> None:
+        data = bytearray(staged.read_bytes())
+        data[len(data) // 2] ^= 0xFF
+        staged.write_bytes(bytes(data))
+
+    checks.record("The check refuses a damaged copy, keeping nothing",
+                  *_refuses(gpg, source, scratch / "damaged", damage))
+
+    # Encrypted properly, with the same passphrase, but from other content. Only comparing can tell.
+    name = "The check refuses a copy of something else, keeping nothing"
+    decoy = scratch / "decoy.txt"
+    decoy.write_bytes(b"not the original\n")
+    other = _job(gpg, decoy, scratch / "decoy-encrypted", "encrypt", "password", passphrases=(PASSPHRASE,))
+    if other.succeeded != 1:
+        checks.record(name, False, "could not encrypt a second file to swap in")
+        return
+
+    def swap(staged: Path) -> None:
+        shutil.copyfile(other.outputs[0], staged)
+
+    checks.record(name, *_refuses(gpg, source, scratch / "swapped", swap))
 
 
 def _check_every_algorithm(checks: _Checks, gpg: str, source: Path, scratch: Path) -> None:
@@ -165,6 +211,7 @@ def _check_gnupg(checks: _Checks, report: dict, source: Path, scratch: Path) -> 
         return
 
     _check_passphrase_round_trip(checks, gpg, source, scratch)
+    _check_the_check(checks, gpg, source, scratch)
     _check_every_algorithm(checks, gpg, source, scratch)
     _check_key_round_trip(checks, gpg, source, scratch)
     _check_vault(checks, gpg, scratch)

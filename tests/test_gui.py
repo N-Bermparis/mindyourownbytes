@@ -10,7 +10,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from mindyourownbytes.core import CIPHERS, available_ciphers, list_public_keys
+from mindyourownbytes.core import CIPHERS, READY, JobResult, available_ciphers, list_public_keys
 from tests.support import GpgTestCase
 
 HAS_QT = importlib.util.find_spec("PySide6") is not None
@@ -224,7 +224,7 @@ class TransferFlowTests(GuiCase):
         self.run_with_typed_passphrase()
         exports = sorted((self.root / "exports" / "Taxes" / "input").iterdir())
         self.assertEqual([path.name for path in exports], ["a.txt.gpg", "b.txt.gpg", "c.txt.gpg"])
-        self.assertEqual(self.window.table.item(0, 3).text(), "Encrypted")
+        self.assertEqual(self.window.table.item(0, 3).text(), "Encrypted and checked")
         self.assertIn("3 files encrypted", self.window.result_bar.text())
 
         self.window.set_operation("restore")
@@ -383,7 +383,7 @@ class TransferFlowTests(GuiCase):
         self.select_method("once")
         self.run_with_typed_passphrase()
         self.window._apply_theme()
-        self.assertEqual(self.window.table.item(0, 3).text(), "Encrypted")
+        self.assertEqual(self.window.table.item(0, 3).text(), "Encrypted and checked")
         self.assertFalse(self.window.grab().isNull())
 
     def test_selecting_a_row_renders_without_error(self):
@@ -494,6 +494,199 @@ class TransferFlowTests(GuiCase):
             self.window.add_paths([str(self.root / "input")])
         self.assertIn("could not be read", self.message_boxes["warning"].call_args.args[1])
         self.assertIn("locked", self.message_boxes["warning"].call_args.args[2])
+
+
+class CheckAfterEncryptingTests(GuiCase):
+    def finish(self):
+        self.wait_until(lambda: not self.window.running)
+        self.wait_until(lambda: self.window._thread is None)
+
+    def reopen(self):
+        window = MainWindow(self.settings, self.root / "app" / "vault.gpg")
+        self.addCleanup(window.close)
+        return window
+
+    def test_a_typed_passphrase_gets_every_file_checked_and_the_screen_says_so(self):
+        for name in ("a.txt", "b.txt"):
+            self.write(name, name.encode())
+        self.window.add_paths([str(self.root / "input")])
+        self.select_method("once")
+        announced = []
+        real = main_window.process_items
+
+        def recording(*args, **kwargs):
+            notify = kwargs["on_checking"]
+            kwargs["on_checking"] = lambda index: (announced.append(index), notify(index))
+            return real(*args, **kwargs)
+
+        with patch.object(main_window, "process_items", side_effect=recording) as process, patch.object(
+            self.window, "_set_row_status", wraps=self.window._set_row_status
+        ) as shown:
+            self.run_with_typed_passphrase()
+        self.assertTrue(process.call_args.kwargs["verify"])
+        self.assertEqual(announced, [0, 1])
+        self.assertEqual([call.args[1] for call in shown.call_args_list if call.args[0] == 0],
+                         ["Waiting", "Encrypting…", "Checking…", "Encrypted and checked"])
+        for row in range(2):
+            self.assertEqual(self.window.table.item(row, 3).text(), "Encrypted and checked")
+            self.assertIn("matched the original", self.window.table.item(row, 3).toolTip())
+            self.assertIn(".txt.gpg", self.window.table.item(row, 3).toolTip())
+        self.assertEqual(self.window.result_bar.property("kind"), "success")
+        self.assertEqual(self.window.result_bar.title_label.text(), "2 files encrypted with AES-256 and checked")
+        self.assertIn("Each one was decrypted again", self.window.result_bar.text())
+        self.assertIn("Upload only the .gpg files", self.window.result_bar.text())
+
+    def test_one_file_is_described_in_the_singular(self):
+        self.window.add_paths([str(self.write("a.txt"))])
+        self.select_method("once")
+        self.run_with_typed_passphrase()
+        self.assertIn("It was decrypted again and matched the original.", self.window.result_bar.text())
+
+    def test_a_saved_passphrase_gets_files_checked_too(self):
+        self.window.vault.create(MASTER)
+        self.window.vault_page.refresh()
+        self.window.vault.add("Taxes", "tax passphrase here")
+        self.window.vault_page.changed.emit()
+        self.window.add_paths([str(self.write("a.txt"))])
+        self.select_method("saved")
+        self.window.start()
+        self.finish()
+        self.assertEqual(self.window.table.item(0, 3).text(), "Encrypted and checked")
+        self.assertIn("and checked", self.window.result_bar.title_label.text())
+
+    def test_the_switch_is_on_by_default_and_remembered(self):
+        self.assertTrue(self.window.check_action.isChecked())
+        self.assertTrue(self.window.check_action.isCheckable())
+        self.assertIn(self.window.check_action, self.window.menuBar().actions()[2].menu().actions())
+        self.assertTrue(self.window.menuBar().actions()[2].menu().toolTipsVisible())
+        self.window.check_action.setChecked(False)
+        self.assertFalse(self.reopen().check_action.isChecked())
+        self.window.check_action.setChecked(True)
+        self.assertTrue(self.reopen().check_action.isChecked())
+
+    def test_only_turning_it_off_here_turns_it_off(self):
+        # A damaged or edited setting must not quietly stop the checks.
+        for saved in ("", "no", "0", "garbage", "False "):
+            with self.subTest(saved):
+                self.settings.setValue("check_after_encrypting", saved)
+                self.assertTrue(self.reopen().check_action.isChecked())
+
+    def test_turned_off_files_are_encrypted_without_claiming_a_check(self):
+        self.window.check_action.setChecked(False)
+        self.window.add_paths([str(self.write("a.txt"))])
+        self.select_method("once")
+        with patch.object(main_window, "process_items", wraps=main_window.process_items) as process:
+            self.run_with_typed_passphrase()
+        self.assertFalse(process.call_args.kwargs["verify"])
+        self.assertEqual(self.window.table.item(0, 3).text(), "Encrypted")
+        self.assertEqual(self.window.result_bar.title_label.text(), "1 file encrypted with AES-256")
+        self.assertNotIn("check", self.window.result_bar.text().lower())
+        self.assertTrue((self.root / "exports" / "a.txt.gpg").exists())
+
+    def test_files_for_a_key_are_reported_as_encrypted_but_not_checked(self):
+        self.generate_key("Me <me@example.invalid>")
+        self.window.refresh_keys()
+        self.window.add_paths([str(self.write("a.txt"))])
+        self.select_method("public-key")
+        self.window.start()
+        self.finish()
+        self.assertEqual(self.window.table.item(0, 3).text(), "Encrypted, not checked")
+        self.assertIn("private key", self.window.table.item(0, 3).toolTip())
+        self.assertEqual(self.window.result_bar.title_label.text(), "1 file encrypted")
+        self.assertIn("Not checked, because that takes the private key", self.window.result_bar.text())
+        self.assertTrue((self.root / "exports" / "a.txt.gpg").exists())
+
+    def test_files_gnupg_asked_about_are_reported_as_encrypted_but_not_checked(self):
+        # The engine is stood in for here, because a real run would open GnuPG's own window.
+        seen = {}
+
+        def encrypt_without_checking(gpg, items, output, operation, method, fingerprint, cancel, on_progress,
+                                     **kwargs):
+            seen.update(kwargs, method=method)
+            on_progress(0, True, READY, output / "a.txt.gpg")
+            return JobResult(1, 0, False, (output / "a.txt.gpg",))
+
+        self.window.add_paths([str(self.write("a.txt"))])
+        self.select_method("pinentry")
+        with patch.object(main_window, "process_items", side_effect=encrypt_without_checking):
+            self.window.start()
+            self.finish()
+        self.assertEqual((seen["passphrases"], seen["method"]), ([], "password"))
+        self.assertEqual(self.window.table.item(0, 3).text(), "Encrypted, not checked")
+        self.assertEqual(self.window.result_bar.title_label.text(), "1 file encrypted with AES-256")
+        self.assertIn("Not checked, because GnuPG asked for the passphrase itself", self.window.result_bar.text())
+
+    def test_a_restore_never_mentions_the_check(self):
+        self.window.add_paths([str(self.write("a.txt"))])
+        self.select_method("once")
+        self.run_with_typed_passphrase()
+        self.window.set_operation("restore")
+        self.window.add_paths([str(self.root / "exports" / "a.txt.gpg")])
+        self.select_method("once")
+        with patch.object(main_window, "process_items", wraps=main_window.process_items) as process:
+            self.run_with_typed_passphrase()
+        self.assertFalse(process.call_args.kwargs["verify"])
+        self.assertEqual(self.window.table.item(0, 3).text(), "Restored")
+        self.assertNotIn("check", self.window.result_bar.text().lower())
+
+    def test_an_original_that_changes_meanwhile_fails_plainly_and_can_be_tried_again(self):
+        changing = self.write("changing.txt", b"first version")
+        self.write("steady.txt", b"stays as it is")
+        self.window.add_paths([str(self.root / "input")])
+        self.select_method("once")
+        real = main_window.process_items
+
+        def changing_the_first(*args, **kwargs):
+            notify = kwargs["on_checking"]
+
+            def change_then_notify(index):
+                if index == 0:
+                    changing.write_bytes(b"second version, saved meanwhile")
+                notify(index)
+
+            kwargs["on_checking"] = change_then_notify
+            return real(*args, **kwargs)
+
+        with patch.object(main_window, "process_items", side_effect=changing_the_first):
+            self.run_with_typed_passphrase()
+        self.assertEqual(self.window.table.item(0, 3).text(), "The original changed")
+        self.assertIn("no encrypted copy was kept", self.window.table.item(0, 3).toolTip())
+        self.assertEqual(self.window.table.item(1, 3).text(), "Encrypted and checked")
+        self.assertEqual(self.window.result_bar.property("kind"), "error")
+        self.assertIn("1 of 2 files failed", self.window.result_bar.text())
+        self.assertNotIn("damaged", self.window.result_bar.text())
+        exports = self.root / "exports" / "input"
+        self.assertEqual(sorted(p.name for p in exports.iterdir()), ["steady.txt.gpg"])
+        self.assertEqual(self.window.start_button.text(), "Try these again")
+
+        self.run_with_typed_passphrase(action=self.window._primary_clicked)
+        self.assertEqual([item.source.name for item in self.window.items], ["changing.txt"])
+        self.assertEqual(self.window.table.item(0, 3).text(), "Encrypted and checked")
+        self.assertEqual(sorted(p.name for p in exports.iterdir()), ["changing.txt.gpg", "steady.txt.gpg"])
+        self.assertEqual(self.window.start_button.text(), "Start over")
+
+    def test_progress_says_when_a_file_is_being_checked(self):
+        for name in ("a.txt", "b.txt"):
+            self.write(name)
+        self.window.add_paths([str(self.root / "input")])
+        self.window.worker = MagicMock()
+        self.window.worker.cancel_event.is_set.return_value = False
+        self.window._checking(0)
+        self.assertEqual(self.window.table.item(0, 3).text(), "Checking…")
+        self.assertEqual(self.window.status_text.text(), "Checking 1 of 2…")
+        # Once someone has pressed Cancel, a late message mustn't replace what the screen says about that.
+        self.window.worker.cancel_event.is_set.return_value = True
+        self.window.status_text.setText("Cancelling after the current file…")
+        self.window._checking(1)
+        self.assertEqual(self.window.table.item(1, 3).text(), "Waiting")
+        self.assertEqual(self.window.status_text.text(), "Cancelling after the current file…")
+        self.window.worker = None
+
+    def test_the_switch_cannot_be_changed_while_a_job_runs(self):
+        self.window._set_busy(True)
+        self.assertFalse(self.window.menuBar().isEnabled())
+        self.window._set_busy(False)
+        self.assertTrue(self.window.menuBar().isEnabled())
 
 
 class AlgorithmChoiceTests(GuiCase):

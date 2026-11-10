@@ -40,6 +40,7 @@ from PySide6.QtWidgets import (
 
 from mindyourownbytes import __version__
 from mindyourownbytes.core import (
+    CHECKED,
     CIPHERS,
     DEFAULT_CIPHER,
     ENCRYPTED_SUFFIXES,
@@ -145,6 +146,23 @@ COPY = {
     },
 }
 
+#: What the screen says about checking each new file. Only encrypting has this step.
+CHECK_COPY = {
+    "working": "Checking {done} of {total}…",
+    "row_working": "Checking…",
+    "row_done": "Encrypted and checked",
+    "row_tip": "Decrypted again, and it matched the original.",
+    "row_skipped": "Encrypted, not checked",
+    "result_one": "It was decrypted again and matched the original.",
+    "result_many": "Each one was decrypted again and matched its original.",
+}
+#: Why a file wasn't checked although checking is on, by how it was protected.
+NOT_CHECKED = {
+    "pinentry": "Not checked, because GnuPG asked for the passphrase itself, and checking would mean "
+                "asking again for every file.",
+    "public-key": "Not checked, because that takes the private key, and GnuPG might ask for its passphrase.",
+}
+
 
 class DropArea(QWidget):
     """Accepts files dropped anywhere on it, and reports while they're being dragged."""
@@ -197,12 +215,14 @@ class DropZone(QFrame):
 
 class BackupWorker(QObject):
     progress = Signal(int, bool, str, object)
+    #: The file at this position is encrypted, and is now being checked.
+    checking = Signal(int)
     completed = Signal(object)
     error = Signal(str)
     finished = Signal()
 
     def __init__(self, gpg: str, files: list[SourceItem], output: Path, operation: str,
-                 method: str, fingerprint: str | None, passphrases: list[str], cipher: str):
+                 method: str, fingerprint: str | None, passphrases: list[str], cipher: str, verify: bool):
         super().__init__()
         self.gpg = gpg
         self.files = files
@@ -212,6 +232,7 @@ class BackupWorker(QObject):
         self.fingerprint = fingerprint
         self.passphrases = passphrases
         self.cipher = cipher
+        self.verify = verify
         self.cancel_event = threading.Event()
 
     @Slot()
@@ -221,7 +242,8 @@ class BackupWorker(QObject):
                 self.gpg, self.files, self.output, self.operation, self.method, self.fingerprint,
                 self.cancel_event,
                 lambda index, ok, message, output: self.progress.emit(index, ok, message, output),
-                passphrases=self.passphrases, cipher=self.cipher,
+                passphrases=self.passphrases, cipher=self.cipher, verify=self.verify,
+                on_checking=self.checking.emit,
             )
             self.completed.emit(result)
         except Exception as exc:
@@ -247,6 +269,8 @@ class MainWindow(QMainWindow):
         self._job_output: Path | None = None
         #: The algorithm the current job's files get, if it's a choice people made here.
         self._job_algorithm = ""
+        #: Why the current job's files can't be checked although checking is on. Empty if they can.
+        self._job_not_checked = ""
         #: None before a job, then "done" or "incomplete" until the list changes.
         self._job_state: str | None = None
         self._unfinished_items: list[SourceItem] = []
@@ -619,10 +643,24 @@ class MainWindow(QMainWindow):
         self._add_action(go_menu, "&Passphrases", self.show_vault, "Ctrl+4")
 
         tools_menu = bar.addMenu("&Tools")
+        # Each switch below has a cost, which its tooltip states.
+        tools_menu.setToolTipsVisible(True)
+        self.check_action = tools_menu.addAction("&Check each file after encrypting it")
+        self.check_action.setCheckable(True)
+        # On unless it was turned off here, so that a damaged setting can't quietly stop the checks.
+        self.check_action.setChecked(str(self.settings.value("check_after_encrypting", "")).lower() != "false")
+        self.check_action.setToolTip(
+            "Decrypts each new file again and compares it with the original before calling it done. "
+            "Takes longer, and only works when this app has the passphrase."
+        )
+        self.check_action.toggled.connect(self._set_check_preference)
         self.pinentry_action = tools_menu.addAction("Let &GnuPG ask for each passphrase")
         self.pinentry_action.setCheckable(True)
         self.pinentry_action.setChecked(str(self.settings.value("use_pinentry", "")).lower() == "true")
-        self.pinentry_action.setToolTip("This app never sees your passphrase, but you're asked once for every file.")
+        self.pinentry_action.setToolTip(
+            "This app never sees your passphrase, but you're asked once for every file, and it can't check the "
+            "new files."
+        )
         self.pinentry_action.toggled.connect(self._set_pinentry_preference)
         tools_menu.addSeparator()
         self._add_action(tools_menu, "&Locate GnuPG…", self.select_gpg)
@@ -779,6 +817,10 @@ class MainWindow(QMainWindow):
     def _set_pinentry_preference(self, enabled: bool):
         self.settings.setValue("use_pinentry", "true" if enabled else "false")
         self._show_passphrase_help()
+
+    @Slot(bool)
+    def _set_check_preference(self, enabled: bool):
+        self.settings.setValue("check_after_encrypting", "true" if enabled else "false")
 
     def _show_passphrase_help(self):
         self.passphrase_help.setText(
@@ -1233,6 +1275,8 @@ class MainWindow(QMainWindow):
         self._job_output = output
         cipher = self.chosen_cipher()
         self._job_algorithm = CIPHER_LABELS[cipher] if self.operation == "encrypt" and method == "password" else ""
+        verify = self.operation == "encrypt" and self.check_action.isChecked()
+        self._job_not_checked = NOT_CHECKED.get(selection, "") if verify else ""
         self._succeeded_rows: set[int] = set()
         self._set_busy(True)
         self.progress_bar.setRange(0, len(self.items))
@@ -1242,10 +1286,11 @@ class MainWindow(QMainWindow):
 
         self._thread = QThread(self)
         self.worker = BackupWorker(self.gpg, list(self.items), output, self.operation, method,
-                                   fingerprint, passphrases, cipher)
+                                   fingerprint, passphrases, cipher, verify)
         self.worker.moveToThread(self._thread)
         self._thread.started.connect(self.worker.run)
         self.worker.progress.connect(self._progress)
+        self.worker.checking.connect(self._checking)
         self.worker.completed.connect(self._completed)
         self.worker.error.connect(self._error)
         self.worker.finished.connect(self._thread.quit)
@@ -1285,12 +1330,30 @@ class MainWindow(QMainWindow):
             text += " GnuPG may ask for a passphrase."
         self.status_text.setText(text)
 
+    @Slot(int)
+    def _checking(self, index: int):
+        if self.worker is None or self.worker.cancel_event.is_set():
+            return
+        if index < self.table.rowCount():
+            self._set_row_status(index, CHECK_COPY["row_working"], "clock", "text")
+        self.status_text.setText(CHECK_COPY["working"].format(done=index + 1, total=len(self.items)))
+
+    def _show_row_done(self, row: int, checked: bool, output):
+        """Only a file the job really checked may say so."""
+        if checked:
+            text, note = CHECK_COPY["row_done"], CHECK_COPY["row_tip"]
+        elif self._job_not_checked:
+            text, note = CHECK_COPY["row_skipped"], self._job_not_checked
+        else:
+            text, note = COPY[self.operation]["row_done"], ""
+        self._set_row_status(row, text, "check", "ok", f"{output}\n{note}" if note else str(output))
+
     @Slot(int, bool, str, object)
     def _progress(self, index: int, ok: bool, message: str, output):
         cancelled = not ok and message == "Cancelled"
         if index < self.table.rowCount():
             if ok:
-                self._set_row_status(index, COPY[self.operation]["row_done"], "check", "ok", str(output))
+                self._show_row_done(index, message == CHECKED, output)
                 self._succeeded_rows.add(index)
             elif cancelled:
                 self._set_row_status(index, "Cancelled", "close", "muted")
@@ -1346,7 +1409,13 @@ class MainWindow(QMainWindow):
             title = copy["result_title"].format(files=plural(result.succeeded))
             if self._job_algorithm:
                 title += f" with {self._job_algorithm}"
-            self.result_bar.show_message("success", title, copy["result_detail"], actions=[open_folder])
+            detail = copy["result_detail"]
+            if result.checked == result.succeeded:
+                title += " and checked"
+                detail = f"{CHECK_COPY['result_one' if result.succeeded == 1 else 'result_many']} {detail}"
+            elif self._job_not_checked:
+                detail = f"{self._job_not_checked} {detail}"
+            self.result_bar.show_message("success", title, detail, actions=[open_folder])
         self.open_button.setVisible(not result.succeeded)
 
     @Slot(str)

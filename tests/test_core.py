@@ -1,17 +1,23 @@
 """Path handling, naming, and failure logic. Uses no real gpg, so it runs anywhere."""
 
+import hashlib
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
 import threading
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
 from mindyourownbytes.core import (
+    CHECKED,
     CIPHERS,
     DEFAULT_CIPHER,
+    READY,
+    Cancelled,
     SourceItem,
     available_ciphers,
     bundled_gpg,
@@ -25,6 +31,7 @@ from mindyourownbytes.core import (
     looks_cloud_synced,
     output_relative,
     process_items,
+    run_gpg_hashed,
     stop_bundled_gnupg,
     unique_target,
 )
@@ -353,7 +360,7 @@ class ProcessItemsTests(TempDirCase):
             Path(argv[argv.index("--output") + 1]).write_bytes(b"c")
             return 0, ENCRYPTED_OK
 
-        self.run_job([self.item()], "encrypt", capture, passphrases=["hunter2 hunter2"])
+        self.run_job([self.item()], "encrypt", capture, passphrases=["hunter2 hunter2"], verify=False)
         self.assertEqual(seen["secret"], b"hunter2 hunter2")
         self.assertNotIn("hunter2", " ".join(seen["argv"]))
         self.assertIn("--passphrase-fd", seen["argv"])
@@ -455,6 +462,226 @@ class ProcessItemsTests(TempDirCase):
         with self.assertRaisesRegex(ValueError, "does not use"):
             self.run_job([self.item()], "encrypt", None, method="public-key",
                          fingerprint="A" * 40, passphrases=["a"])
+
+
+class CheckAfterEncryptingTests(TempDirCase):
+    """The decisions around the check, with gpg mocked. tests/test_gpg_integration.py runs the real thing."""
+
+    CONTENT = b"Important research data"
+
+    def item(self, name="report.pdf"):
+        original = self.source / "QKD" / name
+        return SourceItem(original, Path(name), original.stat().st_size)
+
+    def encrypting(self, seen=None):
+        def fake(argv, cancel, secret=None):
+            if seen is not None:
+                seen.append(("encrypt", argv, secret))
+            Path(argv[argv.index("--output") + 1]).write_bytes(b"dummy ciphertext")
+            return 0, ENCRYPTED_OK
+
+        return fake
+
+    def run_job(self, check, items=None, encrypt=None, method="password", fingerprint=None, operation="encrypt",
+                cancel=None, **kwargs):
+        progress = []
+        if operation == "encrypt" and method == "password":
+            kwargs.setdefault("passphrases", ["hunter2 hunter2"])
+        with patch("mindyourownbytes.core.is_valid_gpg", return_value=True), patch(
+            "mindyourownbytes.core.run_gpg", side_effect=encrypt or self.encrypting()
+        ), patch("mindyourownbytes.core.run_gpg_hashed", side_effect=check) as checker:
+            job = process_items("mock-gpg", items or [self.item()], self.output, operation, method, fingerprint,
+                                cancel or threading.Event(), lambda *args: progress.append(args), **kwargs)
+        return job, progress, checker
+
+    def answering(self, code=0, stderr=DECRYPTED_OK, content=None):
+        digest = hashlib.sha256(self.CONTENT if content is None else content).digest()
+        return lambda argv, cancel, secret: (code, stderr, digest)
+
+    def assert_nothing_kept(self, job, progress, message):
+        self.assertEqual((job.succeeded, job.failed, job.checked, job.outputs), (0, 1, 0, ()))
+        self.assertRegex(progress[0][2], message)
+        self.assertEqual([p for p in self.output.rglob("*") if p.is_file()], [])
+
+    def test_a_matching_copy_is_published_and_counted_as_checked(self):
+        job, progress, checker = self.run_job(self.answering())
+        self.assertEqual((job.succeeded, job.failed, job.checked), (1, 0, 1))
+        self.assertEqual(progress[0][1:3], (True, CHECKED))
+        self.assertEqual(checker.call_count, 1)
+        self.assertEqual([p.name for p in self.output.rglob("*") if p.is_file()], ["report.pdf.gpg"])
+
+    def test_the_check_happens_before_the_file_gets_its_final_name(self):
+        seen = {}
+
+        def check(argv, cancel, secret):
+            staged = Path(argv[-1])
+            seen.update(staged=staged.name, staged_exists=staged.is_file(),
+                        published=[p.name for p in self.output.rglob("*.gpg")])
+            return 0, DECRYPTED_OK, hashlib.sha256(self.CONTENT).digest()
+
+        self.run_job(check)
+        self.assertRegex(seen["staged"], r"^\.myob-[0-9a-f]{16}\.partial$")
+        self.assertTrue(seen["staged_exists"])
+        self.assertEqual(seen["published"], [])
+
+    def test_the_check_decrypts_to_a_pipe_with_the_passphrase_kept_out_of_the_command(self):
+        seen = {}
+
+        def check(argv, cancel, secret):
+            seen.update(argv=argv, secret=secret)
+            return 0, DECRYPTED_OK, hashlib.sha256(self.CONTENT).digest()
+
+        self.run_job(check)
+        argv = seen["argv"]
+        self.assertEqual(seen["secret"], b"hunter2 hunter2")
+        self.assertNotIn("hunter2", " ".join(argv))
+        self.assertEqual(argv[argv.index("--output") + 1], "-")
+        self.assertEqual(argv[argv.index("--pinentry-mode") + 1], "loopback")
+        self.assertEqual(argv[argv.index("--passphrase-fd") + 1], "0")
+        self.assertEqual(argv[-3:-1], ["--decrypt", "--"])
+        for option in ("--batch", "--no-tty", "--no-symkey-cache", "--no-auto-key-retrieve"):
+            self.assertIn(option, argv)
+
+    def test_a_copy_with_other_content_is_not_published(self):
+        job, progress, _ = self.run_job(self.answering(content=b"something else"))
+        self.assert_nothing_kept(job, progress, "didn't give back the original")
+
+    def test_exit_code_zero_is_required_even_with_the_right_content(self):
+        job, progress, _ = self.run_job(self.answering(code=2))
+        self.assert_nothing_kept(job, progress, "^Check failed: GnuPG couldn't decrypt")
+
+    def test_decryption_okay_is_required_even_with_the_right_content(self):
+        for stderr in ("", stderr_with_statuses("BEGIN_DECRYPTION", "PLAINTEXT 62 0 x", "END_DECRYPTION"),
+                       "gpg: DECRYPTION_OKAY\n"):
+            with self.subTest(stderr):
+                job, progress, _ = self.run_job(self.answering(stderr=stderr))
+                self.assert_nothing_kept(job, progress, "isn't actually encrypted")
+
+    def test_a_check_that_cannot_run_keeps_nothing(self):
+        def broken(argv, cancel, secret):
+            raise OSError(5, "simulated failure")
+
+        job, progress, _ = self.run_job(broken)
+        self.assert_nothing_kept(job, progress, "^Check failed: GnuPG couldn't be run again")
+
+    def test_an_original_that_cannot_be_read_again_keeps_nothing(self):
+        with patch("mindyourownbytes.core._hash_file", side_effect=PermissionError(13, "denied")):
+            job, progress, _ = self.run_job(self.answering())
+        self.assert_nothing_kept(job, progress, "^Check failed: the original couldn't be read again")
+
+    def test_a_changed_original_is_named_as_the_reason(self):
+        original = self.source / "QKD" / "report.pdf"
+
+        def check(argv, cancel, secret):
+            original.write_bytes(b"A newer version of the research data, saved meanwhile")
+            return 0, DECRYPTED_OK, hashlib.sha256(self.CONTENT).digest()
+
+        job, progress, _ = self.run_job(check)
+        self.assert_nothing_kept(job, progress, "^The original changed")
+
+    def test_nothing_is_checked_without_a_passphrase_in_hand(self):
+        for label, options in (
+            ("GnuPG's own prompt", {"passphrases": []}),
+            ("a key", {"method": "public-key", "fingerprint": "A" * 40}),
+            ("turned off", {"verify": False}),
+        ):
+            with self.subTest(label):
+                seen = []
+                job, progress, checker = self.run_job(self.answering(), on_checking=seen.append, **options)
+                self.assertEqual((job.succeeded, job.checked, seen), (1, 0, []))
+                self.assertEqual(progress[0][1:3], (True, READY))
+                checker.assert_not_called()
+                shutil.rmtree(self.output)
+
+    def test_a_restore_is_not_checked_this_way(self):
+        def restoring(argv, cancel, secret=None):
+            Path(argv[argv.index("--output") + 1]).write_bytes(b"plain")
+            return 0, DECRYPTED_OK
+
+        original = self.source / "QKD" / "report.pdf"
+        job, _, checker = self.run_job(self.answering(), [SourceItem(original, Path("a.pdf.gpg"), 1)],
+                                       encrypt=restoring, operation="restore", passphrases=["hunter2 hunter2"])
+        self.assertEqual((job.succeeded, job.checked), (1, 0))
+        checker.assert_not_called()
+
+    def test_each_check_is_announced_with_its_position_before_it_runs(self):
+        order = []
+
+        def check(argv, cancel, secret):
+            order.append("check")
+            return 0, DECRYPTED_OK, hashlib.sha256(Path(self.sources[len(order) // 2 - 1]).read_bytes()).digest()
+
+        self.sources = [self.source / "QKD" / "report.pdf", self.source / "QKD" / "code.cpp"]
+        job, _, _ = self.run_job(check, [self.item(), self.item("code.cpp")],
+                                 on_checking=lambda index: order.append(index))
+        self.assertEqual(order, [0, "check", 1, "check"])
+        self.assertEqual((job.succeeded, job.checked), (2, 2))
+
+    def test_a_refused_file_does_not_stop_the_next_one(self):
+        answers = iter([b"something else", (self.source / "QKD" / "code.cpp").read_bytes()])
+
+        def check(argv, cancel, secret):
+            return 0, DECRYPTED_OK, hashlib.sha256(next(answers)).digest()
+
+        job, progress, _ = self.run_job(check, [self.item(), self.item("code.cpp")])
+        self.assertEqual((job.succeeded, job.failed, job.checked), (1, 1, 1))
+        self.assertEqual([entry[1] for entry in progress], [False, True])
+        self.assertEqual([p.name for p in self.output.rglob("*") if p.is_file()], ["code.cpp.gpg"])
+
+    def test_cancelling_after_encrypting_skips_the_check_and_keeps_nothing(self):
+        cancel = threading.Event()
+
+        def encrypt_then_cancel(argv, cancel_event, secret=None):
+            Path(argv[argv.index("--output") + 1]).write_bytes(b"dummy ciphertext")
+            cancel.set()
+            return 0, ENCRYPTED_OK
+
+        job, progress, checker = self.run_job(self.answering(), encrypt=encrypt_then_cancel, cancel=cancel)
+        self.assertEqual((job.succeeded, job.failed, job.cancelled), (0, 0, True))
+        self.assertEqual(progress[0][2], "Cancelled")
+        checker.assert_not_called()
+        self.assertEqual([p for p in self.output.rglob("*") if p.is_file()], [])
+
+
+#: Stands in for gpg: reads the passphrase line, fills both pipes well past what they hold, then exits with 3.
+_ECHOING = ("import sys; secret = sys.stdin.buffer.readline().strip(); sys.stderr.buffer.write(b'e' * 300000); "
+            "sys.stderr.flush(); sys.stdout.buffer.write(secret + b'x' * 5000000); sys.exit(3)")
+
+
+class RunGpgHashedTests(unittest.TestCase):
+    """The pipe handling itself, with a small program standing in for gpg."""
+
+    def test_hashes_everything_written_without_filling_a_pipe(self):
+        code, stderr, digest = run_gpg_hashed([sys.executable, "-c", _ECHOING], threading.Event(), b"open sesame")
+        self.assertEqual(code, 3)
+        self.assertEqual(stderr, "e" * 300000)
+        self.assertEqual(digest, hashlib.sha256(b"open sesame" + b"x" * 5000000).digest())
+
+    def test_nothing_written_gives_the_hash_of_nothing(self):
+        code, _, digest = run_gpg_hashed([sys.executable, "-c", "pass"], threading.Event(), b"unread")
+        self.assertEqual((code, digest), (0, hashlib.sha256(b"").digest()))
+
+    def test_cancel_stops_a_program_that_is_still_working(self):
+        cancel = threading.Event()
+        timer = threading.Timer(0.5, cancel.set)
+        timer.start()
+        self.addCleanup(timer.cancel)
+        started = time.monotonic()
+        with self.assertRaises(Cancelled):
+            run_gpg_hashed([sys.executable, "-c", "import time; print('partial', flush=True); time.sleep(120)"],
+                           cancel, b"secret")
+        self.assertLess(time.monotonic() - started, 10)
+
+    def test_a_problem_reading_the_output_is_an_error_not_a_hash_of_part_of_it(self):
+        class Failing:
+            def update(self, piece):
+                raise OSError(5, "simulated read problem")
+
+        # Once while the program is still writing, and once when it has already finished.
+        for program in (_ECHOING, "print('short')"):
+            with self.subTest(program), patch("mindyourownbytes.core.hashlib.sha256", return_value=Failing()), \
+                    self.assertRaises(OSError):
+                run_gpg_hashed([sys.executable, "-c", program], threading.Event(), b"secret")
 
 
 class AvailableCiphersTests(unittest.TestCase):
