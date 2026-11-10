@@ -10,6 +10,9 @@ First public version. Not independently audited.
 ### Added
 
 - A guided, plain-language desktop app using native controls, with the system's light or dark mode.
+- Simple and advanced modes. New installations start simple, with a passphrase or a saved one,
+  AES-256, and the check after encrypting. Tools > Show advanced options adds OpenPGP keys, the
+  algorithm, and GnuPG's own prompt. Anyone already using those starts in advanced mode.
 - Drag-and-drop encryption of files and folders to standard OpenPGP `.gpg` files.
 - **Encrypt with mindyourownbytes** in File Explorer's right-click menu, added by the installer for
   your account only. It adds the files to the list in the open window, and encrypts nothing by itself.
@@ -19,12 +22,16 @@ First public version. Not independently audited.
 - A post-quantum assistant, under Tools, which checks whether GnuPG can make post-quantum keys,
   explains who can open files encrypted to them, and can create one or add a post-quantum part to
   a key of yours. GnuPG asks for any passphrase itself.
+- Generate a passphrase wherever you choose one: seven random words from EFF's Long Wordlist, or 30
+  random letters and digits, with its exact strength stated in plain words.
 - Each file encrypted with a typed or saved passphrase is decrypted again and compared with its
   original before it's reported as done. A copy that fails is deleted, with the reason shown.
   It's on by default, and can be turned off in the Tools menu.
 - Encrypted vault for saved passphrases, with generation and auto-lock. Stored as a plain
   GnuPG file that opens without this application.
 - Library screen with collections, search, and moving files between collections.
+- "What your provider sees", which shows the same files as you see them and as your cloud provider
+  does, with lists of what it can and can't see.
 - Restore that selects how to unlock files, can try every saved passphrase, and retries only what failed.
 - Warnings before restoring into a synced folder, when originals already appear to be in
   one, and before encrypting to a key you can't decrypt with.

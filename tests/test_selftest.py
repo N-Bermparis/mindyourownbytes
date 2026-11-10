@@ -44,6 +44,7 @@ class SelfTestTests(unittest.TestCase):
                     "Twofish encrypts and restores", "Camellia-256 encrypts and restores",
                     "Checks each file after encrypting it", "The check refuses a damaged copy, keeping nothing",
                     "The check refuses a copy of something else, keeping nothing",
+                    "Generates passphrases from the word list",
                     "Post-quantum keys work, where this GnuPG has them"}
         self.assertLessEqual(expected, names)
 

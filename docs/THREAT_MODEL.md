@@ -42,6 +42,12 @@ format (AES-256 by default, with an MDC integrity check), which is the most wide
 mode uses whatever the recipient's key asks for. With keys made by GnuPG 2.4 or later,
 that is a newer OCB packet, which GnuPG older than 2.3 and some other tools cannot read.
 
+**Safe settings unless you ask for others.** New installations start in simple mode, which always
+uses AES-256, always checks each new file, and always asks for passphrases in this app, whatever
+was chosen before. **Tools > Show advanced options** offers the rest. Anyone who already relies on
+an advanced option, such as a key of their own, starts in advanced mode, and the choice is then
+remembered.
+
 **Explicit, verified encryption settings.** Passphrase mode pins these options
 rather than relying on defaults:
 
@@ -147,6 +153,12 @@ Please read this section. These are real limits, not fine print.
 | File sizes, approximately | Can help identify known files |
 | File count and timestamps | Reveal activity patterns |
 | Your account, IP, and upload times | Encryption cannot hide these |
+| The algorithm of a passphrase file, such as AES-256 | Says nothing about the contents |
+
+**Help > What your provider sees** shows this with your own files: the Encrypt screen's list, the
+Library's files, or examples. One switch flips between your view and your provider's. For files
+already encrypted, it shows 16 real bytes from the middle of each, which is all their contents look
+like to anyone without the secret.
 
 Encrypting a name would need an archive mode or a name-mapping layer, which is on the
 [roadmap](ROADMAP.md). **If you need hidden names today, use a tool that encrypts them,
@@ -180,8 +192,23 @@ Passphrase mode has no such identifier.
 
 OpenPGP's S2K function is deliberately slow but **not memory-hard**, so it resists
 GPU cracking far less than modern functions such as Argon2. A strong passphrase is what
-really protects you. Use five or more random words, or the Generate button, which gives
-about 147 bits. A weak passphrase cannot be fixed by any setting.
+really protects you. A weak passphrase cannot be fixed by any setting.
+
+**Let the computer pick.** Wherever you choose a new passphrase, the app can generate one, using
+Python's `secrets` module, which draws on the operating system's cryptographic random numbers:
+
+| Kind | Made of | Strength |
+| --- | --- | --- |
+| Random words, the default | 7 words from EFF's Long Wordlist of 7,776 | About 90 bits |
+| Random letters and digits | 30 from an alphabet of 30, without look-alikes such as 0 and O | About 147 bits |
+
+Only a generated passphrase's strength can be stated exactly, so the app doesn't pretend to measure
+one you make up. EFF's list is shipped exactly as EFF publishes it, and the app checks its SHA-256
+before using it, so a changed or shortened list is refused rather than quietly weakening anything. No
+word is the start of another, so words run together can only be read one way.
+
+A generated passphrase is shown in full, and when it's for encrypting or for the vault's master
+passphrase, the app won't continue until you tick that you've saved it. Nobody can recover it.
 
 ### The saved passphrase vault
 
