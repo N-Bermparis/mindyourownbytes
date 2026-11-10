@@ -15,7 +15,6 @@ from __future__ import annotations
 import hmac
 import json
 import os
-import secrets
 import shutil
 import subprocess
 import sys
@@ -24,14 +23,12 @@ from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 
+from mindyourownbytes import generator
 from mindyourownbytes.core import describe_failure, encode_passphrase, run_gpg_pipe, symmetric_args
 
 VAULT_FORMAT = "mindyourownbytes-vault"
 VAULT_VERSION = 1
 MIN_MASTER_LENGTH = 12
-
-#: No 0/O or 1/I/L, so a generated passphrase survives being copied by hand.
-_GENERATED_ALPHABET = "23456789ABCDEFGHJKMNPQRSTVWXYZ"
 
 
 class VaultError(Exception):
@@ -65,12 +62,9 @@ def default_vault_path() -> Path:
     return base / "mindyourownbytes" / "vault.gpg"
 
 
-def generate_passphrase(groups: int = 6, group_size: int = 5) -> str:
+def generate_passphrase(groups: int = generator.DEFAULT_GROUPS) -> str:
     """Random passphrase. The default holds about 147 bits, far beyond guessing."""
-    return "-".join(
-        "".join(secrets.choice(_GENERATED_ALPHABET) for _ in range(group_size))
-        for _ in range(groups)
-    )
+    return generator.character_passphrase(groups)
 
 
 def check_new_master(passphrase: str) -> None:

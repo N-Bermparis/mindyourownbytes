@@ -16,6 +16,8 @@ First public version. Not independently audited.
 - Passphrase encryption with a choice of AES-256 (the default), Twofish, or Camellia-256, and
   public-key encryption with Kleopatra/GnuPG keys, with each key's type shown in the list.
 - Type one passphrase for a whole batch, instead of one prompt per file.
+- Generate a passphrase wherever you choose one: seven random words from EFF's Long Wordlist, or 30
+  random letters and digits, with its exact strength stated in plain words.
 - Each file encrypted with a typed or saved passphrase is decrypted again and compared with its
   original before it's reported as done. A copy that fails is deleted, with the reason shown.
   It's on by default, and can be turned off in the Tools menu.

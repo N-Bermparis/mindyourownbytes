@@ -1289,6 +1289,58 @@ class PassphraseDialogTests(unittest.TestCase):
         self.assertTrue(self.ok_enabled(dialog))
         self.assertIn("space", dialog.hint.text())
 
+    def test_a_generated_passphrase_says_how_strong_it_is_and_must_be_saved_first(self):
+        dialog = PassphraseDialog(None, "t", "m", confirm=True, min_length=8)
+        self.assertIsNotNone(dialog.generator)
+        dialog.generator.generate()
+        phrase = dialog.first.text()
+        self.assertEqual(dialog.second.text(), phrase)
+        self.assertEqual(len(phrase.split("-")) >= 7, True)
+        self.assertEqual(dialog.first.echoMode(), dialog.first.EchoMode.Normal, "it has to be seen to be saved")
+        self.assertIn("about 90 bits", dialog.generator.strength.text())
+        self.assertFalse(dialog.generator.strength.isHidden())
+        self.assertFalse(self.ok_enabled(dialog))
+        self.assertIn("Save it before you continue", dialog.hint.text())
+        self.assertFalse(dialog.saved_box.isHidden())
+        dialog.saved_box.setChecked(True)
+        self.assertTrue(self.ok_enabled(dialog))
+        self.assertEqual(dialog.passphrase(), phrase)
+
+    def test_changing_a_generated_passphrase_makes_it_an_ordinary_one(self):
+        dialog = PassphraseDialog(None, "t", "m", confirm=True, min_length=8)
+        dialog.generator.kind.setCurrentIndex(dialog.generator.kind.findData("characters"))
+        dialog.generator.generate()
+        self.assertIn("about 147 bits", dialog.generator.strength.text())
+        dialog.first.setText(dialog.first.text() + "x")
+        dialog.second.setText(dialog.first.text())
+        self.assertTrue(dialog.saved_box.isHidden())
+        self.assertTrue(dialog.generator.strength.isHidden(), "its strength is no longer known")
+        self.assertTrue(self.ok_enabled(dialog))
+
+    def test_typing_a_passphrase_to_unlock_offers_no_generator(self):
+        dialog = PassphraseDialog(None, "t", "m")
+        self.assertIsNone(dialog.generator)
+        self.assertTrue(dialog.saved_box.isHidden())
+
+    def test_a_problem_generating_leaves_the_fields_alone(self):
+        dialog = PassphraseDialog(None, "t", "m", confirm=True)
+        with patch("mindyourownbytes.gui.dialogs.generator.generate", side_effect=RuntimeError("no list")), \
+                patch.object(QMessageBox, "warning") as warning:
+            dialog.generator.generate()
+        self.assertEqual(dialog.first.text(), "")
+        self.assertIn("no list", warning.call_args.args[2])
+
+    def test_saved_passphrases_can_be_generated_too(self):
+        from mindyourownbytes.gui.dialogs import VaultEntryDialog
+        dialog = VaultEntryDialog(None)
+        dialog.label.setText("Taxes")
+        dialog.generator.generate()
+        self.assertTrue(dialog.passphrase_field.text())
+        self.assertTrue(dialog.show_box.isChecked())
+        self.assertIn("bits", dialog.generator.strength.text())
+        dialog.passphrase_field.setText("typed by hand")
+        self.assertTrue(dialog.generator.strength.isHidden())
+
     def test_input_is_masked_by_default(self):
         from PySide6.QtWidgets import QLineEdit
         dialog = PassphraseDialog(None, "t", "m")

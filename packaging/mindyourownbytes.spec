@@ -74,7 +74,7 @@ def wanted(entry) -> bool:
 a = Analysis(
     [str(PACKAGE / "__main__.py")],
     pathex=[str(ROOT)],
-    datas=[(str(PACKAGE / "styles.qss"), "mindyourownbytes")],
+    datas=[(str(PACKAGE / name), "mindyourownbytes") for name in ("styles.qss", "eff_large_wordlist.txt")],
     excludes=EXCLUDED_MODULES,
 )
 a.binaries = [entry for entry in a.binaries if wanted(entry)]

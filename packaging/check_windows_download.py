@@ -44,6 +44,7 @@ REQUIRED_FILES = (
     "licenses/PyInstaller.txt",
     "mindyourownbytes.exe",
     "_internal/mindyourownbytes/styles.qss",
+    "_internal/mindyourownbytes/eff_large_wordlist.txt",
     "_internal/PySide6/plugins/platforms/qwindows.dll",
     "_internal/PySide6/plugins/styles/qmodernwindowsstyle.dll",
     "gnupg/README.txt",

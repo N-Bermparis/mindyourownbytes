@@ -51,7 +51,9 @@ can't read. This app makes that a drag and drop.
   compares it with your original. A copy that doesn't match is thrown away, and you're told why.
 - **Choose the algorithm** for passphrase encryption: AES-256 (recommended), Twofish, or Camellia-256.
 - **Save different passphrases** for different kinds of documents, in an optional vault
-  encrypted under one master passphrase. It can also generate strong ones.
+  encrypted under one master passphrase.
+- **Let your computer pick a passphrase**, wherever you choose one: seven random words that are
+  easy to type, or 30 random letters and digits. The app says exactly how strong it is.
 - **Organize into collections** such as Taxes or Medical, then browse, search, and move files
   in the Library. Collections are plain folders, so they work in Explorer and on any cloud too.
 - **Or use OpenPGP keys** you already manage in Kleopatra, with each key's type shown, including
@@ -244,7 +246,8 @@ a copy of your cloud data, as long as your passphrase is strong.
 - **Rollback and swaps.** A provider could serve an old version of a file, or swap two files that
   share a passphrase. Neither is detected.
 - **A compromised computer.** Malware can read whatever you can.
-- **A weak passphrase.** Use five or more random words, or the Generate button.
+- **A weak passphrase.** Use five or more random words, or let the app generate one. It can't
+  measure a passphrase you make up, so it only states the strength of ones it generates.
 
 The [threat model](docs/THREAT_MODEL.md) has the full picture, including the vault's trade-offs.
 
@@ -284,6 +287,9 @@ is going. Please follow the [Code of Conduct](CODE_OF_CONDUCT.md).
 
 [GNU General Public License v3.0 or later](LICENSE). Anyone who distributes a modified version
 must publish its source, so nobody can ship a closed copy of a privacy tool that can't be audited.
+
+Generated passphrases use [EFF's Long Wordlist](https://www.eff.org/dice), by the Electronic
+Frontier Foundation, under [Creative Commons Attribution](https://www.eff.org/copyright).
 
 Maintained by [Nikolaos Bermparis](https://github.com/N-Bermparis). Not affiliated with any cloud
 provider, or with the GnuPG project.
