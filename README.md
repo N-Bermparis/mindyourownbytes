@@ -61,6 +61,8 @@ can't read. This app makes that a drag and drop.
   iCloud, a NAS, or a USB stick. You upload the files yourself.
 - **Clear, guided steps** in plain language, using your system's own controls and its light or
   dark mode. Failed files can be retried with one click.
+- **Simple unless you ask for more.** New installations offer a passphrase or a saved one, with safe
+  settings. **Tools > Show advanced options** adds OpenPGP keys, a choice of algorithm, and more.
 
 | Library | Saved passphrases |
 | --- | --- |
@@ -144,8 +146,9 @@ been tested on macOS. Reports are very welcome.
    **Encrypt with mindyourownbytes**. On Windows 11, that's under **Show more options**. They're
    added to the list, and nothing is encrypted until you click **Encrypt**. For a lot of files at
    once, right-click their folder instead, because Windows can leave the entry out for a large selection.
-2. Choose how to protect them. *Passphrase* is the simplest. You can also pick an algorithm, but
-   AES-256 suits nearly everyone.
+2. Choose how to protect them. *Passphrase* is the simplest. For OpenPGP keys or a choice of
+   algorithm, click **More options**, or turn on **Tools > Show advanced options**. AES-256, which
+   simple mode always uses, suits nearly everyone.
 3. Optionally type a collection name, such as `Taxes`.
 4. Click **Encrypt**. Each file is encrypted, then decrypted again and compared with your original,
    and its row then says **Encrypted and checked**.
@@ -167,7 +170,11 @@ been tested on macOS. Reports are very welcome.
 | **Saved passphrase** | Different secrets for different documents | One master passphrase guards them all |
 | **OpenPGP key** | Existing Kleopatra users | You must back up your private key, and forged files aren't detected ([why](docs/THREAT_MODEL.md#tampering)) |
 
-Would you rather this app never saw your passphrase? Turn on **Tools > Let GnuPG ask for each
+**Simple mode**, which new installations start in, offers the first two. Anyone who already has a
+key of their own, or has changed an advanced setting, starts in advanced mode, so nothing they use
+disappears.
+
+Would you rather this app never saw your passphrase? In advanced mode, turn on **Tools > Let GnuPG ask for each
 passphrase**. You'll then be asked once for every file, so it's slower for folders, and the app
 can't check the new files.
 

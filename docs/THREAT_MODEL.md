@@ -42,6 +42,12 @@ format (AES-256 by default, with an MDC integrity check), which is the most wide
 mode uses whatever the recipient's key asks for. With keys made by GnuPG 2.4 or later,
 that is a newer OCB packet, which GnuPG older than 2.3 and some other tools cannot read.
 
+**Safe settings unless you ask for others.** New installations start in simple mode, which always
+uses AES-256, always checks each new file, and always asks for passphrases in this app, whatever
+was chosen before. **Tools > Show advanced options** offers the rest. Anyone who already relies on
+an advanced option, such as a key of their own, starts in advanced mode, and the choice is then
+remembered.
+
 **Explicit, verified encryption settings.** Passphrase mode pins these options
 rather than relying on defaults:
 

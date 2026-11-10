@@ -16,6 +16,8 @@ release pull request. Passing this list is not a security certification.
 
 ## Functional checks with real Pinentry, on Windows
 
+- [ ] On a fresh installation, check that the app starts in simple mode, and that More options switches to
+      advanced. Upgrade an installation that used a key, and check that it starts in advanced mode.
 - [ ] Encrypt and restore with each method: passphrase, GnuPG's own prompt (Tools menu), saved passphrase, key.
 - [ ] Encrypt and restore with each algorithm: AES-256, Twofish, Camellia-256.
 - [ ] Check what each method reports: "Encrypted and checked" with a typed or saved passphrase, and
