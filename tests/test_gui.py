@@ -508,6 +508,170 @@ class TransferFlowTests(GuiCase):
         self.assertIn("locked", self.message_boxes["warning"].call_args.args[2])
 
 
+class ArchiveModeTests(GuiCase):
+    """Step 3 can put every file into one archive, which hides the names inside."""
+
+    def finish(self):
+        self.wait_until(lambda: not self.window.running)
+        self.wait_until(lambda: self.window._thread is None)
+
+    def choose_archive(self, name: str = ""):
+        self.window.archive_radio.click()
+        self.window.archive_name_edit.setText(name)
+
+    def test_separate_files_stay_the_default(self):
+        self.assertTrue(self.window.separate_radio.isChecked())
+        self.assertTrue(self.window.archive_help.isHidden())
+        self.assertFalse(self.window.archive_name_edit.isEnabled())
+        self.assertRegex(self.window.archive_name_edit.placeholderText(), r"^Archive \d{4}-\d{2}-\d{2}$")
+
+    def test_choosing_an_archive_says_what_it_hides_and_what_it_costs(self):
+        self.choose_archive()
+        self.assertFalse(self.window.archive_help.isHidden())
+        self.assertIn("Hides the names", self.window.archive_help.text())
+        self.assertIn("whole archive again", self.window.archive_help.text())
+        self.assertIn("one .zip.gpg file", self.window.privacy_note.text())
+        self.assertTrue(self.window.archive_name_edit.isEnabled())
+
+    def test_restoring_has_no_such_choice(self):
+        self.choose_archive()
+        self.window.set_operation("restore")
+        for widget in (self.window.save_as_label, self.window.separate_radio, self.window.archive_radio,
+                       self.window.archive_name_edit, self.window.archive_help):
+            self.assertTrue(widget.isHidden())
+        self.assertFalse(self.window.archive_chosen())
+        self.assertIn("no cloud service syncs", self.window.privacy_note.text())
+
+    def test_the_choice_is_remembered(self):
+        self.choose_archive()
+        again = MainWindow(self.settings, self.root / "app" / "vault.gpg")
+        self.addCleanup(again.close)
+        self.assertTrue(again.archive_radio.isChecked())
+        self.window.separate_radio.click()
+        third = MainWindow(self.settings, self.root / "app" / "vault.gpg")
+        self.addCleanup(third.close)
+        self.assertTrue(third.separate_radio.isChecked())
+
+    def test_a_folder_becomes_one_checked_archive_and_comes_back_as_a_folder(self):
+        self.write("Taxes/return.pdf", b"return")
+        self.write("Taxes/receipts/scan.jpg", b"scan")
+        self.window.add_paths([str(self.root / "input" / "Taxes")])
+        self.select_method("once")
+        self.choose_archive("Paperwork")
+        packed = []
+        real = main_window.encrypt_archive
+
+        def recording(*args, **kwargs):
+            notify = kwargs["on_packing"]
+            kwargs["on_packing"] = lambda index: (packed.append(index), notify(index))
+            return real(*args, **kwargs)
+
+        with patch.object(main_window, "encrypt_archive", side_effect=recording), patch.object(
+            self.window, "_set_row_status", wraps=self.window._set_row_status
+        ) as shown:
+            self.run_with_typed_passphrase()
+        self.assertEqual(packed, [0, 1])
+        self.assertIn("Adding to the archive…", [call.args[1] for call in shown.call_args_list])
+        self.assertEqual([p.name for p in (self.root / "exports").iterdir()], ["Paperwork.zip.gpg"])
+        for row in range(2):
+            self.assertEqual(self.window.table.item(row, 3).text(), "In the archive, checked")
+        self.assertEqual(self.window.result_bar.title_label.text(),
+                         "2 files encrypted into one archive with AES-256 and checked")
+        self.assertIn("Upload only Paperwork.zip.gpg", self.window.result_bar.text())
+        self.assertNotIn(b"return.pdf", (self.root / "exports" / "Paperwork.zip.gpg").read_bytes())
+
+        self.window.set_operation("restore")
+        self.window.add_paths([str(self.root / "exports" / "Paperwork.zip.gpg")])
+        self.select_method("once")
+        self.run_with_typed_passphrase()
+        self.assertEqual(self.window.table.item(0, 3).text(), "Restored and unpacked")
+        unpacked = self.root / "restored" / "Paperwork" / "Taxes"
+        self.assertEqual((unpacked / "return.pdf").read_bytes(), b"return")
+        self.assertEqual((unpacked / "receipts" / "scan.jpg").read_bytes(), b"scan")
+
+    def test_the_suggested_name_is_used_when_none_is_typed(self):
+        self.window.add_paths([str(self.write("a.txt"))])
+        self.select_method("once")
+        self.choose_archive("")
+        self.run_with_typed_passphrase()
+        suggested = self.window.archive_name_edit.placeholderText()
+        self.assertEqual([p.name for p in (self.root / "exports").iterdir()], [f"{suggested}.zip.gpg"])
+
+    def test_a_name_that_cannot_be_used_stops_before_any_work(self):
+        self.window.add_paths([str(self.write("a.txt"))])
+        self.select_method("once")
+        self.choose_archive("../../Startup")
+        self.window.start()
+        self.assertFalse(self.window.running)
+        self.assertIn("archive name", self.message_boxes["warning"].call_args.args[1])
+        self.assertFalse((self.root / "exports").exists())
+
+    def test_a_failed_archive_says_so_and_can_be_tried_again(self):
+        self.write("Taxes/a.txt", b"a")
+        self.write("Taxes/b.txt", b"b")
+        self.window.add_paths([str(self.root / "input" / "Taxes")])
+        self.select_method("once")
+        self.choose_archive("Paperwork")
+        real = main_window.encrypt_archive
+
+        def spoiling(*args, **kwargs):
+            def spoil():
+                staged = next((self.root / "exports").glob(".myob-*.partial"))
+                staged.write_bytes(b"not an OpenPGP file")
+
+            kwargs["on_checking"] = spoil
+            return real(*args, **kwargs)
+
+        with patch.object(main_window, "encrypt_archive", side_effect=spoiling):
+            self.run_with_typed_passphrase()
+        self.assertEqual(self.window.result_bar.property("kind"), "error")
+        self.assertEqual(self.window.result_bar.title_label.text(), "The archive wasn't made")
+        self.assertIn("Check failed", self.window.result_bar.text())
+        self.assertEqual(list((self.root / "exports").iterdir()), [])
+        self.assertEqual(self.window.start_button.text(), "Try these again")
+        self.run_with_typed_passphrase(action=self.window._primary_clicked)
+        self.assertEqual([p.name for p in (self.root / "exports").iterdir()], ["Paperwork.zip.gpg"])
+        self.assertEqual(self.window.start_button.text(), "Start over")
+
+    def test_a_key_archive_is_reported_as_not_checked(self):
+        self.generate_key("Me <me@example.invalid>")
+        self.window.refresh_keys()
+        self.window.add_paths([str(self.write("a.txt"))])
+        self.select_method("public-key")
+        self.choose_archive("Paperwork")
+        self.window.start()
+        self.finish()
+        self.assertEqual(self.window.table.item(0, 3).text(), "In the archive, not checked")
+        self.assertEqual(self.window.result_bar.title_label.text(), "1 file encrypted into one archive")
+        self.assertIn("Not checked", self.window.result_bar.text())
+
+    def test_the_provider_view_shows_the_one_archive_they_get(self):
+        from mindyourownbytes.gui import provider_view
+        self.write("Taxes/return.pdf", b"return")
+        self.write("Taxes/scan.jpg", b"scan")
+        self.window.add_paths([str(self.root / "input" / "Taxes")])
+        self.window.collection_combo.setCurrentText("Paperwork")
+        self.choose_archive("Year end")
+        with patch.object(provider_view, "ProviderView") as view:
+            self.window.provider_link.linkActivated.emit("#provider")
+        self.assertEqual(view.call_args.args[2], "Paperwork/Year end.zip.gpg")
+        self.assertEqual(len(view.call_args.args[1]), 2, "your own view still lists every file")
+        self.window.separate_radio.click()
+        with patch.object(provider_view, "ProviderView") as view:
+            self.window.provider_link.linkActivated.emit("#provider")
+        self.assertEqual(view.call_args.args[2], "")
+
+    def test_the_choice_is_locked_while_a_job_runs(self):
+        self.choose_archive()
+        self.window.running = True
+        self.window._set_busy(True)
+        self.assertFalse(self.window.archive_radio.isEnabled())
+        self.assertFalse(self.window.archive_name_edit.isEnabled())
+        self.window.running = False
+        self.window._set_busy(False)
+        self.assertTrue(self.window.archive_name_edit.isEnabled())
+
+
 @unittest.skipUnless(HAS_QT, "PySide6 is not installed")
 class ProviderViewTests(unittest.TestCase):
     """The same files, as you see them and as your provider does."""
@@ -615,6 +779,24 @@ class ProviderViewTests(unittest.TestCase):
         files = view.call_args.args[1]
         self.assertEqual([shown.stored_as for shown in files], ["Taxes/return.pdf.gpg"])
         view.return_value.exec.assert_called_once()
+
+    def test_with_one_archive_your_provider_sees_one_file(self):
+        from mindyourownbytes.gui import provider_view
+        files = [provider_view.Shown("return.pdf", "Taxes", 1000, "Paperwork/Taxes/return.pdf.gpg"),
+                 provider_view.Shown("scan.jpg", "Taxes", 3000, "Paperwork/Taxes/scan.jpg.gpg")]
+        view = self.open_archive(files, "Paperwork/Year end.zip.gpg")
+        self.assertEqual(view.table.rowCount(), 1)
+        self.assertEqual([view.table.item(0, column).text() for column in range(4)],
+                         ["Year end.zip.gpg", "Paperwork", "about 3.9 KB", "2 files, unreadable once encrypted"])
+        text = " ".join(child.text() for child in view.findChildren(QLabel))
+        self.assertIn("The names, folders, sizes, and number of the files inside", text)
+        self.assertNotIn("File names, exactly as they are", text)
+        view.yours.click()
+        self.assertEqual(self.column(view, 0), ["return.pdf", "scan.jpg"])
+
+    def open_archive(self, files, stored):
+        from mindyourownbytes.gui import provider_view
+        return self.keep_until_the_end_of_this_test(provider_view.ProviderView(None, files, stored))
 
     def test_the_library_offers_it_for_the_files_chosen(self):
         from mindyourownbytes.gui import library_page

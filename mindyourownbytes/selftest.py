@@ -144,6 +144,31 @@ def _check_the_check(checks: _Checks, gpg: str, source: Path, scratch: Path) -> 
     checks.record(name, *_refuses(gpg, source, scratch / "swapped", swap))
 
 
+def _check_archive_round_trip(checks: _Checks, gpg: str, scratch: Path) -> None:
+    """A folder in, one file out that hides the names, and the same folder back. This uses zipfile and zlib,
+    which the download's trimming could leave out."""
+    folder = scratch / "archive-originals" / "Αρχείο"
+    (folder / "inner").mkdir(parents=True)
+    (folder / FILE_NAME).write_bytes(CONTENT)
+    (folder / "inner" / "empty.txt").write_bytes(b"")
+    encrypted_folder = scratch / "archive-encrypted"
+    items = core.collect_files([folder], encrypted_folder, "encrypt").items
+    made = core.encrypt_archive(gpg, items, encrypted_folder, "Self test", "password", None, threading.Event(),
+                                lambda *_: None, passphrases=(PASSPHRASE,))
+    names = [path.name for path in encrypted_folder.iterdir()]
+    packed = made.checked == 2 and names == ["Self test.zip.gpg"]
+    if not checks.record("Packs a folder into one checked archive", packed, names):
+        return
+    checks.record("The archive hides the names inside", FILE_NAME.encode() not in made.outputs[0].read_bytes()
+                  and "Αρχείο".encode() not in made.outputs[0].read_bytes())
+    restored = _job(gpg, made.outputs[0], scratch / "archive-restored", "restore", "password",
+                    passphrases=(PASSPHRASE,))
+    unpacked = restored.outputs[0] / "Αρχείο" if restored.succeeded else scratch
+    checks.record("Restores an archive into the same folder",
+                  restored.succeeded == 1 and (unpacked / FILE_NAME).read_bytes() == CONTENT
+                  and (unpacked / "inner" / "empty.txt").read_bytes() == b"")
+
+
 def _check_every_algorithm(checks: _Checks, gpg: str, source: Path, scratch: Path) -> None:
     """Each one is separate code in GnuPG, so one could go missing without affecting the others."""
     for cipher in core.CIPHERS:
@@ -225,6 +250,7 @@ def _check_gnupg(checks: _Checks, report: dict, source: Path, scratch: Path) -> 
 
     _check_passphrase_round_trip(checks, gpg, source, scratch)
     _check_the_check(checks, gpg, source, scratch)
+    _check_archive_round_trip(checks, gpg, scratch)
     _check_every_algorithm(checks, gpg, source, scratch)
     _check_key_round_trip(checks, gpg, source, scratch)
     _check_generator(checks)
