@@ -934,7 +934,7 @@ def process_items(
     operation: Operation, method: Method, fingerprint: str | None,
     cancel: threading.Event, on_progress: Callable[[int, bool, str, Path | None], None],
     *, passphrases: Sequence[str] = (), cipher: str = DEFAULT_CIPHER, verify: bool = True,
-    on_checking: Callable[[int], None] | None = None,
+    on_checking: Callable[[int], None] | None = None, on_start: Callable[[int], None] | None = None,
 ) -> JobResult:
     """Process each item independently; failed jobs leave no partial exports.
 
@@ -949,6 +949,8 @@ def process_items(
     before the file gets its final name. That only happens when a passphrase was passed in,
     because anything else would make GnuPG ask again. ``on_checking`` hears when a file's
     check begins, and ``on_progress`` then says ``CHECKED`` rather than ``READY``.
+
+    ``on_start`` hears as work on each item begins, before GnuPG sees it.
     """
     if not is_valid_gpg(binary):
         raise RuntimeError(
@@ -974,6 +976,8 @@ def process_items(
             was_cancelled = True
             break
         try:
+            if on_start is not None:
+                on_start(index)
             target, was_checked = _process_one(
                 binary, item, output_directory, operation, method, fingerprint, cancel, secrets, leftovers,
                 cipher, verify, partial(on_checking, index) if on_checking is not None else None,

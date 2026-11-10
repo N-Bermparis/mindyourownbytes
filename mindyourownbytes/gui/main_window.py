@@ -38,13 +38,14 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from mindyourownbytes import __version__
+from mindyourownbytes import __version__, records
 from mindyourownbytes.core import (
     CHECKED,
     CIPHERS,
     DEFAULT_CIPHER,
     ENCRYPTED_SUFFIXES,
     MIN_GPG_VERSION,
+    Cancelled,
     JobResult,
     PublicKey,
     SourceItem,
@@ -82,6 +83,7 @@ from mindyourownbytes.gui.widgets import (
     step_heading,
 )
 from mindyourownbytes.library import list_collections, validate_collection_name
+from mindyourownbytes.records import Finding, Ledger
 from mindyourownbytes.vault import Vault, default_vault_path
 
 DEFAULT_ROOT = Path.home() / "mindyourownbytes"
@@ -156,6 +158,15 @@ CHECK_COPY = {
     "result_one": "It was decrypted again and matched the original.",
     "result_many": "Each one was decrypted again and matched its original.",
 }
+#: What a restored file's row adds, from comparing the download with the checksums saved here.
+RECORD_WORDS = {
+    "match": "matches your record",
+    "older": "but it's an older copy",
+    "renamed": "but it was renamed or swapped",
+    "changed": "but not the copy you made",
+    "all_match": "Each one matches the checksum saved when it was made.",
+}
+
 #: Why a file wasn't checked although checking is on, by how it was protected.
 NOT_CHECKED = {
     "pinentry": "Not checked, because GnuPG asked for the passphrase itself, and checking would mean "
@@ -217,12 +228,17 @@ class BackupWorker(QObject):
     progress = Signal(int, bool, str, object)
     #: The file at this position is encrypted, and is now being checked.
     checking = Signal(int)
+    #: What the record says about the downloaded file at this position, as a records.Finding.
+    found = Signal(int, object)
+    #: Something worth saying that doesn't change the result, such as a record that couldn't be saved.
+    note = Signal(str)
     completed = Signal(object)
     error = Signal(str)
     finished = Signal()
 
     def __init__(self, gpg: str, files: list[SourceItem], output: Path, operation: str,
-                 method: str, fingerprint: str | None, passphrases: list[str], cipher: str, verify: bool):
+                 method: str, fingerprint: str | None, passphrases: list[str], cipher: str, verify: bool,
+                 ledger: Ledger | None = None, keep_records: bool = False, records_root: Path | None = None):
         super().__init__()
         self.gpg = gpg
         self.files = files
@@ -233,18 +249,50 @@ class BackupWorker(QObject):
         self.passphrases = passphrases
         self.cipher = cipher
         self.verify = verify
+        #: Checked against before each restore, and added to after encrypting if ``keep_records``.
+        self.ledger = ledger
+        self.keep_records = keep_records
+        self.records_root = records_root or output
         self.cancel_event = threading.Event()
+
+    def _check_record(self, index: int) -> None:
+        """Before a download is decrypted, see whether it's the file this computer made."""
+        source = self.files[index].source
+        try:
+            digest = records.sha256_of(source, self._stop_if_cancelled)
+        except OSError:
+            return  # GnuPG will say what's wrong with it.
+        self.found.emit(index, self.ledger.check(source, digest))
+
+    def _stop_if_cancelled(self) -> None:
+        if self.cancel_event.is_set():
+            raise Cancelled()
+
+    def _keep_records(self, result: JobResult) -> None:
+        try:
+            self.ledger.add(records.records_for(result.outputs, self.records_root))
+        except OSError as exc:
+            self.note.emit(f"The checksums of these files couldn't be saved, so downloads of them can't be checked "
+                           f"later: {exc.strerror or exc}")
 
     @Slot()
     def run(self):
         try:
+            restoring = self.operation == "restore" and self.ledger is not None
+            if restoring:
+                try:
+                    self.ledger.load()
+                except OSError:
+                    restoring = False
             result = process_items(
                 self.gpg, self.files, self.output, self.operation, self.method, self.fingerprint,
                 self.cancel_event,
                 lambda index, ok, message, output: self.progress.emit(index, ok, message, output),
                 passphrases=self.passphrases, cipher=self.cipher, verify=self.verify,
-                on_checking=self.checking.emit,
+                on_checking=self.checking.emit, on_start=self._check_record if restoring else None,
             )
+            if self.operation == "encrypt" and self.ledger is not None and self.keep_records and result.outputs:
+                self._keep_records(result)
             self.completed.emit(result)
         except Exception as exc:
             self.error.emit(str(exc))
@@ -277,6 +325,12 @@ class MainWindow(QMainWindow):
         self._method_chosen_by_user = False
         self._file_icons = FileIcons()
         self.vault = Vault(self.gpg, vault_path or default_vault_path())
+        #: Checksums of what this computer encrypted, kept beside the vault.
+        self.ledger = Ledger(records.default_path(self.vault.path.parent))
+        #: What the record said about each file being restored, by row.
+        self._findings: dict[int, Finding] = {}
+        #: Problems that didn't change the job's result, to mention once it's done.
+        self._notes: list[str] = []
 
         self.setWindowTitle("mindyourownbytes")
         self.setWindowIcon(icons.app_icon())
@@ -663,6 +717,19 @@ class MainWindow(QMainWindow):
         )
         self.pinentry_action.toggled.connect(self._set_pinentry_preference)
         tools_menu.addSeparator()
+        self.records_action = tools_menu.addAction("Keep checksums to check &downloads")
+        self.records_action.setCheckable(True)
+        # On unless it was turned off here, like the check after encrypting.
+        self.records_action.setChecked(str(self.settings.value("keep_records", "")).lower() != "false")
+        self.records_action.setToolTip(
+            "Saves each new file's checksum on this computer, so that restoring can tell whether a download is the "
+            "file you made, rather than an older or swapped copy. The list includes the files' names."
+        )
+        self.records_action.toggled.connect(
+            lambda on: self.settings.setValue("keep_records", "true" if on else "false"))
+        self._add_action(tools_menu, "&Import checksums…", self.import_checksums)
+        self._add_action(tools_menu, "&Forget saved checksums…", self.forget_checksums)
+        tools_menu.addSeparator()
         self._add_action(tools_menu, "&Locate GnuPG…", self.select_gpg)
         kleopatra = self._add_action(tools_menu, "Open &Kleopatra", self.open_kleopatra)
         kleopatra.setEnabled(find_kleopatra() is not None)
@@ -754,6 +821,43 @@ class MainWindow(QMainWindow):
             f"<a href='{REPOSITORY_URL}'>Source code on GitHub</a></p>"
             "<p>No accounts, no telemetry, and no network connections.</p>",
         )
+
+    def import_checksums(self):
+        """Add checksums saved on another computer, so that restoring here checks downloads against them."""
+        if self.running:
+            return
+        chosen, _ = QFileDialog.getOpenFileName(self, "Import checksums", str(Path.home()),
+                                                "Checksum files (*.txt *.sha256 SHA256SUMS*);;All files (*)")
+        if not chosen:
+            return
+        try:
+            text = Path(chosen).read_text(encoding="utf-8-sig", errors="strict")
+            found, unreadable = records.read_checksum_file(text, Path(chosen).name)
+            self.ledger.add(found)
+        except (OSError, UnicodeDecodeError) as exc:
+            QMessageBox.warning(self, "Couldn't import the checksums", str(exc))
+            return
+        skipped = f" {unreadable} lines weren't checksums, and were skipped." if unreadable else ""
+        QMessageBox.information(
+            self, "Checksums imported",
+            f"Imported {plural(len(found), 'checksum')}. Restoring now checks downloads against them.{skipped}",
+        )
+
+    def forget_checksums(self):
+        if self.running:
+            return
+        if not self._confirm(
+            "Forget the saved checksums?",
+            "Restoring will then no longer be able to tell whether a download is the file you made. "
+            "Your encrypted files aren't touched.\n\nForget them?",
+        ):
+            return
+        try:
+            self.ledger.clear()
+        except OSError as exc:
+            QMessageBox.warning(self, "Couldn't forget the checksums", str(exc))
+            return
+        self.status_text.setText("The saved checksums are gone.")
 
     def open_kleopatra(self):
         path = find_kleopatra()
@@ -1278,6 +1382,8 @@ class MainWindow(QMainWindow):
         verify = self.operation == "encrypt" and self.check_action.isChecked()
         self._job_not_checked = NOT_CHECKED.get(selection, "") if verify else ""
         self._succeeded_rows: set[int] = set()
+        self._findings = {}
+        self._notes = []
         self._set_busy(True)
         self.progress_bar.setRange(0, len(self.items))
         self.progress_bar.setValue(0)
@@ -1286,11 +1392,15 @@ class MainWindow(QMainWindow):
 
         self._thread = QThread(self)
         self.worker = BackupWorker(self.gpg, list(self.items), output, self.operation, method,
-                                   fingerprint, passphrases, cipher, verify)
+                                   fingerprint, passphrases, cipher, verify, ledger=self.ledger,
+                                   keep_records=self.records_action.isChecked(),
+                                   records_root=self.current_output("encrypt"))
         self.worker.moveToThread(self._thread)
         self._thread.started.connect(self.worker.run)
         self.worker.progress.connect(self._progress)
         self.worker.checking.connect(self._checking)
+        self.worker.found.connect(self._found)
+        self.worker.note.connect(self._note)
         self.worker.completed.connect(self._completed)
         self.worker.error.connect(self._error)
         self.worker.finished.connect(self._thread.quit)
@@ -1338,14 +1448,30 @@ class MainWindow(QMainWindow):
             self._set_row_status(index, CHECK_COPY["row_working"], "clock", "text")
         self.status_text.setText(CHECK_COPY["working"].format(done=index + 1, total=len(self.items)))
 
+    @Slot(int, object)
+    def _found(self, index: int, finding: Finding):
+        self._findings[index] = finding
+
+    @Slot(str)
+    def _note(self, message: str):
+        self._notes.append(message)
+
     def _show_row_done(self, row: int, checked: bool, output):
         """Only a file the job really checked may say so."""
+        finding = self._findings.get(row)
         if checked:
             text, note = CHECK_COPY["row_done"], CHECK_COPY["row_tip"]
         elif self._job_not_checked:
             text, note = CHECK_COPY["row_skipped"], self._job_not_checked
         else:
             text, note = COPY[self.operation]["row_done"], ""
+        if finding is not None and finding.is_warning:
+            # Restored, because it decrypted, but not the file that was made here.
+            self._set_row_status(row, f"{text}, {RECORD_WORDS[finding.verdict]}", "alert", "warn",
+                                 f"{output}\n{finding.message}")
+            return
+        if finding is not None and finding.verdict == "match":
+            text, note = f"{text}, {RECORD_WORDS['match']}", finding.message
         self._set_row_status(row, text, "check", "ok", f"{output}\n{note}" if note else str(output))
 
     @Slot(int, bool, str, object)
@@ -1382,6 +1508,8 @@ class MainWindow(QMainWindow):
             widget.setVisible(self._job_state != "done")
         self._show_result(result)
         self._update_primary()
+        if self._notes:
+            QMessageBox.warning(self, "Checksums weren't saved", "\n\n".join(self._notes))
         if result.leftovers:
             listed = "\n".join(str(path) for path in result.leftovers[:8])
             QMessageBox.warning(
@@ -1415,6 +1543,20 @@ class MainWindow(QMainWindow):
                 detail = f"{CHECK_COPY['result_one' if result.succeeded == 1 else 'result_many']} {detail}"
             elif self._job_not_checked:
                 detail = f"{self._job_not_checked} {detail}"
+            restored = [self._findings[row] for row in self._succeeded_rows if row in self._findings]
+            doubtful = [finding for finding in restored if finding.is_warning]
+            if doubtful:
+                self.result_bar.show_message(
+                    "warning", f"{title}, but {len(doubtful)} {'is' if len(doubtful) == 1 else 'are'} not the "
+                               f"{'copy' if len(doubtful) == 1 else 'copies'} you made",
+                    f"{doubtful[0].message} Compare with your other copies before relying on "
+                    f"{'it' if len(doubtful) == 1 else 'them'}. The Status column says which.",
+                    actions=[open_folder],
+                )
+                self.open_button.setVisible(False)
+                return
+            if restored and len(restored) == result.succeeded and all(f.verdict == "match" for f in restored):
+                detail = f"{RECORD_WORDS['all_match']} {detail}"
             self.result_bar.show_message("success", title, detail, actions=[open_folder])
         self.open_button.setVisible(not result.succeeded)
 

@@ -10,12 +10,15 @@ from pathlib import Path
 from PySide6.QtCore import Qt, QUrl, Signal
 from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (
+    QApplication,
+    QFileDialog,
     QHBoxLayout,
     QInputDialog,
     QLineEdit,
     QListWidget,
     QListWidgetItem,
     QMessageBox,
+    QProgressDialog,
     QStackedWidget,
     QTableWidget,
     QTableWidgetItem,
@@ -23,6 +26,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from mindyourownbytes import records
 from mindyourownbytes.core import SourceItem
 from mindyourownbytes.gui import icons
 from mindyourownbytes.gui.widgets import (
@@ -132,6 +136,12 @@ class LibraryPage(QWidget):
         actions.setSpacing(8)
         self.count_label = label("", "muted")
         actions.addWidget(self.count_label, stretch=1)
+        self.checksums_button = action_button("Save checksums…")
+        self.checksums_button.setToolTip(
+            "Save a list of these files' checksums, to check downloads against on any computer"
+        )
+        self.checksums_button.clicked.connect(self.save_checksums)
+        actions.addWidget(self.checksums_button)
         self.move_button = action_button("Move to…", icon_name="move")
         self.move_button.clicked.connect(self.move_selected)
         actions.addWidget(self.move_button)
@@ -245,6 +255,48 @@ class LibraryPage(QWidget):
         except (ValueError, OSError) as exc:
             QMessageBox.warning(self, "Could not move the files", str(exc))
         self.refresh()
+
+    def save_checksums(self) -> None:
+        """Write a SHA256SUMS file for the selected files, or for every one shown when none are selected."""
+        chosen = self._selected_entries() or list(self.visible)
+        if not chosen:
+            QMessageBox.information(self, "Nothing to list", "There are no encrypted files here yet.")
+            return
+        target, _ = QFileDialog.getSaveFileName(
+            self, "Save checksums", str(Path.home() / "SHA256SUMS.txt"), "Text files (*.txt);;All files (*)",
+        )
+        if not target:
+            return
+        progress = QProgressDialog("Reading the files…", "Cancel", 0, len(chosen), self)
+        progress.setWindowTitle("Save checksums")
+        progress.setWindowModality(Qt.WindowModality.WindowModal)
+        progress.setMinimumDuration(400)
+
+        def keep_going() -> None:
+            QApplication.processEvents()
+            if progress.wasCanceled():
+                raise InterruptedError()
+
+        sums = []
+        try:
+            for done, entry in enumerate(chosen):
+                progress.setValue(done)
+                sums.append((records.sha256_of(entry.path, keep_going), entry.relative.as_posix()))
+            Path(target).write_text(records.checksum_file(sums), encoding="utf-8", newline="\n")
+        except InterruptedError:
+            return
+        except OSError as exc:
+            QMessageBox.warning(self, "Couldn't save the checksums", str(exc))
+            return
+        finally:
+            progress.close()
+        QMessageBox.information(
+            self, "Checksums saved",
+            f"Saved the checksums of {plural(len(sums))}. Keep this list somewhere your cloud provider can't "
+            "change it, such as a USB stick or your password manager, not beside the files.\n\nTo check "
+            "downloads against it on another computer, use Tools > Import checksums. Without this app, "
+            "sha256sum --check reads it as it is.",
+        )
 
     def open_folder(self) -> None:
         root = self._root()

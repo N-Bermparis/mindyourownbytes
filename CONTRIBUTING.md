@@ -58,6 +58,7 @@ first. `build_windows_exe.bat` does the first two steps for you.
 | Path | Purpose |
 | --- | --- |
 | `mindyourownbytes/core.py` | Finding GnuPG, expanding inputs, encrypting, restoring |
+| `mindyourownbytes/records.py` | Checksums of what was encrypted here, to check downloads against |
 | `mindyourownbytes/vault.py` | The saved passphrase vault |
 | `mindyourownbytes/library.py` | Collections and the library scan |
 | `mindyourownbytes/gui/` | The PySide6 interface. No cryptography goes here |
