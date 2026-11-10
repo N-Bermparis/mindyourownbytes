@@ -229,6 +229,10 @@ the [threat model](docs/THREAT_MODEL.md#how-the-design-defends-you).
 cloud you're protecting against.** If you lose them, nobody can recover your files. That
 is the point, and also the risk.
 
+**Help > Restore on another computer** walks through doing it on Windows, macOS, or Linux, with or
+without this app, including the exact commands. **Save these steps** writes them to a text file to
+keep beside your backups. It holds no secrets.
+
 ## What it protects and what it doesn't
 
 **Protected:** the contents of your files, from your cloud provider and from anyone who gets

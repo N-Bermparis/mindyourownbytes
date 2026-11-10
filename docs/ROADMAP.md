@@ -46,6 +46,7 @@ specific provider. Those are not missing features; they are the point.
 - [ ] Translations
 - [ ] Move folder scanning off the UI thread for very large trees
 - [ ] Better detection of cloud-synced folders
+- [x] A step-by-step guide to restoring on another computer
 - [ ] Periodic restore-test reminders
 - [ ] Input fuzzing
 

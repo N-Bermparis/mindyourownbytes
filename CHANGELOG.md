@@ -23,6 +23,8 @@ First public version. Not independently audited.
   GnuPG file that opens without this application.
 - Library screen with collections, search, and moving files between collections.
 - Restore that selects how to unlock files, can try every saved passphrase, and retries only what failed.
+- A step-by-step guide to restoring on another computer, under Help, for Windows, macOS, or Linux,
+  with or without this app. It can be saved as a text file to keep beside your backups.
 - Warnings before restoring into a synced folder, when originals already appear to be in
   one, and before encrypting to a key you can't decrypt with.
 - Real-GnuPG test suite, including forged, tampered, and truncated input.
