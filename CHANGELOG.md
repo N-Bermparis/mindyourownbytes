@@ -22,6 +22,8 @@ First public version. Not independently audited.
 - Encrypted vault for saved passphrases, with generation and auto-lock. Stored as a plain
   GnuPG file that opens without this application.
 - Library screen with collections, search, and moving files between collections.
+- "What your provider sees", which shows the same files as you see them and as your cloud provider
+  does, with lists of what it can and can't see.
 - Restore that selects how to unlock files, can try every saved passphrase, and retries only what failed.
 - Warnings before restoring into a synced folder, when originals already appear to be in
   one, and before encrypting to a key you can't decrypt with.

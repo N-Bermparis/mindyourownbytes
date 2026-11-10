@@ -61,7 +61,7 @@ from mindyourownbytes.core import (
     process_items,
     stop_bundled_gnupg,
 )
-from mindyourownbytes.gui import handover, icons, theme
+from mindyourownbytes.gui import handover, icons, provider_view, theme
 from mindyourownbytes.gui.dialogs import PassphraseDialog, ProtectionDialog
 from mindyourownbytes.gui.library_page import LibraryPage
 from mindyourownbytes.gui.vault_page import VaultPage
@@ -625,6 +625,9 @@ class MainWindow(QMainWindow):
         grid.addWidget(self.collection_combo, 1, 1, 1, 2)
         self.privacy_note = label("", "muted", wrap=True)
         grid.addWidget(self.privacy_note, 2, 1, 1, 2)
+        self.provider_link = label("<a href='#provider'>See what your provider sees</a>", wrap=True)
+        self.provider_link.linkActivated.connect(lambda _link: self.show_provider_view())
+        grid.addWidget(self.provider_link, 3, 1, 1, 2)
         return frame
 
     def _build_menus(self) -> None:
@@ -671,6 +674,7 @@ class MainWindow(QMainWindow):
 
         help_menu = bar.addMenu("&Help")
         self._add_action(help_menu, "&What this protects", self.show_protection, "F1")
+        self._add_action(help_menu, "What your &provider sees", self.show_provider_view)
         self._add_action(help_menu, "&Report a problem", lambda: self._open_url(f"{REPOSITORY_URL}/issues"))
         help_menu.addSeparator()
         self._add_action(help_menu, "&About mindyourownbytes", self.show_about)
@@ -715,7 +719,7 @@ class MainWindow(QMainWindow):
         self.key_radio.setText(copy["key_title"])
         self.key_help.setText(copy["key_help"])
         self.privacy_note.setText(copy["save_note"])
-        for widget in (self.collection_label, self.collection_combo):
+        for widget in (self.collection_label, self.collection_combo, self.provider_link):
             widget.setVisible(is_encryption)
         self._refresh_collections()
         self._refresh_saved_combo()
@@ -737,6 +741,17 @@ class MainWindow(QMainWindow):
         self.pages.setCurrentWidget(self.vault_page)
         self.vault_nav.setChecked(True)
         self.vault_page.refresh()
+
+    def show_provider_view(self):
+        """Your own files, if there are some to encrypt, or examples."""
+        files = []
+        if self.operation == "encrypt" and self.items:
+            try:
+                collection = validate_collection_name(self.collection_combo.currentText())
+            except ValueError:
+                collection = ""
+            files = provider_view.from_items(self.items, collection)
+        provider_view.ProviderView(self, files).exec()
 
     def show_protection(self):
         ProtectionDialog(self).exec()
