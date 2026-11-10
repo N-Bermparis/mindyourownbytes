@@ -153,6 +153,12 @@ Please read this section. These are real limits, not fine print.
 | File sizes, approximately | Can help identify known files |
 | File count and timestamps | Reveal activity patterns |
 | Your account, IP, and upload times | Encryption cannot hide these |
+| The algorithm of a passphrase file, such as AES-256 | Says nothing about the contents |
+
+**Help > What your provider sees** shows this with your own files: the Encrypt screen's list, the
+Library's files, or examples. One switch flips between your view and your provider's. For files
+already encrypted, it shows 16 real bytes from the middle of each, which is all their contents look
+like to anyone without the secret.
 
 Encrypting a name would need an archive mode or a name-mapping layer, which is on the
 [roadmap](ROADMAP.md). **If you need hidden names today, use a tool that encrypts them,

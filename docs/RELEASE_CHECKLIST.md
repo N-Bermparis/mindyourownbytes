@@ -33,6 +33,8 @@ release pull request. Passing this list is not a security certification.
 - [ ] Test spaces, Unicode, very long names, and name collisions.
 - [ ] Test from an ordinary, non-administrator account.
 - [ ] Check keyboard use, and that every screen and dialog is readable in light and dark Windows themes.
+- [ ] Open "What your provider sees" from Help, from the Encrypt screen with files listed, and from the
+      Library, and check that it shows those files both ways.
 
 ## Safety and packaging
 

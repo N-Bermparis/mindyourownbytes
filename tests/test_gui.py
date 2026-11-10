@@ -508,6 +508,130 @@ class TransferFlowTests(GuiCase):
         self.assertIn("locked", self.message_boxes["warning"].call_args.args[2])
 
 
+@unittest.skipUnless(HAS_QT, "PySide6 is not installed")
+class ProviderViewTests(unittest.TestCase):
+    """The same files, as you see them and as your provider does."""
+
+    def setUp(self):
+        app()
+        temp = tempfile.TemporaryDirectory(prefix="myobtest")
+        self.addCleanup(temp.cleanup)
+        self.root = Path(temp.name)
+
+    def keep_until_the_end_of_this_test(self, widget):
+        """Destroyed while Qt is running. A widget with no parent, left for Python's exit, can crash it."""
+        from shiboken6 import delete
+        self.addCleanup(delete, widget)
+        return widget
+
+    def open(self, files=()):
+        from mindyourownbytes.gui import provider_view
+        return self.keep_until_the_end_of_this_test(provider_view.ProviderView(None, files))
+
+    def column(self, view, column):
+        return [view.table.item(row, column).text() for row in range(view.table.rowCount())]
+
+    def test_with_nothing_of_yours_it_shows_examples_and_starts_on_the_providers_view(self):
+        from mindyourownbytes.gui import provider_view
+        view = self.open()
+        self.assertTrue(view.examples)
+        self.assertTrue(view.providers_view())
+        self.assertEqual(self.column(view, 0), [shown.stored_name for shown in provider_view.EXAMPLES])
+        self.assertIn("divorce-settlement.pdf.gpg", self.column(view, 0))
+        self.assertEqual(self.column(view, 3), ["Unreadable once encrypted"] * 3)
+
+    def test_switching_shows_what_changes_and_what_doesnt(self):
+        from mindyourownbytes.gui import provider_view, theme
+        view = self.open(provider_view.EXAMPLES)
+        self.assertEqual(self.column(view, 1), ["Legal", "Medical", "—"])
+        self.assertEqual(view.table.item(0, 0).foreground().color(), theme.color("warn"))
+        self.assertEqual(view.table.item(0, 3).foreground().color(), theme.color("ok"))
+        self.assertIn("can see this name", view.table.item(0, 0).toolTip())
+        self.assertTrue(self.column(view, 2)[0].startswith("about "))
+        view.yours.click()
+        self.assertFalse(view.providers_view())
+        self.assertEqual(self.column(view, 0), ["divorce-settlement.pdf", "scan-001.jpg", "notes.txt"])
+        self.assertEqual(self.column(view, 3), ["Readable, on this computer"] * 3)
+        self.assertFalse(self.column(view, 2)[0].startswith("about"))
+        view.theirs.click()
+        self.assertEqual(self.column(view, 0)[0], "divorce-settlement.pdf.gpg")
+
+    def test_says_plainly_what_they_can_and_cant_see(self):
+        view = self.open()
+        text = " ".join(child.text() for child in view.findChildren(QLabel))
+        for phrase in ("File names", "Folder and collection names", "Roughly how big", "Which algorithm",
+                       "which key the files are for", "internet address", "What's inside any file",
+                       "never leave this computer", "keep them vague"):
+            self.assertIn(phrase, text)
+
+    def test_files_about_to_be_encrypted_show_the_names_they_will_get(self):
+        from mindyourownbytes.core import SourceItem
+        from mindyourownbytes.gui import provider_view
+        items = [SourceItem(self.root / "return.pdf", Path("Taxes 2026/return.pdf"), 1000),
+                 SourceItem(self.root / "notes.txt", Path("notes.txt"), 20)]
+        shown = provider_view.from_items(items, "Paperwork")
+        self.assertEqual([(s.name, s.folder, s.stored_as, s.encrypted) for s in shown], [
+            ("return.pdf", "Taxes 2026", "Paperwork/Taxes 2026/return.pdf.gpg", None),
+            ("notes.txt", "", "Paperwork/notes.txt.gpg", None)])
+        self.assertEqual(provider_view.from_items(items[1:])[0].stored_as, "notes.txt.gpg")
+
+    def test_files_already_encrypted_show_real_bytes_from_their_middle(self):
+        from mindyourownbytes.gui import provider_view
+        from mindyourownbytes.library import scan_library
+        (self.root / "Taxes").mkdir()
+        big = bytes([0x8C, 0x0D] * 8) + bytes(range(256)) * 4
+        (self.root / "Taxes" / "return.pdf.gpg").write_bytes(big)
+        (self.root / "tiny.txt.gpg").write_bytes(b"\x01\x02\x03")
+        shown = sorted(provider_view.from_library(scan_library(self.root)), key=lambda s: s.name)
+        self.assertEqual([(s.name, s.folder, s.stored_as) for s in shown],
+                         [("return.pdf", "Taxes", "Taxes/return.pdf.gpg"), ("tiny.txt", "", "tiny.txt.gpg")])
+        middle = len(big) // 2
+        expected = " ".join(f"{byte:02x}" for byte in big[middle:middle + 16])
+        self.assertEqual(provider_view.sample_bytes(shown[0].encrypted), f"… {expected} …")
+        self.assertEqual(provider_view.sample_bytes(shown[1].encrypted), "… 01 02 03 …")
+        self.assertEqual(provider_view.sample_bytes(self.root / "gone.gpg"), "")
+        view = self.open(shown)
+        self.assertEqual(view.table.item(0, 3).text(), f"… {expected} … (unreadable)")
+        self.assertIn("real bytes from the middle", view.table.item(0, 3).toolTip())
+
+    def test_the_window_offers_it_with_your_own_files(self):
+        from mindyourownbytes.gui import provider_view
+        folder = Path(tempfile.mkdtemp(prefix="myobtest"))
+        window = self.keep_until_the_end_of_this_test(MainWindow(isolated_settings(folder), folder / "vault.gpg"))
+        self.addCleanup(window.close)
+        titles = [action.text().replace("&", "") for action in window.findChildren(QAction)]
+        self.assertIn("What your provider sees", titles)
+        self.assertFalse(window.provider_link.isHidden())
+        window.set_operation("restore")
+        self.assertTrue(window.provider_link.isHidden())
+        window.set_operation("encrypt")
+        original = folder / "input" / "return.pdf"
+        original.parent.mkdir()
+        original.write_bytes(b"x")
+        window.add_paths([str(original)])
+        window.collection_combo.setCurrentText("Taxes")
+        with patch.object(provider_view, "ProviderView") as view:
+            window.provider_link.linkActivated.emit("#provider")
+        files = view.call_args.args[1]
+        self.assertEqual([shown.stored_as for shown in files], ["Taxes/return.pdf.gpg"])
+        view.return_value.exec.assert_called_once()
+
+    def test_the_library_offers_it_for_the_files_chosen(self):
+        from mindyourownbytes.gui import library_page
+        exports = self.root / "exports"
+        (exports / "Taxes").mkdir(parents=True)
+        (exports / "Taxes" / "a.pdf.gpg").write_bytes(b"x" * 100)
+        (exports / "b.txt.gpg").write_bytes(b"y" * 100)
+        page = self.keep_until_the_end_of_this_test(library_page.LibraryPage(lambda: exports))
+        page.refresh()
+        with patch.object(library_page, "ProviderView") as view:
+            page.privacy_line.linkActivated.emit("#provider")
+            self.assertEqual(len(view.call_args.args[1]), 2, "every file shown, when none is selected")
+            page.table.selectRow(0)
+            page.privacy_line.linkActivated.emit("#provider")
+            self.assertEqual(len(view.call_args.args[1]), 1)
+
+
 class FromFileExplorerTests(GuiCase):
     """Right-clicking a file in File Explorer starts the app with that file's path."""
 

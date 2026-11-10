@@ -253,6 +253,9 @@ a copy of your cloud data, as long as your passphrase is strong.
 - **A compromised computer.** Malware can read whatever you can.
 - **A weak passphrase.** Use five or more random words, or the Generate button.
 
+To see it with your own files, open **Help > What your provider sees**, or the link on the Encrypt
+screen or in the Library. It shows the same files as you see them and as your provider does.
+
 The [threat model](docs/THREAT_MODEL.md) has the full picture, including the vault's trade-offs.
 
 ## How it compares
