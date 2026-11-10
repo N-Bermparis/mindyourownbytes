@@ -199,7 +199,7 @@ class ProtectionDialog(QDialog):
             "<p style='font-weight:600'>Not protected</p>"
             "<ul style='margin-left:-20px'>"
             "<li><b>File and folder names, and approximate sizes.</b> Your provider can still see these, "
-            "so keep names vague.</li>"
+            "so keep names vague, or encrypt your files into one archive, which hides the names inside.</li>"
             "<li><b>Files already in a synced folder.</b> If your originals are in OneDrive or Dropbox, "
             "your provider probably has them already.</li>"
             "<li><b>Old or deleted copies.</b> A provider could delete a file, or show you an old version. "

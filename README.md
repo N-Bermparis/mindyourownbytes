@@ -52,6 +52,8 @@ can't read. This app makes that a drag and drop.
 - **Choose the algorithm** for passphrase encryption: AES-256 (recommended), Twofish, or Camellia-256.
 - **Save different passphrases** for different kinds of documents, in an optional vault
   encrypted under one master passphrase. It can also generate strong ones.
+- **Or pack them into one archive** that hides the names of the files and folders inside. Your
+  provider sees one `.zip.gpg` file, and restoring it gives you the folder back.
 - **Organize into collections** such as Taxes or Medical, then browse, search, and move files
   in the Library. Collections are plain folders, so they work in Explorer and on any cloud too.
 - **Or use OpenPGP keys** you already manage in Kleopatra, with each key's type shown, including
@@ -146,7 +148,8 @@ been tested on macOS. Reports are very welcome.
    once, right-click their folder instead, because Windows can leave the entry out for a large selection.
 2. Choose how to protect them. *Passphrase* is the simplest. You can also pick an algorithm, but
    AES-256 suits nearly everyone.
-3. Optionally type a collection name, such as `Taxes`.
+3. Optionally type a collection name, such as `Taxes`. To hide the names of what you're encrypting,
+   choose **One archive** under **Save as**, and give it a vague name.
 4. Click **Encrypt**. Each file is encrypted, then decrypted again and compared with your original,
    and its row then says **Encrypted and checked**.
 5. When it's done, click **Open folder** and upload what's there. By default that's
@@ -214,6 +217,15 @@ still works:
 gpg --output report.pdf --decrypt report.pdf.gpg
 ```
 
+An archive decrypts to an ordinary zip, which File Explorer, macOS, and Linux open without help:
+
+```bash
+gpg --output Paperwork.zip --decrypt Paperwork.zip.gpg
+```
+
+On Windows, open it in File Explorer: Windows' own `tar` command can't read names that aren't
+plain English letters.
+
 The vault is the same kind of file. This prints every saved passphrase:
 
 ```bash
@@ -236,9 +248,9 @@ a copy of your cloud data, as long as your passphrase is strong.
 
 **Not protected:**
 
-- ⚠️ **File and folder names and approximate sizes are visible.** `divorce-settlement.pdf.gpg`
-  says plenty by itself. Keep names vague, or use one of the tools below until
-  [this gets fixed](docs/ROADMAP.md).
+- ⚠️ **File and folder names and approximate sizes are visible**, unless you use one archive.
+  `divorce-settlement.pdf.gpg` says plenty by itself. An archive hides the names inside, but its
+  own name and total size still show, and changing one file means uploading the whole archive again.
 - **Files already in a synced folder.** If your originals live in OneDrive or Dropbox, the provider
   likely has them already. The app warns when it recognizes such a folder.
 - **Rollback and swaps.** A provider could serve an old version of a file, or swap two files that
@@ -257,13 +269,13 @@ Many good tools already exist, so here's an honest comparison.
 | **Interface** | Desktop app | Desktop and mobile apps | Command line | Desktop app |
 | **File format** | Standard OpenPGP | Its own documented format | Its own documented format | Standard OpenPGP |
 | **Open without the app** | GnuPG or other OpenPGP tools | A compatible tool | rclone or a compatible tool | GnuPG or other OpenPGP tools |
-| **Hides file names** | ❌ Not yet | ✅ | ✅ On by default | ❌ |
+| **Hides file names** | In one archive only | ✅ | ✅ On by default | ❌ |
 | **Saved passphrases by purpose** | ✅ | One per vault | Per remote | ❌ |
 | **Independent audit** | ❌ Not yet | ✅ [2017](https://community.cryptomator.org/t/has-there-been-a-security-review-audit-of-cryptomator/44) | | |
 
 **Choose this if** you want plain, durable `.gpg` files you can open with anything, without
 mounting a vault. **Choose [Cryptomator](https://cryptomator.org/) if** you need hidden file names
-or an audited tool today, as it's excellent at both. **Choose rclone crypt if** you're comfortable
+on files you keep changing, or an audited tool today, as it's excellent at both. **Choose rclone crypt if** you're comfortable
 on the command line and want automated sync.
 
 ## Get involved

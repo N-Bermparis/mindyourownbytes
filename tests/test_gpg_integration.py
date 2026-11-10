@@ -8,17 +8,20 @@ import subprocess
 import threading
 import time
 import unittest
+import zipfile
 from pathlib import Path
 from unittest.mock import patch
 
-from mindyourownbytes import core
+from mindyourownbytes import archive, core
 from mindyourownbytes.core import (
     CHECKED,
     CIPHERS,
     READY,
+    UNPACKED,
     SourceItem,
     available_ciphers,
     collect_files,
+    encrypt_archive,
     gpg_version,
     list_public_keys,
     peek_protection,
@@ -650,6 +653,242 @@ class CheckAfterEncryptingTests(IntegrationCase):
         result = self.encrypt_job(self.write("a.bin", os.urandom(50_000)))
         self.assertEqual((result.succeeded, result.checked), (1, 1), self.progress)
         self.assertIn("aead", self.packets(result.outputs[0], PASSPHRASE))
+
+
+class ArchiveTests(IntegrationCase):
+    """A whole folder in one encrypted archive, which hides the names inside."""
+
+    FILES = {
+        "divorce-settlement.pdf": b"%PDF-1.4 " + bytes(range(256)) * 400,
+        "receipts/Τεστ résumé.txt": "δοκιμή\r\n".encode(),
+        "receipts/empty.txt": b"",
+    }
+
+    def folder(self, name: str = "Taxes 2026") -> Path:
+        for relative, content in self.FILES.items():
+            self.write(f"{name}/{relative}", content)
+        return self.root / name
+
+    def pack(self, sources, out="exports", name="Archive 2026-11-10", method="password", fingerprint=None,
+             cancel=None, **options):
+        if method == "password":
+            options.setdefault("passphrases", [PASSPHRASE])
+        items = collect_files(sources, self.root / out, "encrypt").items
+        return encrypt_archive(self.gpg, items, self.root / out, name, method, fingerprint,
+                               cancel or threading.Event(), lambda *args: self.progress.append(args), **options)
+
+    def restore(self, encrypted: Path, out="restored", **options):
+        options.setdefault("passphrases", [PASSPHRASE])
+        return self.job([self.item(encrypted)], out, "restore", **options)
+
+    def contents(self, folder: Path) -> dict[str, bytes]:
+        return {p.relative_to(folder).as_posix(): p.read_bytes() for p in folder.rglob("*") if p.is_file()}
+
+    def assert_nothing_kept(self, result, out="exports"):
+        self.assertEqual((result.succeeded, result.outputs, result.checked), (0, (), 0), self.progress)
+        left = list((self.root / out).rglob("*")) if (self.root / out).exists() else []
+        self.assertEqual(left, [], "a failed archive must leave nothing behind")
+
+    def test_a_folder_goes_into_one_file_that_hides_its_names_and_comes_back_whole(self):
+        made = self.pack([self.folder()])
+        self.assertEqual((made.succeeded, made.failed, made.checked), (3, 0, 3), self.progress)
+        self.assertEqual([p.name for p in (self.root / "exports").iterdir()], ["Archive 2026-11-10.zip.gpg"])
+        self.assertEqual([entry[2] for entry in self.progress], [CHECKED] * 3)
+        ciphertext = made.outputs[0].read_bytes()
+        for hidden in ("divorce", "receipts", "Taxes", "résumé", "Τεστ", "empty.txt"):
+            self.assertNotIn(hidden.encode(), ciphertext)
+        self.progress = []
+        restored = self.restore(made.outputs[0])
+        self.assertEqual((restored.succeeded, restored.failed), (1, 0), self.progress)
+        self.assertEqual(self.progress[-1][2], UNPACKED)
+        self.assertEqual(restored.outputs[0], self.root / "restored" / "Archive 2026-11-10")
+        self.assertEqual(self.contents(restored.outputs[0] / "Taxes 2026"), self.FILES)
+        self.assertEqual([p.name for p in (self.root / "restored").iterdir()], ["Archive 2026-11-10"],
+                         "the decrypted zip must not be left behind")
+
+    def test_every_algorithm_makes_a_working_archive(self):
+        folder = self.folder()
+        for cipher in available_ciphers(self.gpg):
+            with self.subTest(cipher.label):
+                made = self.pack([folder], f"exports-{cipher.name}", cipher=cipher.name)
+                self.assertEqual(made.checked, 3, self.progress)
+                self.assertRegex(self.packets(made.outputs[0], PASSPHRASE),
+                                 rf"symkey enc packet: version \d+, cipher {cipher.packet_id}\b")
+                restored = self.restore(made.outputs[0], f"restored-{cipher.name}")
+                self.assertEqual(self.contents(restored.outputs[0] / "Taxes 2026"), self.FILES)
+
+    def test_keeps_the_same_strong_settings(self):
+        packets = self.packets(self.pack([self.folder()]).outputs[0], PASSPHRASE)
+        self.assertRegex(packets, r"s2k 3, hash 10\b")
+        self.assertIn("count 65011712", packets)
+        self.assertRegex(packets, r"mdc(_method)?: 2")
+
+    def test_plain_gpg_and_any_zip_tool_open_it_without_this_app(self):
+        made = self.pack([self.folder()])
+        plain = self.root / "plain.zip"
+        result = self.run_gpg("--pinentry-mode", "loopback", "--passphrase", PASSPHRASE,
+                              "--output", str(plain), "--decrypt", str(made.outputs[0]))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        with zipfile.ZipFile(plain) as opened:
+            self.assertEqual({name.removeprefix("Taxes 2026/"): opened.read(name) for name in opened.namelist()},
+                             self.FILES)
+        if os.name == "nt":
+            # Explorer's own zip support, which is what a double-click uses.
+            out = self.root / "explorer"
+            out.mkdir()
+            shell = ("$s = New-Object -ComObject Shell.Application; "
+                     f"$s.NameSpace('{out}').CopyHere($s.NameSpace('{plain}').Items(), 1556)")
+            subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", shell],
+                           capture_output=True, timeout=120, check=False)
+            deadline = time.monotonic() + 20
+            while len(self.contents(out)) < len(self.FILES) and time.monotonic() < deadline:
+                time.sleep(0.2)
+            self.assertEqual(self.contents(out / "Taxes 2026"), self.FILES)
+
+    def test_files_from_several_places_go_in_with_their_folders(self):
+        self.folder("One/Docs")
+        self.folder("Two/Docs")
+        single = self.write("loose.txt", b"loose")
+        made = self.pack([self.root / "One" / "Docs", self.root / "Two" / "Docs", single])
+        self.assertEqual(made.succeeded, 7, self.progress)
+        restored = self.restore(made.outputs[0]).outputs[0]
+        names = sorted(self.contents(restored))
+        self.assertIn("loose.txt", names)
+        self.assertIn("Docs/divorce-settlement.pdf", names)
+        self.assertIn("Docs/divorce-settlement (2).pdf", names, "two folders with one name mustn't collide")
+
+    def test_a_second_archive_or_restore_never_overwrites_the_first(self):
+        folder = self.folder()
+        first = self.pack([folder]).outputs[0]
+        second = self.pack([folder]).outputs[0]
+        self.assertEqual(second.name, "Archive 2026-11-10 (2).zip.gpg")
+        once = self.restore(first).outputs[0]
+        twice = self.restore(first).outputs[0]
+        self.assertEqual((once.name, twice.name), ("Archive 2026-11-10", "Archive 2026-11-10 (2)"))
+
+    def test_a_key_works_too_but_is_not_checked(self):
+        fingerprint = self.generate_key()
+        made = self.pack([self.folder()], method="public-key", fingerprint=fingerprint)
+        self.assertEqual((made.succeeded, made.checked), (3, 0), self.progress)
+        self.assertEqual(self.progress[-1][2], READY)
+        restored = self.restore(made.outputs[0], method="public-key", passphrases=[])
+        self.assertEqual(self.contents(restored.outputs[0] / "Taxes 2026"), self.FILES)
+
+    def test_with_the_check_off_nothing_is_checked(self):
+        made = self.pack([self.folder()], verify=False)
+        self.assertEqual((made.succeeded, made.checked), (3, 0))
+
+    def test_an_archive_damaged_before_its_check_is_not_kept(self):
+        def spoil() -> None:
+            staged = next((self.root / "exports").glob(".myob-*.partial"))
+            data = bytearray(staged.read_bytes())
+            data[len(data) // 2] ^= 0xFF
+            staged.write_bytes(bytes(data))
+
+        result = self.pack([self.folder()], on_checking=spoil)
+        self.assert_nothing_kept(result)
+        self.assertEqual(result.failed, 3)
+        self.assertRegex(self.progress[-1][2], "^Check failed: GnuPG couldn't decrypt the archive")
+
+    def test_a_valid_archive_of_something_else_is_not_kept(self):
+        other = self.pack([self.write("other.txt", b"something else")], out="elsewhere").outputs[0]
+
+        def swap() -> None:
+            shutil.copyfile(other, next((self.root / "exports").glob(".myob-*.partial")))
+
+        self.progress = []
+        result = self.pack([self.folder()], on_checking=swap)
+        self.assert_nothing_kept(result)
+        self.assertRegex(self.progress[-1][2], "didn't give back what was packed")
+
+    def test_an_original_that_changes_while_packing_is_reported_as_changed(self):
+        folder = self.folder()
+        changing = folder / "divorce-settlement.pdf"
+
+        def change_the_first(index: int) -> None:
+            if index == 1:
+                changing.write_bytes(b"a newer version, saved meanwhile")
+
+        result = self.pack([folder], on_packing=change_the_first)
+        self.assert_nothing_kept(result)
+        self.assertRegex(self.progress[-1][2], "^The original changed: something wrote to Taxes 2026/divorce")
+
+    def test_an_original_that_vanishes_while_packing_is_reported_as_gone(self):
+        folder = self.folder()
+        doomed = folder / "receipts" / "empty.txt"
+        result = self.pack([folder], on_packing=lambda index: index == 0 and doomed.unlink())
+        self.assert_nothing_kept(result)
+        self.assertRegex(self.progress[-1][2], "^The original is gone")
+
+    def test_cancelling_while_packing_or_checking_keeps_nothing(self):
+        for moment in ("packing", "checking"):
+            with self.subTest(moment):
+                cancel = threading.Event()
+                hooks = ({"on_packing": lambda index, stop=cancel: index == 1 and stop.set()} if moment == "packing"
+                         else {"on_checking": cancel.set})
+                self.progress = []
+                result = self.pack([self.folder()], out=f"exports-{moment}", cancel=cancel, **hooks)
+                self.assertTrue(result.cancelled)
+                self.assertEqual(self.progress[-1][2], "Cancelled")
+                self.assert_nothing_kept(result, f"exports-{moment}")
+
+    def test_the_passphrase_never_reaches_a_command_line(self):
+        commands = []
+        real = subprocess.Popen
+
+        def recording(argv, *args, **kwargs):
+            commands.append(" ".join(str(part) for part in argv))
+            return real(argv, *args, **kwargs)
+
+        with patch("mindyourownbytes.core.subprocess.Popen", side_effect=recording):
+            made = self.pack([self.folder()], passphrases=["distinctive-canary-passphrase"])
+        self.assertEqual(made.checked, 3, self.progress)
+        for command in commands:
+            self.assertNotIn("distinctive-canary-passphrase", command)
+        working = [command for command in commands if "--output" in command]
+        self.assertEqual(len(working), 2, "one to encrypt, and one to check")
+        self.assertIn("--compress-algo none", working[0])
+        self.assertIn("--output -", working[1], "the check never writes the archive's contents to disk")
+
+    def test_a_wrong_passphrase_restores_nothing(self):
+        made = self.pack([self.folder()])
+        self.assert_restore_rejected(made.outputs[0], "restored", "Wrong passphrase", passphrases=["nope"])
+
+    def forged(self, entries) -> Path:
+        """An archive made outside this app, with a passphrase, holding whatever names it likes."""
+        plain = self.root / "forged.zip"
+        with zipfile.ZipFile(plain, "w") as made:
+            for name, content in entries:
+                made.writestr(name, content)
+            made.comment = archive.MARKER
+        forged = self.root / "forged.zip.gpg"
+        result = self.run_gpg("--pinentry-mode", "loopback", "--passphrase", PASSPHRASE, "--symmetric",
+                              "--output", str(forged), str(plain))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        plain.unlink()
+        return forged
+
+    def test_an_archive_with_names_that_escape_unpacks_nothing_anywhere(self):
+        forged = self.forged([("fine.txt", b"x"), ("../../escaped.txt", b"evil")])
+        self.assert_restore_rejected(forged, "restored", "can't be used safely", passphrases=[PASSPHRASE])
+        self.assertFalse((self.root / "escaped.txt").exists())
+        self.assertFalse((self.root.parent / "escaped.txt").exists())
+
+    def test_a_zip_someone_encrypted_as_a_file_restores_as_that_zip(self):
+        own = self.root / "photos.zip"
+        with zipfile.ZipFile(own, "w") as made:
+            made.writestr("a.jpg", b"jpeg")
+        encrypted = self.encrypt(own)
+        restored = self.restore(encrypted)
+        self.assertEqual(self.progress[-1][2], READY)
+        self.assertEqual(restored.outputs[0].name, "photos.zip")
+        self.assertEqual(restored.outputs[0].read_bytes(), own.read_bytes())
+
+    def test_names_that_cannot_be_used_are_refused_before_any_work(self):
+        for name in ("", "../escape", "CON", "a/b"):
+            with self.subTest(name), self.assertRaises(ValueError):
+                self.pack([self.folder()], name=name)
+        self.assertFalse((self.root / "exports").exists())
 
 
 class NothingLingersTests(IntegrationCase):
