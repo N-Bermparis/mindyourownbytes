@@ -18,6 +18,8 @@ release pull request. Passing this list is not a security certification.
 
 - [ ] Encrypt and restore with each method: passphrase, GnuPG's own prompt (Tools menu), saved passphrase, key.
 - [ ] Encrypt and restore with each algorithm: AES-256, Twofish, Camellia-256.
+- [ ] In Tools > Post-quantum keys, create a key and add a part to an older one, answering GnuPG's own
+      window, then encrypt and restore with each. Check that a GnuPG older than 2.5 is explained.
 - [ ] Check what each method reports: "Encrypted and checked" with a typed or saved passphrase, and
       "Encrypted, not checked" with GnuPG's own prompt or a key. Turn the check off in the Tools menu, and on again.
 - [ ] Drag and drop files and folders onto the Encrypt and Restore screens.

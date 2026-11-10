@@ -18,10 +18,13 @@ from mindyourownbytes.core import (
     DEFAULT_CIPHER,
     READY,
     Cancelled,
+    GpgFailure,
     SourceItem,
+    add_post_quantum_subkey,
     available_ciphers,
     bundled_gpg,
     collect_files,
+    create_post_quantum_key,
     encode_passphrase,
     find_gpg,
     find_kleopatra,
@@ -33,7 +36,9 @@ from mindyourownbytes.core import (
     process_items,
     run_gpg_hashed,
     stop_bundled_gnupg,
+    supports_post_quantum,
     unique_target,
+    user_id,
 )
 from tests.support import stderr_with_statuses
 
@@ -682,6 +687,79 @@ class RunGpgHashedTests(unittest.TestCase):
             with self.subTest(program), patch("mindyourownbytes.core.hashlib.sha256", return_value=Failing()), \
                     self.assertRaises(OSError):
                 run_gpg_hashed([sys.executable, "-c", program], threading.Event(), b"secret")
+
+
+class PostQuantumTests(unittest.TestCase):
+    """Deciding what GnuPG can do, and reading what it says, with GnuPG stood in for."""
+
+    GPG = str(Path(tempfile.gettempdir()).resolve() / "gpg")
+
+    def supports(self, listing, version=(2, 5, 18), **mock):
+        answer = subprocess.CompletedProcess([], 0, stdout=listing, stderr="")
+        with patch("mindyourownbytes.core.gpg_version", return_value=version), patch(
+            "mindyourownbytes.core.subprocess.run", return_value=answer, **mock
+        ):
+            return supports_post_quantum(self.GPG)
+
+    def test_needs_gnupg_25_and_kyber(self):
+        self.assertTrue(self.supports("cfg:pubkeyname:RSA;Kyber;ELG;DSA;ECDH;ECDSA;EDDSA\n"))
+        self.assertTrue(self.supports("cfg:pubkeyname:RSA;KYBER\n"))
+        self.assertFalse(self.supports("cfg:pubkeyname:RSA;ELG;DSA;ECDH;ECDSA;EDDSA\n"))
+        self.assertFalse(self.supports("cfg:pubkeyname:RSA;Kyber\n", version=(2, 4, 7)))
+        self.assertFalse(self.supports("cfg:pubkeyname:RSA;Kyber\n", version=None))
+        self.assertFalse(self.supports(""))
+        self.assertFalse(self.supports("", side_effect=OSError))
+        self.assertFalse(self.supports("", side_effect=subprocess.TimeoutExpired("gpg", 8)))
+
+    def test_user_ids_are_a_name_and_an_optional_email(self):
+        self.assertEqual(user_id("  Alex Example ", ""), "Alex Example")
+        self.assertEqual(user_id("Alex", " alex@example.invalid "), "Alex <alex@example.invalid>")
+        self.assertEqual(user_id("Νίκος", ""), "Νίκος")
+        for name, email in (("", ""), (" ", "a@b.c"), ("A <b>", ""), ("Line\nbreak", ""), ("x" * 101, ""),
+                            ("Alex", "not an email"), ("Alex", "a@b"), ("Alex", "a b@c.d"), ("Alex", "<a@b.c>")):
+            with self.subTest(name=name, email=email), self.assertRaises(ValueError):
+                user_id(name, email)
+
+    def make(self, returncode, stderr, call=None):
+        answer = subprocess.CompletedProcess([], returncode, stdout=b"", stderr=stderr.encode())
+        with patch("mindyourownbytes.core.supports_post_quantum", return_value=True), patch(
+            "mindyourownbytes.core.subprocess.run", return_value=answer
+        ) as run:
+            result = (call or (lambda: create_post_quantum_key(self.GPG, "Alex <alex@example.invalid>")))()
+        return result, run.call_args.args[0]
+
+    def test_gnupg_asks_for_the_passphrase_itself_and_the_fingerprint_comes_back(self):
+        fingerprint, argv = self.make(0, stderr_with_statuses("PINENTRY_LAUNCHED 1 1", f"KEY_CREATED B {'A' * 40}"))
+        self.assertEqual(fingerprint, "A" * 40)
+        self.assertEqual(argv[argv.index("--pinentry-mode") + 1], "ask")
+        self.assertNotIn("--passphrase", argv)
+        self.assertEqual(argv[-5:], ["--quick-generate-key", "Alex <alex@example.invalid>", "pqc", "default", "3y"])
+
+    def test_adding_a_part_names_the_key_and_says_what_for(self):
+        part, argv = self.make(0, stderr_with_statuses(f"KEY_CREATED S {'B' * 64}"),
+                               lambda: add_post_quantum_subkey(self.GPG, "C" * 40))
+        self.assertEqual(part, "B" * 64)
+        self.assertEqual(argv[-5:], ["--quick-add-key", "C" * 40, "pqc", "encr", "3y"])
+
+    def test_a_cancelled_prompt_is_named_as_such(self):
+        with self.assertRaisesRegex(GpgFailure, "cancelled, so no key was made"):
+            self.make(2, stderr_with_statuses("ERROR key_generate 83886179", "KEY_NOT_CREATED"))
+
+    def test_any_other_failure_says_what_gnupg_said(self):
+        with self.assertRaisesRegex(GpgFailure, "couldn't make the key: gpg: something went wrong"):
+            self.make(2, "gpg: something went wrong\n" + stderr_with_statuses("FAILURE gpg-exit 33554433"))
+        with self.assertRaisesRegex(GpgFailure, "couldn't make the key"):
+            self.make(0, "")  # Success without a new key is no success.
+
+    def test_nothing_runs_without_support_or_with_a_bad_fingerprint(self):
+        with patch("mindyourownbytes.core.supports_post_quantum", return_value=False), patch(
+            "mindyourownbytes.core.subprocess.run"
+        ) as run:
+            with self.assertRaisesRegex(GpgFailure, "GnuPG 2.5 or later"):
+                create_post_quantum_key(self.GPG, "Alex")
+            with self.assertRaises(ValueError):
+                add_post_quantum_subkey(self.GPG, "not a fingerprint; rm -rf")
+        run.assert_not_called()
 
 
 class AvailableCiphersTests(unittest.TestCase):

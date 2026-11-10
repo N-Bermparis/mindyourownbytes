@@ -426,6 +426,96 @@ def list_public_keys(binary: str) -> list[PublicKey]:
     return sorted(keys, key=lambda key: not key.has_secret)
 
 
+#: Post-quantum keys need GnuPG 2.5. Files encrypted to them need it too, wherever they're opened.
+POST_QUANTUM_GPG_VERSION = (2, 5, 0)
+#: How long a key made here lasts. Kleopatra can extend it.
+KEY_VALIDITY = "3y"
+
+
+def is_post_quantum(key: PublicKey) -> bool:
+    """Whether files encrypted to this key get a post-quantum (Kyber) part."""
+    return key.algorithm.startswith("Kyber")
+
+
+def supports_post_quantum(binary: str) -> bool:
+    """Whether this GnuPG can make, and use, post-quantum keys."""
+    version = gpg_version(binary)
+    if version is None or version < POST_QUANTUM_GPG_VERSION:
+        return False
+    try:
+        result = subprocess.run(
+            [binary, "--batch", "--with-colons", "--list-config", "pubkeyname"], capture_output=True,
+            encoding="utf-8", errors="replace", timeout=8, check=False, creationflags=windows_flags(),
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return any(fields[:2] == ["cfg", "pubkeyname"] and "kyber" in fields[2].casefold()
+               for fields in (line.split(":", 2) for line in result.stdout.splitlines()) if len(fields) == 3)
+
+
+def user_id(name: str, email: str) -> str:
+    """Build a key's user ID from a name and an optional email, or say what's wrong with them."""
+    name, email = name.strip(), email.strip()
+    if not name:
+        raise ValueError("Give the key a name, such as your own.")
+    if len(name) > 100 or any(character in "<>" or ord(character) < 32 for character in name):
+        raise ValueError("Names can be at most 100 characters, without < or >.")
+    if not email:
+        return name
+    if not re.fullmatch(r"[^@\s<>]+@[^@\s<>]+\.[^@\s<>]+", email) or len(email) > 254:
+        raise ValueError("That doesn't look like an email address. You can also leave it empty.")
+    return f"{name} <{email}>"
+
+
+def _run_key_command(binary: str, args: Sequence[str], what: str) -> str:
+    """Run a key-making gpg command. GnuPG asks for any passphrase itself, so this app never sees it.
+
+    Returns the new key's fingerprint, or raises a GpgFailure that's safe to show.
+    """
+    try:
+        result = subprocess.run(
+            [binary, *_BASE_ARGS, "--pinentry-mode", "ask", *args], stdin=subprocess.DEVNULL,
+            capture_output=True, timeout=900, check=False, creationflags=windows_flags(),
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise GpgFailure(f"GnuPG took too long, so no {what} was made.") from exc
+    except OSError as exc:
+        raise GpgFailure(f"GnuPG couldn't be run, so no {what} was made: {exc}") from exc
+    stderr = result.stderr.decode("utf-8", errors="replace")
+    # "KEY_CREATED B <fingerprint>" for a new key, or "KEY_CREATED S <fingerprint>" for a new subkey.
+    created = [line[2] for line in _status_lines(stderr) if len(line) > 2 and line[0] == "KEY_CREATED"]
+    if result.returncode == 0 and created:
+        return created[-1]
+    codes = {int(line[-1]) & 0xFFFF for line in _status_lines(stderr)
+             if len(line) > 1 and line[0] in ("ERROR", "FAILURE") and line[-1].isdigit()}
+    if _GPG_ERR_CANCELED in codes:
+        raise GpgFailure(f"The passphrase prompt was cancelled, so no {what} was made.")
+    raise GpgFailure(f"GnuPG couldn't make the {what}: {_last_diagnostic(stderr)}")
+
+
+def create_post_quantum_key(binary: str, uid: str) -> str:
+    """Make a new key with a post-quantum encryption part. Returns its fingerprint.
+
+    GnuPG asks for the new key's passphrase in its own window.
+    """
+    if not supports_post_quantum(binary):
+        raise GpgFailure("This GnuPG can't make post-quantum keys. GnuPG 2.5 or later can.")
+    return _run_key_command(binary, ["--quick-generate-key", uid, "pqc", "default", KEY_VALIDITY], "key")
+
+
+def add_post_quantum_subkey(binary: str, fingerprint: str) -> str:
+    """Give an existing key of yours a post-quantum encryption part, which GnuPG then uses for new files.
+
+    Returns the new part's fingerprint. GnuPG asks for the key's passphrase in its own window.
+    """
+    if not re.fullmatch(r"[0-9A-Fa-f]{40,64}", fingerprint):
+        raise ValueError("Select one of your keys.")
+    if not supports_post_quantum(binary):
+        raise GpgFailure("This GnuPG can't make post-quantum keys. GnuPG 2.5 or later can.")
+    return _run_key_command(binary, ["--quick-add-key", fingerprint, "pqc", "encr", KEY_VALIDITY],
+                            "post-quantum part")
+
+
 def looks_cloud_synced(path: str | Path) -> str | None:
     """Return the folder name that suggests ``path`` is synced, or None.
 

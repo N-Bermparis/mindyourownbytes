@@ -236,6 +236,16 @@ Its costs, which you should weigh:
   runs one through this app whenever GnuPG is new enough. The app's key list names each key's type,
   so you can tell them apart. These keys are still new, and older GnuPG and other OpenPGP tools may
   not be able to read the files they produce.
+
+  **Tools > Post-quantum keys** checks whether the GnuPG in use can make them, which it decides from
+  GnuPG's version and its own list of algorithms. It shows which of your keys have a post-quantum
+  part, and can create a key, or add a part to one of yours, by running GnuPG's `--quick-generate-key`
+  or `--quick-add-key` with `pqc`. GnuPG asks for any passphrase in its own window, so the app never
+  sees it, and nothing here reads or exports a private key. New keys and parts last three years.
+  Before adding a part, the app warns that files encrypted to that key afterwards will only open
+  with GnuPG 2.5 or later, and that anyone who encrypts for you needs your updated public key. Its
+  explanations stay general on purpose, because how other OpenPGP apps handle post-quantum keys is
+  still changing.
 - **Signed files from other tools** will not restore until you import the signer's public
   key, because GnuPG reports the unverifiable signature as an error. The app explains this
   rather than restoring a file whose signature it can't check.

@@ -42,6 +42,7 @@ specific provider. Those are not missing features; they are the point.
 
 ## Quality and reach
 
+- [x] A post-quantum key assistant
 - [ ] Accessibility and full keyboard navigation
 - [ ] Translations
 - [ ] Move folder scanning off the UI thread for very large trees
