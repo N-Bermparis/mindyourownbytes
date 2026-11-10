@@ -170,6 +170,26 @@ class PinentryTests(GpgTestCase):
         self.job([self.write(f"{n}.txt") for n in range(3)], "exports", "encrypt")
         self.assertEqual(self.dialogs(), 3)
 
+    def test_files_gnupg_asked_about_are_not_checked_so_nobody_is_asked_twice(self):
+        # Encrypting opens one dialog. A check would have to decrypt, which would open another.
+        result = self.job([self.write("a.txt")], "exports", "encrypt")
+        self.assertEqual((result.succeeded, result.checked), (1, 0), self.progress)
+        self.assertEqual(self.progress[-1][2], "Ready")
+        self.assertEqual(self.dialogs(), 1)
+
+    def test_checking_a_file_leaves_no_passphrase_in_the_agent(self):
+        # The check decrypts with a passphrase this app holds. That must not let the next person
+        # at the keyboard restore the file without being asked.
+        encrypted = process_items(self.gpg, [self.write("a.txt")], self.root / "exports", "encrypt", "password",
+                                  None, threading.Event(), lambda *args: self.progress.append(args),
+                                  passphrases=[PASSPHRASE])
+        self.assertEqual((encrypted.succeeded, encrypted.checked), (1, 1), self.progress)
+        self.assertEqual(self.dialogs(), 0, "a passphrase in hand never opens a dialog")
+        item = SourceItem(encrypted.outputs[0], Path("a.txt.gpg"), encrypted.outputs[0].stat().st_size)
+        restored = self.job([item], "restored", "restore")
+        self.assertEqual(restored.succeeded, 1, self.progress)
+        self.assertEqual(self.dialogs(), 1, "restoring must still ask for the passphrase")
+
     def test_cancelling_the_prompt_is_reported_as_a_cancel(self):
         self.answer_with(None)
         result = self.job([self.write("a.txt")], "exports", "encrypt")

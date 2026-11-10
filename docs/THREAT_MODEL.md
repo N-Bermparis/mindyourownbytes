@@ -38,7 +38,7 @@ this application. During review, files from both encryption modes were also decr
 byte for byte by OpenPGP.js 6.3.2, an independent implementation.
 
 The two modes differ in format. Passphrase mode produces the long-established RFC 4880
-format (AES-256 with an MDC integrity check), which is the most widely readable. Public-key
+format (AES-256 by default, with an MDC integrity check), which is the most widely readable. Public-key
 mode uses whatever the recipient's key asks for. With keys made by GnuPG 2.4 or later,
 that is a newer OCB packet, which GnuPG older than 2.3 and some other tools cannot read.
 
@@ -46,13 +46,30 @@ that is a newer OCB packet, which GnuPG older than 2.3 and some other tools cann
 rather than relying on defaults:
 
 ```text
---symmetric --cipher-algo AES256
+--symmetric --cipher-algo AES256    (or TWOFISH or CAMELLIA256, if chosen)
 --s2k-mode 3 --s2k-digest-algo SHA512 --s2k-count 65011712
 ```
 
 GnuPG's defaults are not safe to rely on here. During review, the same command
 produced 37,748,736 S2K iterations with one GnuPG build and only **65,536** with
 another, because the fallback applies whenever gpg-agent can't be reached.
+
+**A short list of algorithms.** Passphrase mode offers AES-256, which is the default, Twofish, and
+Camellia-256. All have 256-bit keys and 128-bit blocks, and get the same key derivation, format, and
+integrity check. This is about preference and policy rather than extra protection: there's no known
+practical attack on any of them, and the real weak point is the passphrase.
+
+The list is fixed in the code, so a setting can't add to it, and the app only shows what the GnuPG in
+use says it supports. IDEA, 3DES, CAST5, and Blowfish are left out because their 64-bit blocks are too
+small: [RFC 9580](https://www.rfc-editor.org/rfc/rfc9580#section-9.3) forbids encrypting with the first
+three, and GnuPG 2.5 refuses all four by default. Smaller AES and Camellia keys are left out because
+they bring no benefit, and leave less margin against quantum computers.
+
+The real cost of choosing is compatibility. RFC 9580 asks every implementation to support AES-256, but
+the other two are optional. During review, OpenPGP.js 6.3.2 opened AES-256 and Twofish files, but failed
+on Camellia-256 with a misleading "session key decryption failed" error. GnuPG opened all three. The
+vault always uses AES-256. Public-key mode leaves the choice to the recipient's key, because forcing
+another could leave the recipient unable to open the file.
 
 **Restores must prove decryption happened.** `gpg --decrypt` exits successfully on
 OpenPGP data that was never encrypted, without asking for a key or passphrase.
@@ -76,6 +93,43 @@ PATH. A `gpg.exe` planted in a folder such as Downloads will not be executed.
 only after success, without overwriting anything. A failed file leaves nothing behind
 and doesn't stop the rest of the batch. Links and junctions are never followed, and
 folders that can't be read are reported rather than silently left out.
+
+**Each new file is checked before it counts.** People may delete an original once its copy is
+reported as encrypted, so that report has to be true. Whenever the app has the passphrase (typed
+once for a batch, or saved), GnuPG decrypts each new file again while it still has its temporary
+name. The passphrase goes over a pipe, as it does for encrypting. The decrypted bytes come back over
+another pipe, are hashed with SHA-256 a piece at a time, and are never written to disk. The file gets
+its final name only if GnuPG exits without an error, reports `DECRYPTION_OKAY`, and the hash equals a
+hash of the original, which is read last. Otherwise the file is deleted, that row fails with the
+reason, and the rest of the batch carries on. If the original changed while this was happening, the
+app says so, rather than calling anything damaged.
+
+During review this caught a real case. With `textmode` in `gpg.conf`, GnuPG encrypts and decrypts
+without complaint, but the file that comes back has different line endings.
+
+What a passed check shows: at that moment, on this computer, with this GnuPG and the passphrase the
+app was given, the file decrypts to exactly the bytes of the original. What it can't show:
+
+- **That an upload reached your provider intact**, or that a file stays intact afterwards. The check
+  happens once, before the file leaves your computer.
+- **That the passphrase is the one you meant.** The same passphrase is used both ways, so a typing
+  mistake made in both boxes still passes.
+- **Anything about files it doesn't check.** That's every file encrypted to an OpenPGP key, or
+  through "Let GnuPG ask for each passphrase", because checking those would mean asking you again.
+  They're marked "Encrypted, not checked". It's also every file if you turn the check off in the
+  Tools menu.
+- **That another OpenPGP tool can open the file.** Only the GnuPG in use is asked.
+- **That GnuPG is honest.** The same program encrypts and decrypts, so this adds nothing against a
+  GnuPG that has been tampered with.
+- **A change to the original after its check.** The copy holds the file as it was then.
+
+The check costs time, because each file is decrypted once more and its passphrase is stretched once
+more. Measured on one computer with the Windows download's own hashing: one 256 MB file took 9.3
+seconds in place of 6.5, and 200 files of 4 KB took 56 seconds in place of 34.
+
+Two smaller limits: the decrypted bytes pass through this app's memory, a megabyte at a time, on
+their way to being hashed. And on Linux and macOS, a drive that doesn't support hard links gets the
+final file as a copy of the checked one, and that copy isn't checked again.
 
 **Decrypted filenames come from you.** Output paths are chosen by the app, so a name
 embedded in a malicious file cannot write outside the restore folder.
@@ -148,7 +202,8 @@ Its costs, which you should weigh:
   reduces this risk.
 - **Typed passphrases pass through this app.** Turning on "Let GnuPG ask for each passphrase"
   in the Tools menu keeps
-  them in Pinentry, so the app never sees them, at the cost of one prompt per file.
+  them in Pinentry, so the app never sees them, at the cost of one prompt per file. The app then
+  can't check the new files either, because it has no passphrase to decrypt them with.
 - **The clipboard is exposed while a secret is on it.** Copying is cleared after 30 seconds
   and requests exclusion from Windows clipboard history and cloud sync, but other software
   on your computer can still read it, and not every clipboard tool honors the request.
@@ -178,13 +233,14 @@ Its costs, which you should weigh:
   so passphrase mode has a good margin. Classical public keys (RSA, ECC) are not safe against
   a future quantum attacker who has saved your ciphertext. GnuPG 2.5 and later can create
   post-quantum Kyber keys (`gpg --quick-generate-key "You <you@example.com>" pqc`), and a test
-  runs one through this app whenever GnuPG is new enough. These keys are still new, and older
-  GnuPG and other OpenPGP tools may not be able to read the files they produce.
+  runs one through this app whenever GnuPG is new enough. The app's key list names each key's type,
+  so you can tell them apart. These keys are still new, and older GnuPG and other OpenPGP tools may
+  not be able to read the files they produce.
 - **Signed files from other tools** will not restore until you import the signer's public
   key, because GnuPG reports the unverifiable signature as an error. The app explains this
   rather than restoring a file whose signature it can't check.
 - **This is not a backup system.** It has no versioning or scheduling, and it doesn't verify that
-  files reached your provider. It is also not a workaround for your organization's data-handling policies.
+  files reached your provider. The check after encrypting ends on your own computer. It is also not a workaround for your organization's data-handling policies.
 
 ## The Windows download
 

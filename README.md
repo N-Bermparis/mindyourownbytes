@@ -46,12 +46,15 @@ can't read. This app makes that a drag and drop.
 - **Drag in files or folders** and get encrypted `.gpg` copies, with folder structure kept.
   Your originals are never changed, and existing files are never overwritten.
 - **One passphrase for a whole batch**, typed once.
+- **Every file is checked before it's called done.** The app decrypts each new file again and
+  compares it with your original. A copy that doesn't match is thrown away, and you're told why.
+- **Choose the algorithm** for passphrase encryption: AES-256 (recommended), Twofish, or Camellia-256.
 - **Save different passphrases** for different kinds of documents, in an optional vault
   encrypted under one master passphrase. It can also generate strong ones.
 - **Organize into collections** such as Taxes or Medical, then browse, search, and move files
   in the Library. Collections are plain folders, so they work in Explorer and on any cloud too.
-- **Or use OpenPGP keys** you already manage in Kleopatra, including post-quantum Kyber keys
-  with GnuPG 2.5 or later.
+- **Or use OpenPGP keys** you already manage in Kleopatra, with each key's type shown, including
+  post-quantum Kyber keys with GnuPG 2.5 or later.
 - **Restore safely.** Forged, tampered, and truncated files are rejected, with nothing written.
 - **Works with any storage**, because it never talks to any: Google Drive, OneDrive, Dropbox,
   iCloud, a NAS, or a USB stick. You upload the files yourself.
@@ -135,10 +138,13 @@ been tested on macOS. Reports are very welcome.
 **Encrypt**
 
 1. Drop files or folders onto the window.
-2. Choose how to protect them. *Passphrase* is the simplest.
+2. Choose how to protect them. *Passphrase* is the simplest. You can also pick an algorithm, but
+   AES-256 suits nearly everyone.
 3. Optionally type a collection name, such as `Taxes`.
-4. Click **Encrypt**. When it's done, click **Open folder** and upload what's there. By default
-   that's `%USERPROFILE%\mindyourownbytes\Encrypted Exports`.
+4. Click **Encrypt**. Each file is encrypted, then decrypted again and compared with your original,
+   and its row then says **Encrypted and checked**.
+5. When it's done, click **Open folder** and upload what's there. By default that's
+   `%USERPROFILE%\mindyourownbytes\Encrypted Exports`.
 
 **Restore**
 
@@ -156,7 +162,42 @@ been tested on macOS. Reports are very welcome.
 | **OpenPGP key** | Existing Kleopatra users | You must back up your private key, and forged files aren't detected ([why](docs/THREAT_MODEL.md#tampering)) |
 
 Would you rather this app never saw your passphrase? Turn on **Tools > Let GnuPG ask for each
-passphrase**. You'll then be asked once for every file, so it's slower for folders.
+passphrase**. You'll then be asked once for every file, so it's slower for folders, and the app
+can't check the new files.
+
+### What "Encrypted and checked" means
+
+The new file decrypted back to exactly your original, on this computer, a moment ago. That's worth
+knowing before you delete an original, but it has limits:
+
+- **It can't see your upload.** Nothing here checks that a file reached your cloud intact.
+- **Files for an OpenPGP key aren't checked**, and neither are files that GnuPG asked about itself.
+  Checking them would mean asking you again, so they're marked **Encrypted, not checked**.
+- **A file that fails is not kept.** Its row says why, and **Try these again** runs it again. If the
+  original changed while it was being encrypted, the app says that instead.
+
+The check is on by default, and it takes time. On one test computer, a 256 MB file took 9 seconds
+in place of 6, and 200 small files took 56 seconds in place of 34. You can turn it off under
+**Tools > Check each file after encrypting it**.
+The [threat model](docs/THREAT_MODEL.md#how-the-design-defends-you) has the details.
+
+### Which algorithm should I choose?
+
+Keep **AES-256** unless you have a reason not to. All three are strong, so this is about preference
+and compatibility rather than extra protection, and none of them can rescue a weak passphrase.
+
+| Algorithm | GnuPG | Other OpenPGP tools |
+| --- | --- | --- |
+| **AES-256** (recommended) | ✅ Opens it | Almost all, because the OpenPGP standard asks every tool to support it |
+| **Twofish** | ✅ Opens it | Not all, because it's optional in the standard. OpenPGP.js opens it |
+| **Camellia-256** | ✅ Opens it | Not all, because it's optional in the standard. OpenPGP.js can't open it |
+
+Restoring never asks, because each file records its own algorithm. Older ciphers such as CAST5 and
+3DES aren't offered, and the vault always uses AES-256.
+
+With an **OpenPGP key**, the key decides, so the key list shows each key's type. Classical keys such as
+RSA and Curve25519 aren't safe against a future quantum computer, while Kyber keys are designed to be
+([more on this](docs/THREAT_MODEL.md#other-limits)).
 
 ## No lock-in
 
@@ -174,8 +215,9 @@ gpg --decrypt "%APPDATA%\mindyourownbytes\vault.gpg"
 ```
 
 During review, files from both encryption modes were also decrypted byte for byte by
-[OpenPGP.js](https://openpgpjs.org/), an entirely separate implementation. For the details on
-file formats, see the [threat model](docs/THREAT_MODEL.md#how-the-design-defends-you).
+[OpenPGP.js](https://openpgpjs.org/), an entirely separate implementation, with one exception:
+[it can't open Camellia-256](#which-algorithm-should-i-choose). For the details on file formats, see
+the [threat model](docs/THREAT_MODEL.md#how-the-design-defends-you).
 
 **Back up your passphrases, master passphrase, and private keys somewhere other than the
 cloud you're protecting against.** If you lose them, nobody can recover your files. That

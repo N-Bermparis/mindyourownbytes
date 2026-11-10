@@ -2,13 +2,22 @@
 
 import os
 import random
+import re
+import shutil
+import subprocess
 import threading
 import time
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
+from mindyourownbytes import core
 from mindyourownbytes.core import (
+    CHECKED,
+    CIPHERS,
+    READY,
     SourceItem,
+    available_ciphers,
     collect_files,
     gpg_version,
     list_public_keys,
@@ -122,6 +131,68 @@ class PassphraseRoundTripTests(IntegrationCase):
                               "--output", str(out), "--decrypt", str(encrypted))
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(out.read_bytes(), b"readable forever")
+
+
+class AlgorithmChoiceTests(IntegrationCase):
+    def offered(self):
+        ciphers = available_ciphers(self.gpg)
+        if os.environ.get("MYOB_REQUIRE_GPG"):
+            # GnuPG's own builds and CI's have them all, so losing one there is a bug worth seeing.
+            self.assertEqual(ciphers, CIPHERS)
+        return ciphers
+
+    def encrypt_with(self, cipher, content: bytes = b"private test bytes\n") -> Path:
+        path = self.write(f"{cipher.name}.bin", content)
+        result = self.job([self.item(path)], f"exports-{cipher.name}", "encrypt", passphrases=[PASSPHRASE],
+                          cipher=cipher.name)
+        self.assertEqual((result.succeeded, result.failed), (1, 0), self.progress)
+        return result.outputs[0]
+
+    def test_each_algorithm_keeps_the_same_strong_settings_and_format(self):
+        for cipher in self.offered():
+            with self.subTest(cipher.label):
+                packets = self.packets(self.encrypt_with(cipher), PASSPHRASE)
+                self.assertRegex(packets, rf"symkey enc packet: version \d+, cipher {cipher.packet_id}\b")
+                self.assertRegex(packets, r"s2k 3, hash 10\b", "expected iterated S2K with SHA-512")
+                self.assertIn("count 65011712", packets)
+                self.assertIn(":encrypted data packet:", packets, "expected the long-established RFC 4880 format")
+                self.assertRegex(packets, r"mdc(_method)?: 2", "expected an MDC integrity check")
+
+    def test_each_algorithm_restores_here_and_with_plain_gpg(self):
+        content = os.urandom(300_000)
+        for cipher in self.offered():
+            with self.subTest(cipher.label):
+                encrypted = self.encrypt_with(cipher, content)
+                self.assertNotIn(content[:64], encrypted.read_bytes())
+                restored = self.job([self.item(encrypted)], f"restored-{cipher.name}", "restore",
+                                    passphrases=[PASSPHRASE])
+                self.assertEqual(restored.outputs[0].read_bytes(), content)
+                plain = self.root / f"plain-{cipher.name}.bin"
+                result = self.run_gpg("--pinentry-mode", "loopback", "--passphrase", PASSPHRASE,
+                                      "--output", str(plain), "--decrypt", str(encrypted))
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(plain.read_bytes(), content)
+
+    def test_each_algorithm_refuses_a_wrong_passphrase_and_damage(self):
+        for cipher in self.offered():
+            with self.subTest(cipher.label):
+                encrypted = self.encrypt_with(cipher, os.urandom(50_000))
+                self.assert_restore_rejected(encrypted, f"wrong-{cipher.name}", "Wrong passphrase",
+                                             passphrases=["nope"])
+                blob = bytearray(encrypted.read_bytes())
+                blob[len(blob) // 2] ^= 0xFF
+                bad = self.write(f"bad-{cipher.name}.bin.gpg", bytes(blob))
+                self.assert_restore_rejected(bad, f"bad-{cipher.name}", "damaged|altered", passphrases=[PASSPHRASE])
+
+    def test_the_list_agrees_with_what_gnupg_says_about_itself(self):
+        # Read another way, in case the list has a bug that makes it quietly offer less.
+        version = self.run_gpg("--version").stdout.decode(errors="replace")
+        expected = [cipher for cipher in CIPHERS if re.search(rf"\b{cipher.name}\b", version)]
+        self.assertEqual(available_ciphers(self.gpg), tuple(expected))
+
+    def test_a_cipher_disabled_in_gpg_conf_is_not_offered(self):
+        (self.home / "gpg.conf").write_text("disable-cipher-algo TWOFISH\n", encoding="utf-8")
+        self.assertNotIn("TWOFISH", [cipher.name for cipher in available_ciphers(self.gpg)])
 
 
 class PeekProtectionTests(IntegrationCase):
@@ -286,7 +357,9 @@ class PublicKeyTests(IntegrationCase):
         if version is None or version < (2, 5, 0):
             self.skipTest("Kyber keys need GnuPG 2.5 or later")
         fingerprint = self.generate_key("Quantum <quantum@example.invalid>", algorithm="pqc")
-        self.assertEqual([key.fingerprint for key in list_public_keys(self.gpg)], [fingerprint])
+        keys = list_public_keys(self.gpg)
+        self.assertEqual([key.fingerprint for key in keys], [fingerprint])
+        self.assertEqual(keys[0].algorithm, "Kyber-768 (post-quantum)")
         encrypted = self.job([self.item(self.write("a.txt", b"harvest now, decrypt later"))], "exports",
                              "encrypt", "public-key", fingerprint)
         self.assertEqual((encrypted.succeeded, encrypted.failed), (1, 0), self.progress)
@@ -294,6 +367,28 @@ class PublicKeyTests(IntegrationCase):
                          "expected a Kyber recipient")
         restored = self.job([self.item(encrypted.outputs[0])], "restored", "restore", "public-key")
         self.assertEqual(restored.outputs[0].read_bytes(), b"harvest now, decrypt later")
+
+    def test_key_list_names_the_kind_of_key_files_really_get_encrypted_to(self):
+        fingerprint = self.generate_key()
+        algorithm = list_public_keys(self.gpg)[0].algorithm
+        # GnuPG 2.4 and later make Curve25519 keys by default, and older versions RSA.
+        self.assertRegex(algorithm, r"^(Curve25519|RSA-\d+)$")
+        encrypted = self.job([self.item(self.write("a.txt"))], "exports", "encrypt", "public-key", fingerprint)
+        expected = "1" if algorithm.startswith("RSA") else "18"
+        self.assertRegex(self.packets(encrypted.outputs[0]), rf"pubkey enc packet: version \d+, algo {expected}\b")
+
+    def test_key_list_follows_a_post_quantum_subkey_added_to_an_older_key(self):
+        version = gpg_version(self.gpg)
+        if version is None or version < (2, 5, 0):
+            self.skipTest("Kyber keys need GnuPG 2.5 or later")
+        fingerprint = self.generate_key()
+        time.sleep(1.1)  # Timestamps are in seconds, and a tie would keep the older subkey.
+        added = self.run_gpg("--passphrase", "", "--pinentry-mode", "loopback", "--quick-add-key",
+                             fingerprint, "pqc", "encr", "1y")
+        self.assertEqual(added.returncode, 0, added.stderr)
+        self.assertEqual(list_public_keys(self.gpg)[0].algorithm, "Kyber-768 (post-quantum)")
+        encrypted = self.job([self.item(self.write("a.txt"))], "exports", "encrypt", "public-key", fingerprint)
+        self.assertRegex(self.packets(encrypted.outputs[0]), r"pubkey enc packet: version \d+, algo 8\b")
 
     def signed_by_someone_else(self, tamper: bool = False) -> Path:
         """A file signed by an outside key, like Kleopatra's sign-and-encrypt produces."""
@@ -321,6 +416,240 @@ class PublicKeyTests(IntegrationCase):
         if any(key.has_secret for key in list_public_keys(self.gpg)):
             self.skipTest("this GnuPG will not delete a secret key in batch mode")
         self.assert_restore_rejected(encrypted.outputs[0], "r", "private key")
+
+
+class CheckAfterEncryptingTests(IntegrationCase):
+    """People may delete an original once its copy is reported as encrypted, so that has to be true.
+
+    ``on_checking`` runs after a file is encrypted and before it is checked, which is exactly
+    where a faulty disk or another program would have to interfere.
+    """
+
+    def encrypt_job(self, path: Path, out: str = "exports", cancel: threading.Event | None = None, **options):
+        options.setdefault("passphrases", [PASSPHRASE])
+        return process_items(self.gpg, [self.item(path)], self.root / out, "encrypt", "password", None,
+                             cancel or threading.Event(), lambda *args: self.progress.append(args), **options)
+
+    def staged(self, out: str = "exports") -> Path:
+        return next((self.root / out).glob(".myob-*.partial"))
+
+    def assert_refused(self, result, out: str, message: str) -> None:
+        self.assertEqual((result.succeeded, result.failed, result.checked, result.outputs), (0, 1, 0, ()),
+                         self.progress)
+        self.assertRegex(self.progress[-1][2], message)
+        left = [p for p in (self.root / out).rglob("*") if p.is_file()]
+        self.assertEqual(left, [], "a copy that fails its check must leave nothing behind")
+
+    def refused_after(self, spoil, message: str, content: bytes = b"private test bytes\n" * 500) -> None:
+        """Encrypt, spoil the new file just before its check, and expect the check to refuse it."""
+        source = self.write("a.bin", content)
+        result = self.encrypt_job(source, on_checking=lambda _index: spoil(self.staged()))
+        self.assert_refused(result, "exports", message)
+        self.assertEqual(source.read_bytes(), content, "the original must never be touched")
+
+    def test_a_good_file_is_checked_and_says_so(self):
+        seen = []
+        result = self.encrypt_job(self.write("a.txt"), on_checking=seen.append)
+        self.assertEqual((result.succeeded, result.failed, result.checked), (1, 0, 1), self.progress)
+        self.assertEqual(seen, [0])
+        self.assertEqual(self.progress[-1][2], CHECKED)
+        self.assertEqual([p.name for p in (self.root / "exports").iterdir()], ["a.txt.gpg"])
+
+    def test_every_algorithm_is_checked(self):
+        content = os.urandom(100_000)
+        for cipher in available_ciphers(self.gpg):
+            with self.subTest(cipher.label):
+                result = self.encrypt_job(self.write(f"{cipher.name}.bin", content), f"exports-{cipher.name}",
+                                          cipher=cipher.name)
+                self.assertEqual((result.succeeded, result.checked), (1, 1), self.progress)
+
+    def test_empty_unicode_and_larger_files_are_checked_and_still_restore(self):
+        cases = (("empty.txt", b""), ("Έγγραφα/φορολογικά 2026 résumé.txt", "δοκιμή".encode()),
+                 ("larger.bin", os.urandom(20_000_000) + b"\r\n\x00\x1a tail\n"))
+        for name, content in cases:
+            with self.subTest(name):
+                source = self.write(name, content)
+                result = self.encrypt_job(source, f"exports-{len(content)}")
+                self.assertEqual((result.succeeded, result.checked), (1, 1), self.progress)
+                restored = self.job([self.item(result.outputs[0])], f"restored-{len(content)}", "restore",
+                                    passphrases=[PASSPHRASE])
+                self.assertEqual(restored.outputs[0].read_bytes(), content)
+
+    def test_turned_off_nothing_is_checked(self):
+        seen = []
+        result = self.encrypt_job(self.write("a.txt"), verify=False, on_checking=seen.append)
+        self.assertEqual((result.succeeded, result.checked, seen), (1, 0, []))
+        self.assertEqual(self.progress[-1][2], READY)
+
+    def test_files_for_a_key_are_encrypted_but_not_checked(self):
+        fingerprint = self.generate_key()
+        seen = []
+        with patch("mindyourownbytes.core.run_gpg_hashed") as check:
+            result = process_items(self.gpg, [self.item(self.write("a.txt"))], self.root / "exports", "encrypt",
+                                   "public-key", fingerprint, threading.Event(),
+                                   lambda *args: self.progress.append(args), on_checking=seen.append)
+        self.assertEqual((result.succeeded, result.checked, seen), (1, 0, []), self.progress)
+        self.assertEqual(self.progress[-1][2], READY)
+        check.assert_not_called()
+
+    def test_a_restore_is_never_checked_this_way(self):
+        encrypted = self.encrypt(self.write("a.txt"))
+        with patch("mindyourownbytes.core.run_gpg_hashed") as check:
+            restored = self.job([self.item(encrypted)], "restored", "restore", passphrases=[PASSPHRASE])
+        self.assertEqual((restored.succeeded, restored.checked), (1, 0))
+        check.assert_not_called()
+
+    def test_a_copy_damaged_before_its_check_is_refused(self):
+        def flip_the_middle(staged: Path) -> None:
+            blob = bytearray(staged.read_bytes())
+            blob[len(blob) // 2] ^= 0xFF
+            staged.write_bytes(bytes(blob))
+
+        self.refused_after(flip_the_middle, "^Check failed: GnuPG couldn't decrypt", os.urandom(50_000))
+
+    def test_damage_that_leaves_the_content_readable_is_still_refused(self):
+        # Only the integrity check at the very end is hit. GnuPG still writes every byte of the
+        # original before it objects, so comparing content alone would accept this file.
+        def flip_the_end(staged: Path) -> None:
+            blob = bytearray(staged.read_bytes())
+            blob[-1] ^= 0xFF
+            staged.write_bytes(bytes(blob))
+
+        self.refused_after(flip_the_end, "^Check failed: GnuPG couldn't decrypt", os.urandom(50_000))
+
+    def test_a_valid_copy_of_something_else_is_refused(self):
+        # GnuPG is entirely happy with this file. Only comparing it with the original can tell.
+        other = self.encrypt(self.write("other.txt", b"not the original"), out="elsewhere")
+        self.refused_after(lambda staged: shutil.copyfile(other, staged), "didn't give back the original")
+
+    def test_a_copy_that_is_not_encrypted_is_refused_even_with_the_right_content(self):
+        content = b"private test bytes\n" * 500
+        plain = self.write("plain.bin", content)
+        stored = self.root / "stored.gpg"
+        self.assertEqual(self.run_gpg("--store", "--output", str(stored), str(plain)).returncode, 0)
+        self.refused_after(lambda staged: shutil.copyfile(stored, staged), "isn't actually encrypted", content)
+
+    def test_a_copy_gnupg_complains_about_is_refused_even_if_it_decrypts(self):
+        # GnuPG decrypts this, says DECRYPTION_OKAY, writes the right bytes, and then fails on what follows.
+        content = b"tiny file\n"
+        good = self.encrypt(self.write("tiny.txt", content), out="elsewhere")
+        junk = self.write("junk/tiny.txt.gpg", good.read_bytes() + bytes(64))
+        if self.job([self.item(junk)], "calibrate", "restore", passphrases=[PASSPHRASE]).succeeded:
+            self.skipTest("this GnuPG ignores bytes after the end of a file")
+
+        def append_zeros(staged: Path) -> None:
+            with staged.open("ab") as file:
+                file.write(bytes(64))
+
+        self.refused_after(append_zeros, "^Check failed: GnuPG couldn't decrypt", content)
+
+    def test_an_original_that_changes_meanwhile_is_reported_as_changed_not_damaged(self):
+        source = self.write("a.txt", b"first version")
+        result = self.encrypt_job(source, on_checking=lambda _index: source.write_bytes(b"second version, longer"))
+        self.assert_refused(result, "exports", "^The original changed")
+        self.assertNotRegex(self.progress[-1][2], "damaged|Check failed")
+
+    def test_an_original_deleted_meanwhile_is_reported_as_gone(self):
+        source = self.write("a.txt", b"soon gone")
+        result = self.encrypt_job(source, on_checking=lambda _index: source.unlink())
+        self.assert_refused(result, "exports", "^The original is gone")
+
+    def test_a_change_that_hides_its_traces_is_still_refused(self):
+        # Same size and same time, so nothing says the file changed. Its content still decides.
+        source = self.write("a.txt", b"first version")
+
+        def rewrite_quietly(_index: int) -> None:
+            status = source.stat()
+            with source.open("r+b") as file:
+                file.write(b"FIRST")
+            os.utime(source, ns=(status.st_atime_ns, status.st_mtime_ns))
+
+        result = self.encrypt_job(source, on_checking=rewrite_quietly)
+        self.assert_refused(result, "exports", "didn't give back the original")
+
+    def test_a_refused_file_does_not_stop_the_rest_and_can_be_tried_again(self):
+        first, second = self.write("first.txt", b"one"), self.write("second.txt", b"two")
+
+        def spoil_only_the_first(index: int) -> None:
+            if index == 0:
+                self.staged().write_bytes(b"not an OpenPGP file")
+
+        items = [self.item(first), self.item(second)]
+        result = self.job(items, "exports", "encrypt", passphrases=[PASSPHRASE], on_checking=spoil_only_the_first)
+        self.assertEqual((result.succeeded, result.failed, result.checked), (1, 1, 1), self.progress)
+        self.assertEqual([p.name for p in (self.root / "exports").iterdir()], ["second.txt.gpg"])
+        again = self.job(items[:1], "exports", "encrypt", passphrases=[PASSPHRASE])
+        self.assertEqual((again.succeeded, again.checked), (1, 1), self.progress)
+        self.assertEqual(again.outputs[0].name, "first.txt.gpg")
+
+    def test_cancelling_as_the_check_starts_stops_it_and_keeps_nothing(self):
+        cancel = threading.Event()
+        result = self.encrypt_job(self.write("a.bin", os.urandom(1_000_000)), cancel=cancel,
+                                  on_checking=lambda _index: cancel.set())
+        self.assertEqual((result.succeeded, result.failed, result.cancelled, result.outputs), (0, 0, True, ()))
+        self.assertEqual(self.progress[-1][2], "Cancelled")
+        self.assertEqual([p for p in (self.root / "exports").rglob("*") if p.is_file()], [])
+
+    def test_cancelling_while_the_original_is_read_again_stops_it(self):
+        cancel = threading.Event()
+        real = core.run_gpg_hashed
+
+        def decrypt_then_cancel(*args):
+            answer = real(*args)
+            cancel.set()
+            return answer
+
+        with patch("mindyourownbytes.core.run_gpg_hashed", side_effect=decrypt_then_cancel):
+            result = self.encrypt_job(self.write("a.bin", os.urandom(1_000_000)), cancel=cancel)
+        self.assertEqual((result.succeeded, result.cancelled, result.outputs), (0, True, ()))
+        self.assertEqual([p for p in (self.root / "exports").rglob("*") if p.is_file()], [])
+
+    def test_the_passphrase_never_reaches_a_command_line_and_no_readable_copy_is_written(self):
+        commands = []
+        real = subprocess.Popen
+
+        def recording(argv, *args, **kwargs):
+            commands.append([str(part) for part in argv])
+            return real(argv, *args, **kwargs)
+
+        canary = "distinctive-canary-passphrase"
+        content = b"distinctive-canary-content " * 4000
+        source = self.write("originals/a.txt", content)
+        with patch("mindyourownbytes.core.subprocess.Popen", side_effect=recording):
+            result = self.encrypt_job(source, passphrases=[canary])
+        self.assertEqual((result.succeeded, result.checked), (1, 1), self.progress)
+        decrypting = [argv for argv in commands if "--decrypt" in argv]
+        self.assertEqual(len(decrypting), 1, "the check should decrypt exactly once")
+        self.assertEqual(decrypting[0][decrypting[0].index("--output") + 1], "-", "never to a file")
+        self.assertIn("--no-symkey-cache", decrypting[0])
+        for argv in commands:
+            self.assertNotIn(canary, " ".join(argv))
+        holding_content = [path for path in self.root.rglob("*") if path.is_file() and self.home not in path.parents
+                           and path != source and b"distinctive-canary-content" in path.read_bytes()]
+        self.assertEqual(holding_content, [])
+        self.assertEqual(list(self.root.rglob("*.partial")), [])
+
+    def test_a_gnupg_setting_that_changes_line_endings_is_caught(self):
+        # With "textmode" in gpg.conf, GnuPG encrypts and decrypts without complaint, but the file
+        # that comes back differs: a real way to get a copy that isn't the original.
+        (self.home / "gpg.conf").write_text("textmode\n", encoding="utf-8")
+        content = b"one\ntwo\r\nthree\n"
+        source = self.write("notes.txt", content)
+        result = self.encrypt_job(source)
+        self.assert_refused(result, "exports", "didn't give back the original")
+        unchecked = self.encrypt_job(source, "unchecked", verify=False)
+        restored = self.job([self.item(unchecked.outputs[0])], "restored", "restore", passphrases=[PASSPHRASE])
+        self.assertNotEqual(restored.outputs[0].read_bytes(), content, "the check was right to refuse it")
+
+    def test_a_newer_file_format_passes_the_check(self):
+        # OCB files have no separate integrity status, so the check must not wait for one.
+        version = gpg_version(self.gpg)
+        if version is None or version < (2, 4, 0):
+            self.skipTest("force-ocb needs GnuPG 2.4 or later")
+        (self.home / "gpg.conf").write_text("force-ocb\n", encoding="utf-8")
+        result = self.encrypt_job(self.write("a.bin", os.urandom(50_000)))
+        self.assertEqual((result.succeeded, result.checked), (1, 1), self.progress)
+        self.assertIn("aead", self.packets(result.outputs[0], PASSPHRASE))
 
 
 class NothingLingersTests(IntegrationCase):

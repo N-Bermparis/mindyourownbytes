@@ -40,11 +40,15 @@ from PySide6.QtWidgets import (
 
 from mindyourownbytes import __version__
 from mindyourownbytes.core import (
+    CHECKED,
+    CIPHERS,
+    DEFAULT_CIPHER,
     ENCRYPTED_SUFFIXES,
     MIN_GPG_VERSION,
     JobResult,
     PublicKey,
     SourceItem,
+    available_ciphers,
     bundled_gpg,
     collect_files,
     find_gpg,
@@ -65,6 +69,7 @@ from mindyourownbytes.gui.widgets import (
     EmptyState,
     FileIcons,
     InfoBar,
+    SteadyComboBox,
     action_button,
     card,
     configure_table,
@@ -83,6 +88,15 @@ DEFAULT_ROOT = Path.home() / "mindyourownbytes"
 REPOSITORY_URL = "https://github.com/N-Bermparis/mindyourownbytes"
 GPG4WIN_URL = "https://gpg4win.org/download.html"
 TRY_ALL_SAVED = "\0all"
+
+CIPHER_LABELS = {cipher.name: cipher.label for cipher in CIPHERS}
+#: What to say beside each encryption algorithm, because the choice has a real cost.
+CIPHER_HELP = {
+    "AES256": "The usual choice. Almost every OpenPGP tool can open it.",
+    "TWOFISH": "Also very strong. GnuPG opens it, but not every OpenPGP tool can.",
+    "CAMELLIA256": "Also very strong. GnuPG opens it, but some other OpenPGP tools can't.",
+}
+CIPHER_SET_BY_KEY = "The key you choose decides this. Its type is in the list above."
 
 #: Every word that differs between the two modes of this screen.
 COPY = {
@@ -130,6 +144,23 @@ COPY = {
         "result_title": "{files} restored",
         "result_detail": "These are readable copies on this computer, so don't keep them in a synced folder.",
     },
+}
+
+#: What the screen says about checking each new file. Only encrypting has this step.
+CHECK_COPY = {
+    "working": "Checking {done} of {total}…",
+    "row_working": "Checking…",
+    "row_done": "Encrypted and checked",
+    "row_tip": "Decrypted again, and it matched the original.",
+    "row_skipped": "Encrypted, not checked",
+    "result_one": "It was decrypted again and matched the original.",
+    "result_many": "Each one was decrypted again and matched its original.",
+}
+#: Why a file wasn't checked although checking is on, by how it was protected.
+NOT_CHECKED = {
+    "pinentry": "Not checked, because GnuPG asked for the passphrase itself, and checking would mean "
+                "asking again for every file.",
+    "public-key": "Not checked, because that takes the private key, and GnuPG might ask for its passphrase.",
 }
 
 
@@ -184,12 +215,14 @@ class DropZone(QFrame):
 
 class BackupWorker(QObject):
     progress = Signal(int, bool, str, object)
+    #: The file at this position is encrypted, and is now being checked.
+    checking = Signal(int)
     completed = Signal(object)
     error = Signal(str)
     finished = Signal()
 
     def __init__(self, gpg: str, files: list[SourceItem], output: Path, operation: str,
-                 method: str, fingerprint: str | None, passphrases: list[str]):
+                 method: str, fingerprint: str | None, passphrases: list[str], cipher: str, verify: bool):
         super().__init__()
         self.gpg = gpg
         self.files = files
@@ -198,6 +231,8 @@ class BackupWorker(QObject):
         self.method = method
         self.fingerprint = fingerprint
         self.passphrases = passphrases
+        self.cipher = cipher
+        self.verify = verify
         self.cancel_event = threading.Event()
 
     @Slot()
@@ -207,7 +242,8 @@ class BackupWorker(QObject):
                 self.gpg, self.files, self.output, self.operation, self.method, self.fingerprint,
                 self.cancel_event,
                 lambda index, ok, message, output: self.progress.emit(index, ok, message, output),
-                passphrases=self.passphrases,
+                passphrases=self.passphrases, cipher=self.cipher, verify=self.verify,
+                on_checking=self.checking.emit,
             )
             self.completed.emit(result)
         except Exception as exc:
@@ -231,6 +267,10 @@ class MainWindow(QMainWindow):
         self._keys: dict[str, PublicKey] = {}
         self._failures: list[str] = []
         self._job_output: Path | None = None
+        #: The algorithm the current job's files get, if it's a choice people made here.
+        self._job_algorithm = ""
+        #: Why the current job's files can't be checked although checking is on. Empty if they can.
+        self._job_not_checked = ""
         #: None before a job, then "done" or "incomplete" until the list changes.
         self._job_state: str | None = None
         self._unfinished_items: list[SourceItem] = []
@@ -266,6 +306,7 @@ class MainWindow(QMainWindow):
         self._build_menus()
         self.update_gpg_status()
         self.refresh_keys()
+        self.refresh_algorithms()
         self._show_early_version_notice()
         self.set_operation("encrypt")
         QGuiApplication.styleHints().colorSchemeChanged.connect(self._apply_theme)
@@ -509,7 +550,7 @@ class MainWindow(QMainWindow):
         saved_row.setSpacing(6)
         self.saved_help = label("", "muted", wrap=True)
         saved_row.addWidget(self.saved_help, stretch=1)
-        self.saved_combo = QComboBox()
+        self.saved_combo = SteadyComboBox()
         self.saved_combo.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self.saved_combo.setAccessibleName("Saved passphrase to use")
         saved_row.addWidget(self.saved_combo, stretch=1)
@@ -523,7 +564,7 @@ class MainWindow(QMainWindow):
         key_row.setSpacing(6)
         self.key_help = label("", "muted", wrap=True)
         key_row.addWidget(self.key_help, stretch=1)
-        self.key_combo = QComboBox()
+        self.key_combo = SteadyComboBox()
         self.key_combo.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self.key_combo.setAccessibleName("OpenPGP key to encrypt to")
         key_row.addWidget(self.key_combo, stretch=1)
@@ -535,6 +576,23 @@ class MainWindow(QMainWindow):
         key_row.addWidget(self.refresh_keys_button)
         grid.addWidget(self.key_radio, 2, 0)
         grid.addLayout(key_row, 2, 1)
+
+        self.algorithm_label = QLabel("Algorithm")
+        self.algorithm_combo = SteadyComboBox()
+        self.algorithm_combo.setAccessibleName("Encryption algorithm")
+        self.algorithm_combo.setToolTip(
+            "Only affects new files. Restoring never asks, because each file records its own algorithm."
+        )
+        self.algorithm_label.setBuddy(self.algorithm_combo)
+        self.algorithm_combo.currentIndexChanged.connect(self._update_algorithm)
+        self.algorithm_combo.activated.connect(self._remember_algorithm)
+        self.algorithm_help = label("", "muted", wrap=True)
+        algorithm_row = QHBoxLayout()
+        algorithm_row.setSpacing(10)
+        algorithm_row.addWidget(self.algorithm_combo)
+        algorithm_row.addWidget(self.algorithm_help, stretch=1)
+        grid.addWidget(self.algorithm_label, 3, 0)
+        grid.addLayout(algorithm_row, 3, 1)
         return frame
 
     def _build_destination_card(self) -> QFrame:
@@ -556,7 +614,7 @@ class MainWindow(QMainWindow):
         grid.addWidget(self.browse_button, 0, 2)
         self.collection_label = QLabel("Collection")
         grid.addWidget(self.collection_label, 1, 0)
-        self.collection_combo = QComboBox()
+        self.collection_combo = SteadyComboBox()
         self.collection_combo.setEditable(True)
         self.collection_combo.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
         self.collection_combo.lineEdit().setPlaceholderText("None. Type a name to create one, for example Taxes.")
@@ -585,10 +643,24 @@ class MainWindow(QMainWindow):
         self._add_action(go_menu, "&Passphrases", self.show_vault, "Ctrl+4")
 
         tools_menu = bar.addMenu("&Tools")
+        # Each switch below has a cost, which its tooltip states.
+        tools_menu.setToolTipsVisible(True)
+        self.check_action = tools_menu.addAction("&Check each file after encrypting it")
+        self.check_action.setCheckable(True)
+        # On unless it was turned off here, so that a damaged setting can't quietly stop the checks.
+        self.check_action.setChecked(str(self.settings.value("check_after_encrypting", "")).lower() != "false")
+        self.check_action.setToolTip(
+            "Decrypts each new file again and compares it with the original before calling it done. "
+            "Takes longer, and only works when this app has the passphrase."
+        )
+        self.check_action.toggled.connect(self._set_check_preference)
         self.pinentry_action = tools_menu.addAction("Let &GnuPG ask for each passphrase")
         self.pinentry_action.setCheckable(True)
         self.pinentry_action.setChecked(str(self.settings.value("use_pinentry", "")).lower() == "true")
-        self.pinentry_action.setToolTip("This app never sees your passphrase, but you're asked once for every file.")
+        self.pinentry_action.setToolTip(
+            "This app never sees your passphrase, but you're asked once for every file, and it can't check the "
+            "new files."
+        )
         self.pinentry_action.toggled.connect(self._set_pinentry_preference)
         tools_menu.addSeparator()
         self._add_action(tools_menu, "&Locate GnuPG…", self.select_gpg)
@@ -746,6 +818,10 @@ class MainWindow(QMainWindow):
         self.settings.setValue("use_pinentry", "true" if enabled else "false")
         self._show_passphrase_help()
 
+    @Slot(bool)
+    def _set_check_preference(self, enabled: bool):
+        self.settings.setValue("check_after_encrypting", "true" if enabled else "false")
+
     def _show_passphrase_help(self):
         self.passphrase_help.setText(
             "GnuPG will ask for the passphrase once for each file." if self.pinentry_action.isChecked()
@@ -801,6 +877,33 @@ class MainWindow(QMainWindow):
         self.key_help.setVisible(not choosing_key)
         self.key_combo.setVisible(choosing_key)
         self.refresh_keys_button.setVisible(choosing_key)
+        self._update_algorithm()
+
+    def _update_algorithm(self):
+        """Only passphrases have a choice: a key decides its own, and a restore reads it from the file."""
+        for widget in (self.algorithm_label, self.algorithm_combo, self.algorithm_help):
+            widget.setVisible(self.operation == "encrypt")
+        by_key = self.key_radio.isChecked()
+        self.algorithm_combo.setEnabled(not by_key and not self.running)
+        self.algorithm_help.setText(CIPHER_SET_BY_KEY if by_key else CIPHER_HELP.get(self.chosen_cipher(), ""))
+
+    def chosen_cipher(self) -> str:
+        return str(self.algorithm_combo.currentData() or DEFAULT_CIPHER)
+
+    def _remember_algorithm(self):
+        self.settings.setValue("cipher", self.chosen_cipher())
+
+    def refresh_algorithms(self):
+        """Offer what this GnuPG can use, and keep the earlier choice if it still can."""
+        wanted = self.algorithm_combo.currentData() or str(self.settings.value("cipher", DEFAULT_CIPHER))
+        self.algorithm_combo.blockSignals(True)
+        self.algorithm_combo.clear()
+        for cipher in available_ciphers(self.gpg):
+            recommended = " (recommended)" if cipher.name == DEFAULT_CIPHER else ""
+            self.algorithm_combo.addItem(f"{cipher.label}{recommended}", cipher.name)
+        self.algorithm_combo.setCurrentIndex(max(self.algorithm_combo.findData(wanted), 0))
+        self.algorithm_combo.blockSignals(False)
+        self._update_algorithm()
 
     def _open_vault_for_method(self):
         if self.vault.exists and not self.vault.unlocked:
@@ -842,6 +945,7 @@ class MainWindow(QMainWindow):
         self.settings.setValue("gpg_path", selected)
         self.update_gpg_status()
         self.refresh_keys()
+        self.refresh_algorithms()
 
     def refresh_keys(self):
         self.key_combo.clear()
@@ -858,7 +962,8 @@ class MainWindow(QMainWindow):
             return
         for key in keys:
             owner = "your key" if key.has_secret else "someone else's key"
-            self.key_combo.addItem(f"{key.uid[:48]} · {key.fingerprint[-10:]} · {owner}", key.fingerprint)
+            parts = (key.uid[:48], key.algorithm, key.fingerprint[-10:], owner)
+            self.key_combo.addItem(" · ".join(part for part in parts if part), key.fingerprint)
             self._keys[key.fingerprint] = key
 
     # ---------------------------------------------------------------- the file list
@@ -1168,6 +1273,10 @@ class MainWindow(QMainWindow):
         self.running = True
         self._failures = []
         self._job_output = output
+        cipher = self.chosen_cipher()
+        self._job_algorithm = CIPHER_LABELS[cipher] if self.operation == "encrypt" and method == "password" else ""
+        verify = self.operation == "encrypt" and self.check_action.isChecked()
+        self._job_not_checked = NOT_CHECKED.get(selection, "") if verify else ""
         self._succeeded_rows: set[int] = set()
         self._set_busy(True)
         self.progress_bar.setRange(0, len(self.items))
@@ -1177,10 +1286,11 @@ class MainWindow(QMainWindow):
 
         self._thread = QThread(self)
         self.worker = BackupWorker(self.gpg, list(self.items), output, self.operation, method,
-                                   fingerprint, passphrases)
+                                   fingerprint, passphrases, cipher, verify)
         self.worker.moveToThread(self._thread)
         self._thread.started.connect(self.worker.run)
         self.worker.progress.connect(self._progress)
+        self.worker.checking.connect(self._checking)
         self.worker.completed.connect(self._completed)
         self.worker.error.connect(self._error)
         self.worker.finished.connect(self._thread.quit)
@@ -1207,6 +1317,7 @@ class MainWindow(QMainWindow):
         self.cancel_button.setVisible(is_busy)
         self.progress_bar.setVisible(is_busy)
         self.drop_area.setAcceptDrops(not is_busy)
+        self._update_algorithm()
 
     def _mark_working(self, row: int):
         if row < self.table.rowCount():
@@ -1219,12 +1330,30 @@ class MainWindow(QMainWindow):
             text += " GnuPG may ask for a passphrase."
         self.status_text.setText(text)
 
+    @Slot(int)
+    def _checking(self, index: int):
+        if self.worker is None or self.worker.cancel_event.is_set():
+            return
+        if index < self.table.rowCount():
+            self._set_row_status(index, CHECK_COPY["row_working"], "clock", "text")
+        self.status_text.setText(CHECK_COPY["working"].format(done=index + 1, total=len(self.items)))
+
+    def _show_row_done(self, row: int, checked: bool, output):
+        """Only a file the job really checked may say so."""
+        if checked:
+            text, note = CHECK_COPY["row_done"], CHECK_COPY["row_tip"]
+        elif self._job_not_checked:
+            text, note = CHECK_COPY["row_skipped"], self._job_not_checked
+        else:
+            text, note = COPY[self.operation]["row_done"], ""
+        self._set_row_status(row, text, "check", "ok", f"{output}\n{note}" if note else str(output))
+
     @Slot(int, bool, str, object)
     def _progress(self, index: int, ok: bool, message: str, output):
         cancelled = not ok and message == "Cancelled"
         if index < self.table.rowCount():
             if ok:
-                self._set_row_status(index, COPY[self.operation]["row_done"], "check", "ok", str(output))
+                self._show_row_done(index, message == CHECKED, output)
                 self._succeeded_rows.add(index)
             elif cancelled:
                 self._set_row_status(index, "Cancelled", "close", "muted")
@@ -1277,10 +1406,16 @@ class MainWindow(QMainWindow):
                      else f"{'That file' if total == 1 else f'All {total} files'} failed")
             self.result_bar.show_message("error", title, detail, actions=[open_folder] if result.succeeded else [])
         elif result.succeeded:
-            self.result_bar.show_message(
-                "success", copy["result_title"].format(files=plural(result.succeeded)),
-                copy["result_detail"], actions=[open_folder],
-            )
+            title = copy["result_title"].format(files=plural(result.succeeded))
+            if self._job_algorithm:
+                title += f" with {self._job_algorithm}"
+            detail = copy["result_detail"]
+            if result.checked == result.succeeded:
+                title += " and checked"
+                detail = f"{CHECK_COPY['result_one' if result.succeeded == 1 else 'result_many']} {detail}"
+            elif self._job_not_checked:
+                detail = f"{self._job_not_checked} {detail}"
+            self.result_bar.show_message("success", title, detail, actions=[open_folder])
         self.open_button.setVisible(not result.succeeded)
 
     @Slot(str)

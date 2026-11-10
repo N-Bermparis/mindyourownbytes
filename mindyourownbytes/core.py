@@ -9,6 +9,7 @@ tested without a display.
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import os
 import re
 import shutil
@@ -18,6 +19,7 @@ import threading
 import uuid
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
+from functools import partial
 from pathlib import Path
 from typing import Literal, NamedTuple
 
@@ -38,17 +40,54 @@ _BASE_ARGS = (
     "--no-auto-key-retrieve", "--no-auto-key-locate",
 )
 
-#: Pinned because the implicit defaults are unsafe to rely on: they vary by
-#: GnuPG version and silently fall back to 65,536 iterations when gpg-agent
-#: cannot be reached. These values are the OpenPGP maximum and stay compatible
-#: with every OpenPGP implementation. See docs/THREAT_MODEL.md.
-SYMMETRIC_ARGS = (
-    "--symmetric", "--cipher-algo", "AES256", "--s2k-mode", "3",
-    "--s2k-digest-algo", "SHA512", "--s2k-count", "65011712",
+
+class Cipher(NamedTuple):
+    """An encryption algorithm people can choose for passphrase encryption."""
+
+    #: What GnuPG calls it.
+    name: str
+    #: What people see.
+    label: str
+    #: Its number inside an OpenPGP file.
+    packet_id: int
+
+
+#: Every choice has a 256-bit key and 128-bit blocks. IDEA, 3DES, CAST5, and Blowfish
+#: are left out because their 64-bit blocks are too small, and GnuPG 2.5 refuses to
+#: encrypt with them. Smaller keys are left out because they bring no benefit.
+#: AES-256 comes first, because it's the default: the one nearly every OpenPGP tool opens.
+CIPHERS = (
+    Cipher("AES256", "AES-256", 9),
+    Cipher("TWOFISH", "Twofish", 10),
+    Cipher("CAMELLIA256", "Camellia-256", 13),
 )
+DEFAULT_CIPHER = CIPHERS[0].name
+
+
+def symmetric_args(cipher: str = DEFAULT_CIPHER) -> tuple[str, ...]:
+    """Passphrase encryption settings, with nothing left to GnuPG's defaults.
+
+    The implicit defaults are unsafe to rely on: they vary by GnuPG version and
+    silently fall back to 65,536 iterations when gpg-agent cannot be reached. The
+    iteration count and digest are the OpenPGP maximum. See docs/THREAT_MODEL.md.
+    """
+    if cipher not in {choice.name for choice in CIPHERS}:
+        raise ValueError(f"This app doesn't offer the encryption algorithm {cipher!r}.")
+    return (
+        "--symmetric", "--cipher-algo", cipher, "--s2k-mode", "3",
+        "--s2k-digest-algo", "SHA512", "--s2k-count", "65011712",
+    )
+
 
 #: Hands gpg the passphrase over stdin, in place of asking through Pinentry.
 _PIPE_ARGS = ("--pinentry-mode", "loopback", "--passphrase-fd", "0")
+
+#: What ``on_progress`` says about a file that worked, and about one that was also checked.
+READY = "Ready"
+CHECKED = "Checked"
+
+#: How much of a file is in memory at a time while it is checked.
+_CHECK_CHUNK = 1024 * 1024
 
 #: Windows sync clients and macOS keep these exact folder names.
 _SYNC_FOLDER_NAMES = {
@@ -63,6 +102,21 @@ _GPG_ERR_CANCELED = 99
 
 #: Sync clients often append an account name, e.g. "OneDrive - Contoso".
 _SYNC_FOLDER_PREFIXES = ("onedrive", "dropbox (", "nextcloud-", "google drive (")
+
+#: In gpg's --with-colons output: expired, revoked, disabled, never valid, and invalid.
+_UNUSABLE_VALIDITY = tuple("erdni")
+
+#: Curves as gpg's --with-colons output names them, and as people know them.
+_CURVE_NAMES = {
+    "cv25519": "Curve25519",
+    "cv448": "Curve448",
+    "nistp256": "NIST P-256",
+    "nistp384": "NIST P-384",
+    "nistp521": "NIST P-521",
+    "brainpoolp256r1": "Brainpool P-256",
+    "brainpoolp384r1": "Brainpool P-384",
+    "brainpoolp512r1": "Brainpool P-512",
+}
 
 
 @dataclass(frozen=True)
@@ -80,6 +134,8 @@ class JobResult:
     outputs: tuple[Path, ...]
     #: Staging files that could not be deleted. On restore these are plaintext.
     leftovers: tuple[Path, ...] = ()
+    #: How many of the outputs were decrypted again and matched their originals.
+    checked: int = 0
 
 
 class PublicKey(NamedTuple):
@@ -88,6 +144,8 @@ class PublicKey(NamedTuple):
     #: False means the matching private key is not on this computer, so the user
     #: could not decrypt what they encrypt to this key.
     has_secret: bool
+    #: The type of key that files get encrypted to, for people to read. Empty if unknown.
+    algorithm: str = ""
 
 
 class CollectResult(NamedTuple):
@@ -235,6 +293,30 @@ def is_valid_gpg(binary: str) -> bool:
     return version is not None and version >= MIN_GPG_VERSION
 
 
+def available_ciphers(binary: str) -> tuple[Cipher, ...]:
+    """The choices this GnuPG can use, because a build or a gpg.conf can rule some out.
+
+    If GnuPG can't say, this offers only the default, which is what would be used anyway.
+    If it turns out not to work, GnuPG's refusal is reported like any other failure.
+    """
+    if not Path(binary).is_absolute():
+        return CIPHERS[:1]
+    try:
+        result = subprocess.run(
+            [binary, "--batch", "--with-colons", "--list-config", "ciphername"],
+            capture_output=True, encoding="utf-8", errors="replace",
+            timeout=8, check=False, creationflags=windows_flags(),
+        )
+    except (OSError, subprocess.SubprocessError):
+        return CIPHERS[:1]
+    supported: set[str] = set()
+    for line in result.stdout.splitlines():
+        fields = line.split(":")
+        if fields[:2] == ["cfg", "ciphername"] and len(fields) > 2:
+            supported.update(name.strip().upper() for name in fields[2].split(";"))
+    return tuple(cipher for cipher in CIPHERS if cipher.name in supported) or CIPHERS[:1]
+
+
 def is_link_or_junction(path: Path) -> bool:
     """Detect links to elsewhere.
 
@@ -275,6 +357,36 @@ def _secret_fingerprints(binary: str) -> set[str]:
     return fingerprints
 
 
+def _key_type(fields: list[str]) -> str:
+    """Name the type of key in a ``pub`` or ``sub`` record, for people to read."""
+    bits, algorithm = fields[2], fields[3]
+    curve = fields[16] if len(fields) > 16 else ""
+    if algorithm in ("1", "2"):
+        return f"RSA-{bits}"
+    if algorithm in ("16", "20"):
+        return f"ElGamal-{bits}"
+    if algorithm == "8":
+        return f"Kyber-{bits} (post-quantum)"
+    return _CURVE_NAMES.get(curve.lower(), curve)
+
+
+def _encryption_key_type(records: list[list[str]]) -> str:
+    """Describe the key GnuPG will really encrypt to.
+
+    That's the newest usable encryption subkey, and the primary key only if there is
+    none. A key can hold several, such as a post-quantum subkey added to an older key.
+    """
+    def usable(fields: list[str]) -> bool:
+        return len(fields) > 11 and "e" in fields[11] and fields[1] not in _UNUSABLE_VALIDITY
+
+    subkeys = [fields for fields in records if fields[0] == "sub" and usable(fields)]
+    if subkeys:
+        # max() keeps the first of a tie, as GnuPG does.
+        return _key_type(max(subkeys, key=lambda fields: int(fields[5]) if fields[5].isdigit() else 0))
+    primary = next((fields for fields in records if fields[0] == "pub" and usable(fields)), None)
+    return _key_type(primary) if primary else ""
+
+
 def list_public_keys(binary: str) -> list[PublicKey]:
     """List keys usable for encryption, with the user's own keys first.
 
@@ -285,12 +397,13 @@ def list_public_keys(binary: str) -> list[PublicKey]:
     secret = _secret_fingerprints(binary)
     keys: list[PublicKey] = []
     current: dict[str, str] | None = None
+    records: list[list[str]] = []
 
     def flush() -> None:
         if current and current["fingerprint"] and current["usable"]:
             keys.append(PublicKey(
                 current["fingerprint"], current["uid"] or "Unknown identity",
-                current["fingerprint"] in secret,
+                current["fingerprint"] in secret, _encryption_key_type(records),
             ))
 
     for line in _list_keys(binary, "--list-keys").splitlines():
@@ -298,14 +411,17 @@ def list_public_keys(binary: str) -> list[PublicKey]:
         record = fields[0]
         if record == "pub":
             flush()
+            records = []
             capabilities = fields[11] if len(fields) > 11 else ""
             validity = fields[1] if len(fields) > 1 else ""
-            usable = "E" in capabilities and "D" not in capabilities and validity not in tuple("erdni")
+            usable = "E" in capabilities and "D" not in capabilities and validity not in _UNUSABLE_VALIDITY
             current = {"fingerprint": "", "uid": "", "usable": "yes" if usable else ""}
         elif current is not None and record == "fpr" and not current["fingerprint"]:
             current["fingerprint"] = fields[9] if len(fields) > 9 else ""
         elif current is not None and record == "uid" and not current["uid"]:
             current["uid"] = _unescape_colon_field(fields[9]) if len(fields) > 9 else ""
+        if record in ("pub", "sub") and len(fields) > 5:
+            records.append(fields)
     flush()
     return sorted(keys, key=lambda key: not key.has_secret)
 
@@ -532,6 +648,74 @@ def run_gpg(argv: list[str], cancel: threading.Event, secret: bytes | None = Non
             process.communicate()
 
 
+def run_gpg_hashed(argv: list[str], cancel: threading.Event, secret: bytes) -> tuple[int, str, bytes]:
+    """Run gpg until it exits or ``cancel`` is set. Returns (exit code, stderr, SHA-256 of its stdout).
+
+    The output is hashed as it arrives, a piece at a time, so a decrypted file is never written to
+    disk and never held in memory whole. Each pipe gets its own thread, because gpg stops and waits
+    whenever one of them is full, and this thread has to stay free to notice ``cancel``.
+    """
+    process = subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                               creationflags=windows_flags())
+    digest = hashlib.sha256()
+    diagnostics = bytearray()
+    problems: list[Exception] = []
+
+    def feed() -> None:
+        # gpg can exit without reading this, if it rejects an option, say. Its exit code then says so.
+        with contextlib.suppress(OSError), process.stdin:
+            process.stdin.write(secret + b"\n")
+
+    def hash_output() -> None:
+        with process.stdout:
+            while piece := process.stdout.read(_CHECK_CHUNK):
+                digest.update(piece)
+
+    def keep_diagnostics() -> None:
+        with process.stderr:
+            diagnostics.extend(process.stderr.read())
+
+    def guarded(work: Callable[[], None]) -> None:
+        try:
+            work()
+        except Exception as exc:  # Raised again below, by the thread that is waiting.
+            problems.append(exc)
+
+    pumps = [threading.Thread(target=guarded, args=(work,), daemon=True)
+             for work in (feed, hash_output, keep_diagnostics)]
+    try:
+        for pump in pumps:
+            pump.start()
+        # Each one ends when gpg closes its side, which it does by exiting.
+        for pump in pumps:
+            while pump.is_alive():
+                if cancel.is_set():
+                    raise Cancelled()
+                if problems:
+                    raise problems[0]
+                pump.join(timeout=0.25)
+        while process.poll() is None:
+            if cancel.is_set():
+                raise Cancelled()
+            with contextlib.suppress(subprocess.TimeoutExpired):
+                process.wait(timeout=0.25)
+        if problems:
+            # Without all of the output, the hash would say nothing about the file.
+            raise problems[0]
+        return process.returncode, diagnostics.decode("utf-8", errors="replace"), digest.digest()
+    finally:
+        if process.poll() is None:
+            process.terminate()
+            try:
+                process.wait(timeout=3)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait()
+        for pump in pumps:
+            if pump.ident is not None:
+                pump.join(timeout=3)
+
+
 def _status_lines(stderr: str) -> list[list[str]]:
     return [line.split()[1:] for line in stderr.splitlines() if line.startswith("[GNUPG:] ")]
 
@@ -617,14 +801,14 @@ def _check_success(operation: Operation, code: int, stderr: str, staged: Path) -
 
 
 def _build_command(binary: str, operation: Operation, method: Method, fingerprint: str | None,
-                   staged: Path, source: Path, piped: bool) -> list[str]:
+                   staged: Path, source: Path, piped: bool, cipher: str) -> list[str]:
     command = [binary, *_BASE_ARGS]
     command += _PIPE_ARGS if piped else ("--pinentry-mode", "ask")
     command += ["--output", str(staged)]
     if operation == "restore":
         command.append("--decrypt")
     elif method == "password":
-        command += SYMMETRIC_ARGS
+        command += symmetric_args(cipher)
     else:
         command += ["--encrypt", "--recipient", fingerprint or ""]
     command += ["--", str(source)]
@@ -640,9 +824,71 @@ def _remove_staged(staged: Path, leftovers: list[Path]) -> None:
         leftovers.append(staged)
 
 
+def _file_state(path: Path) -> tuple[int, ...] | None:
+    """Enough to notice, cheaply, that a file was written to or replaced. None if it can't be found."""
+    try:
+        status = os.stat(path)
+    except OSError:
+        return None
+    return status.st_size, status.st_mtime_ns, status.st_ino, status.st_dev
+
+
+def _hash_file(path: Path, cancel: threading.Event) -> bytes:
+    digest = hashlib.sha256()
+    with open(path, "rb") as file:
+        while piece := file.read(_CHECK_CHUNK):
+            if cancel.is_set():
+                raise Cancelled()
+            digest.update(piece)
+    return digest.digest()
+
+
+def _check_copy(binary: str, staged: Path, source: Path, state_before: tuple[int, ...] | None,
+                secret: bytes, cancel: threading.Event) -> None:
+    """Prove that a newly encrypted file decrypts back to its original, or raise.
+
+    People may delete an original once its copy is reported as encrypted, so that report has to be
+    true. GnuPG decrypts the copy again, with the same passphrase over a pipe. What it writes is
+    hashed as it arrives, then compared with a hash of the original, which is read last so that the
+    answer is about the original as it is now.
+
+    As for a restore, exit code 0 isn't enough. DECRYPTION_OKAY has to be there as well, or a copy
+    that was never encrypted would pass by holding the right content.
+    """
+    command = [binary, *_BASE_ARGS, *_PIPE_ARGS, "--output", "-", "--decrypt", "--", str(staged)]
+    try:
+        code, stderr, decrypted = run_gpg_hashed(command, cancel, secret)
+    except OSError as exc:
+        raise GpgFailure("Check failed: GnuPG couldn't be run again to decrypt the new copy, so it wasn't "
+                         f"kept. The reason given was: {exc}") from exc
+    if code != 0:
+        raise GpgFailure("Check failed: GnuPG couldn't decrypt the copy it had just made, so it wasn't kept. "
+                         f"GnuPG said: {_last_diagnostic(stderr)}")
+    if "DECRYPTION_OKAY" not in {line[0] for line in _status_lines(stderr) if line}:
+        raise GpgFailure("Check failed: the copy GnuPG made isn't actually encrypted, so it wasn't kept.")
+    try:
+        original = _hash_file(source, cancel)
+    except OSError as exc:
+        if _file_state(source) is None:
+            raise GpgFailure("The original is gone: it was moved or deleted while it was being encrypted, "
+                             "so no encrypted copy was kept.") from exc
+        raise GpgFailure("Check failed: the original couldn't be read again to compare it, so the "
+                         f"encrypted copy wasn't kept. The reason given was: {exc}") from exc
+    if decrypted != original:
+        if _file_state(source) != state_before:
+            # Not damage: the copy holds this file as it was a moment ago, or part old and part new.
+            raise GpgFailure("The original changed: something wrote to this file while it was being "
+                             "encrypted, so no encrypted copy was kept. Try again when nothing is changing it.")
+        raise GpgFailure("Check failed: decrypting the new copy didn't give back the original, so the copy "
+                         "wasn't kept. Your original hasn't been touched. Try again, and if another program "
+                         "has this file open, close it first.")
+
+
 def _process_one(binary: str, item: SourceItem, output_directory: Path, operation: Operation,
                  method: Method, fingerprint: str | None, cancel: threading.Event,
-                 secrets: Sequence[bytes], leftovers: list[Path]) -> Path:
+                 secrets: Sequence[bytes], leftovers: list[Path], cipher: str, verify: bool,
+                 on_checking: Callable[[], None] | None) -> tuple[Path, bool]:
+    """Returns where the result is, and whether it was checked against its original."""
     target = unique_target(output_directory / output_relative(item, operation))
     target.parent.mkdir(parents=True, exist_ok=True)
     failures: list[GpgFailure] = []
@@ -650,13 +896,23 @@ def _process_one(binary: str, item: SourceItem, output_directory: Path, operatio
         # A short fixed-length name: embedding the original name pushed long,
         # perfectly valid filenames past the 255-character limit.
         staged = target.parent / f".myob-{uuid.uuid4().hex[:16]}.partial"
+        # Only with a passphrase already in hand. A key, or GnuPG's own prompt, would mean asking again.
+        checking = verify and operation == "encrypt" and method == "password" and secret is not None
         try:
             command = _build_command(binary, operation, method, fingerprint, staged,
-                                     item.source, piped=secret is not None)
+                                     item.source, piped=secret is not None, cipher=cipher)
+            state_before = _file_state(item.source) if checking else None
             code, stderr = run_gpg(command, cancel, secret)
             _check_success(operation, code, stderr, staged)
+            if checking:
+                if cancel.is_set():
+                    raise Cancelled()
+                if on_checking is not None:
+                    on_checking()
+                # Still under its temporary name, so a copy that fails never gets its final one.
+                _check_copy(binary, staged, item.source, state_before, secret, cancel)
             publish_no_overwrite(staged, target)
-            return target
+            return target, checking
         except GpgFailure as exc:
             # Keep going even after what looks like damage. About 1 wrong
             # passphrase in 65,536 passes gpg's quick check and then fails like
@@ -677,19 +933,29 @@ def process_items(
     binary: str, items: list[SourceItem], output_directory: Path,
     operation: Operation, method: Method, fingerprint: str | None,
     cancel: threading.Event, on_progress: Callable[[int, bool, str, Path | None], None],
-    *, passphrases: Sequence[str] = (),
+    *, passphrases: Sequence[str] = (), cipher: str = DEFAULT_CIPHER, verify: bool = True,
+    on_checking: Callable[[int], None] | None = None,
 ) -> JobResult:
     """Process each item independently; failed jobs leave no partial exports.
 
     With no ``passphrases``, gpg-agent asks through Pinentry, once per file for
     passphrase encryption. Otherwise the passphrase goes to gpg over a pipe. A
     restore may pass several, which are tried in order.
+
+    ``cipher`` only applies to passphrase encryption. A key decides its own, and a
+    restore reads it from the file.
+
+    ``verify`` decrypts each newly encrypted file again and compares it with its original,
+    before the file gets its final name. That only happens when a passphrase was passed in,
+    because anything else would make GnuPG ask again. ``on_checking`` hears when a file's
+    check begins, and ``on_progress`` then says ``CHECKED`` rather than ``READY``.
     """
     if not is_valid_gpg(binary):
         raise RuntimeError(
             "The selected GnuPG executable is not available, or is older than "
             f"{'.'.join(map(str, MIN_GPG_VERSION))}."
         )
+    symmetric_args(cipher)  # Refuses an algorithm this app doesn't offer, before any work.
     if operation == "encrypt" and method == "public-key":
         if not fingerprint or not re.fullmatch(r"[0-9A-Fa-f]{40,64}", fingerprint):
             raise ValueError("Select a valid OpenPGP recipient key.")
@@ -699,7 +965,7 @@ def process_items(
         raise ValueError("Encryption uses exactly one passphrase.")
     secrets = [encode_passphrase(passphrase) for passphrase in passphrases]
 
-    succeeded = failed = 0
+    succeeded = failed = checked = 0
     outputs: list[Path] = []
     leftovers: list[Path] = []
     was_cancelled = False
@@ -708,8 +974,10 @@ def process_items(
             was_cancelled = True
             break
         try:
-            target = _process_one(binary, item, output_directory, operation, method,
-                                  fingerprint, cancel, secrets, leftovers)
+            target, was_checked = _process_one(
+                binary, item, output_directory, operation, method, fingerprint, cancel, secrets, leftovers,
+                cipher, verify, partial(on_checking, index) if on_checking is not None else None,
+            )
         except Cancelled:
             was_cancelled = True
             on_progress(index, False, "Cancelled", None)
@@ -720,5 +988,6 @@ def process_items(
         else:
             outputs.append(target)
             succeeded += 1
-            on_progress(index, True, "Ready", target)
-    return JobResult(succeeded, failed, was_cancelled, tuple(outputs), tuple(leftovers))
+            checked += was_checked
+            on_progress(index, True, CHECKED if was_checked else READY, target)
+    return JobResult(succeeded, failed, was_cancelled, tuple(outputs), tuple(leftovers), checked)
