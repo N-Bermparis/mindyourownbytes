@@ -31,6 +31,8 @@ release pull request. Passing this list is not a security certification.
 - [ ] Open a file and the vault using plain `gpg`, without this app.
 - [ ] Try a wrong passphrase, a missing key, a corrupt file, and Cancel.
 - [ ] Test spaces, Unicode, very long names, and name collisions.
+- [ ] Generate a passphrase of each kind when encrypting, in the vault, and for the master passphrase,
+      and check that encrypting waits until "I've saved this passphrase" is ticked.
 - [ ] Test from an ordinary, non-administrator account.
 - [ ] Check keyboard use, and that every screen and dialog is readable in light and dark Windows themes.
 - [ ] Open "What your provider sees" from Help, from the Encrypt screen with files listed, and from the
