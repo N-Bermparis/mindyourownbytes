@@ -28,6 +28,8 @@ release pull request. Passing this list is not a security certification.
 - [ ] Restore on a second, clean computer, using only your backup of the passphrase or key.
 - [ ] Open a file and the vault using plain `gpg`, without this app.
 - [ ] Try a wrong passphrase, a missing key, a corrupt file, and Cancel.
+- [ ] Restore one batch that mixes passphrase files with files for a key that has its own passphrase,
+      and restore a whole collection from the Library with nothing selected.
 - [ ] Test spaces, Unicode, very long names, and name collisions.
 - [ ] Test from an ordinary, non-administrator account.
 - [ ] Check keyboard use, and that every screen and dialog is readable in light and dark Windows themes.

@@ -46,6 +46,7 @@ specific provider. Those are not missing features; they are the point.
 - [ ] Translations
 - [ ] Move folder scanning off the UI thread for very large trees
 - [ ] Better detection of cloud-synced folders
+- [x] Restore a whole collection, or a mix of passphrase and key files, in one go
 - [ ] Periodic restore-test reminders
 - [ ] Input fuzzing
 

@@ -23,6 +23,8 @@ First public version. Not independently audited.
   GnuPG file that opens without this application.
 - Library screen with collections, search, and moving files between collections.
 - Restore that selects how to unlock files, can try every saved passphrase, and retries only what failed.
+  One batch can mix passphrase files and files for your key, and the Library restores everything shown,
+  such as a whole collection, keeping its folders.
 - Warnings before restoring into a synced folder, when originals already appear to be in
   one, and before encrypting to a key you can't decrypt with.
 - Real-GnuPG test suite, including forged, tampered, and truncated input.

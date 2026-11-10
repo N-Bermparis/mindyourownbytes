@@ -891,6 +891,10 @@ def _process_one(binary: str, item: SourceItem, output_directory: Path, operatio
     """Returns where the result is, and whether it was checked against its original."""
     target = unique_target(output_directory / output_relative(item, operation))
     target.parent.mkdir(parents=True, exist_ok=True)
+    if operation == "restore" and secrets and peek_protection(item.source) == "key":
+        # Encrypted to a key, in a batch that also has passphrase files: the passphrases are for those.
+        # GnuPG opens this one with the private key, and asks for its passphrase itself if it has one.
+        secrets = ()
     failures: list[GpgFailure] = []
     for secret in secrets or (None,):
         # A short fixed-length name: embedding the original name pushed long,
@@ -940,7 +944,8 @@ def process_items(
 
     With no ``passphrases``, gpg-agent asks through Pinentry, once per file for
     passphrase encryption. Otherwise the passphrase goes to gpg over a pipe. A
-    restore may pass several, which are tried in order.
+    restore may pass several, which are tried in order. A file being restored that
+    was encrypted to a key is opened with the key instead, so one batch can mix both.
 
     ``cipher`` only applies to passphrase encryption. A key decides its own, and a
     restore reads it from the file.
