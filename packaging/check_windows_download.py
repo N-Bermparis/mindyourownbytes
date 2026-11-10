@@ -341,6 +341,21 @@ def installed_folder() -> Path | None:
     return Path(entry["InstallLocation"].rstrip("\\")) if entry else None
 
 
+def right_click_commands() -> list[str | None]:
+    """What File Explorer would run for a file and for a folder. None where there's no entry."""
+    found: list[str | None] = []
+    for kind in ("*", "Directory"):
+        try:
+            key = rf"Software\Classes\{kind}\shell\mindyourownbytes"
+            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, key) as entry, winreg.OpenKey(entry, "command") as command:
+                ensure(winreg.QueryValueEx(entry, "")[0] == "Encrypt with mindyourownbytes",
+                       f"the right-click entry for {kind} has the expected name")
+                found.append(winreg.QueryValueEx(command, "")[0])
+        except FileNotFoundError:
+            found.append(None)
+    return found
+
+
 def file_hashes(folder: Path) -> dict[str, str]:
     return {path.relative_to(folder).as_posix(): sha256(path) for path in folder.rglob("*") if path.is_file()}
 
@@ -362,15 +377,21 @@ def check_usual_folder(setup: Path, environment: dict[str, str], log: Path, unin
 
 def check_opening_and_closing(target: Path, environment: dict[str, str], log: Path) -> None:
     """Open the app the normal way. The uninstaller must then refuse to pull it from under itself."""
-    window = subprocess.Popen([str(target / "mindyourownbytes.exe")], env=environment)
+    # Started the way File Explorer's right-click entry starts it: with one file's path.
+    window = subprocess.Popen([str(target / "mindyourownbytes.exe"), str(target / "LICENSE.txt")], env=environment)
     try:
         for _attempt in range(120):
             if app_is_open():
                 break
             time.sleep(0.25)
-        ensure(app_is_open(), "the app opens normally")
+        ensure(app_is_open(), "the app opens normally, given a file")
         time.sleep(3)
         ensure(window.poll() is None, "the app is still open a few seconds later")
+        # Explorer starts one copy per selected file. The later ones must not open more windows.
+        second = subprocess.run([str(target / "mindyourownbytes.exe"), str(target / "THIRD-PARTY-NOTICES.txt")],
+                                env=environment, timeout=60, check=False)
+        ensure(second.returncode == 0 and window.poll() is None,
+               "a second copy hands its file to the open window, and exits")
         removed = uninstall(target, environment, log)
         ensure(not removed and (target / "mindyourownbytes.exe").is_file() and installed_entry(),
                "the uninstaller won't remove the app while it's open")
@@ -410,6 +431,10 @@ def check_installer(setup: Path, portable: Path, scratch: Path, environment: dic
         ensure(entry and entry["DisplayVersion"] == version, f"Settings > Apps lists version {version}")
         ensure(installed_folder() == target, "it installed into the chosen folder")
         ensure(shortcut.is_file(), "the Start menu has a shortcut")
+        expected = os.path.normcase(f'"{target / "mindyourownbytes.exe"}" "%1"')
+        commands = right_click_commands()
+        ensure([os.path.normcase(command or "") for command in commands] == [expected] * 2,
+               f"right-clicking a file or a folder offers to encrypt it with this copy {commands}")
         installed = {name: value for name, value in file_hashes(target).items() if not name.startswith("unins000.")}
         ensure(installed == file_hashes(portable), "the installer and the zip hold exactly the same app")
         self_test(target / "mindyourownbytes.exe", environment, "installed", version)
@@ -426,6 +451,7 @@ def check_installer(setup: Path, portable: Path, scratch: Path, environment: dic
         ensure(uninstall(target, environment, uninstall_log), "uninstalling removes the whole folder")
         ensure(installed_entry() is None, "Settings > Apps no longer lists it")
         ensure(not shortcut.exists(), "the Start menu shortcut is gone")
+        ensure(right_click_commands() == [None, None], "the right-click entries are gone")
         ensure(vault.is_file() and vault.read_bytes() == vault_before,
                "uninstalling leaves the saved passphrases alone")
     finally:

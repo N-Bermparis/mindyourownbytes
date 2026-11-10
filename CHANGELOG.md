@@ -11,6 +11,8 @@ First public version. Not independently audited.
 
 - A guided, plain-language desktop app using native controls, with the system's light or dark mode.
 - Drag-and-drop encryption of files and folders to standard OpenPGP `.gpg` files.
+- **Encrypt with mindyourownbytes** in File Explorer's right-click menu, added by the installer for
+  your account only. It adds the files to the list in the open window, and encrypts nothing by itself.
 - Passphrase encryption with a choice of AES-256 (the default), Twofish, or Camellia-256, and
   public-key encryption with Kleopatra/GnuPG keys, with each key's type shown in the list.
 - Type one passphrase for a whole batch, instead of one prompt per file.

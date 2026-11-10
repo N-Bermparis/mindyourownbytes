@@ -277,6 +277,20 @@ there's a new version, and the included GnuPG only updates when the app does. A 
 fix in GnuPG leads to a new release, but you have to install it. If you'd rather get
 GnuPG updates separately, install Gpg4win, and the app will use it.
 
+**The right-click entry.** Unless you untick it, the installer adds **Encrypt with mindyourownbytes**
+to File Explorer's menu for files and folders. It's six registry values under your own account's
+`HKEY_CURRENT_USER\Software\Classes`, and uninstalling removes them. Explorer starts the app with the
+path of what you clicked, and the app only adds it to the list on the Encrypt screen. Nothing is
+encrypted until you click **Encrypt**, and the usual warnings, such as for a synced folder, still apply.
+
+Explorer starts one copy of the app for each file you select. A later copy finds the open window
+through a named piece of shared memory that only programs in your own sign-in session can see, hands
+it the path in a `WM_COPYDATA` message, and exits. It checks first that the window belongs to the
+same program file as itself. Only paths are sent, never file contents or passphrases. The open window
+reads nothing but a list of text from such a message, and refuses it while a job is running. Another
+program running as you could send it paths too, but all they'd do is appear in the list. As
+[your own computer](#your-own-computer) explains, such a program could do far more than that anyway.
+
 **It installs for your account only.** That avoids asking for administrator rights, but
 it means that anything running as you could replace the app or its GnuPG. Such a program
 could also do much else, as [your own computer](#your-own-computer) explains. Gpg4win in

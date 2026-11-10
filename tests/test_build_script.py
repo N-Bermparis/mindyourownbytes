@@ -88,11 +88,42 @@ class RecipesAgreeTests(unittest.TestCase):
         self.installer = (PACKAGING / "installer.iss").read_text(encoding="utf-8")
         self.check = (PACKAGING / "check_windows_download.py").read_text(encoding="utf-8")
         self.window = (ROOT / "mindyourownbytes" / "gui" / "main_window.py").read_text(encoding="utf-8")
+        self.handover = (ROOT / "mindyourownbytes" / "gui" / "handover.py").read_text(encoding="utf-8")
 
     def test_running_marker(self):
         name = re.search(r"AppMutex=(\S+)", self.installer).group(1)
-        self.assertIn(f'CreateMutexW(None, False, "{name}")', self.window)
+        self.assertIn(f'RUNNING_MUTEX = "{name}"', self.handover)
+        self.assertIn("CreateMutexW(None, False, RUNNING_MUTEX)", self.handover)
         self.assertIn(f'RUNNING_MUTEX = "{name}"', self.check)
+
+    def right_click_entries(self) -> list[str]:
+        return [line for line in self.installer.splitlines() if "\\shell\\mindyourownbytes" in line]
+
+    def test_right_click_entries_are_for_this_account_and_go_with_the_app(self):
+        entries = self.right_click_entries()
+        self.assertEqual(len(entries), 8)
+        for line in entries:
+            self.assertTrue(line.startswith("Root: HKCU;"), line)
+        for kind in ("*", "Directory"):
+            top = [line for line in entries if f'Subkey: "Software\\Classes\\{kind}\\shell\\mindyourownbytes";' in line
+                   and "Tasks: rightclick" in line and "ValueName" not in line]
+            self.assertEqual(len(top), 1, kind)
+            self.assertIn("uninsdeletekey", top[0])
+
+    def test_right_click_passes_only_the_path(self):
+        commands = [line for line in self.right_click_entries() if "\\command" in line]
+        self.assertEqual(len(commands), 2)
+        for line in commands:
+            self.assertIn('ValueData: """{app}\\mindyourownbytes.exe"" ""%1"""', line)
+        self.assertIn('"Encrypt with mindyourownbytes"', self.check)
+        self.assertIn('"%1"', self.check)
+
+    def test_right_click_entry_can_be_left_out(self):
+        self.assertIn('Name: "rightclick"', self.installer)
+        removals = [line for line in self.right_click_entries() if "Tasks: not rightclick" in line]
+        self.assertEqual(len(removals), 2)
+        for line in removals:
+            self.assertIn("deletekey", line)
 
     def test_taskbar_identity(self):
         name = re.search(r'AppUserModelID: "([^"]+)"', self.installer).group(1)

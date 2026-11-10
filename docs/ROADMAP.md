@@ -32,6 +32,8 @@ specific provider. Those are not missing features; they are the point.
 ## Then: 0.3 — Easier to install and trust
 
 - [x] A Windows installer with GnuPG included, built in CI with published checksums
+- [x] Encrypt from File Explorer's right-click menu
+- [ ] Show that entry in Windows 11's shorter menu, not only under "Show more options"
 - [ ] Code-signed Windows releases, so that Windows stops warning about them
 - [ ] Reproducible builds
 - [ ] Linux and macOS packages (Flatpak, Homebrew)

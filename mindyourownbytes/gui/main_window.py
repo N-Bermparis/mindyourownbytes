@@ -10,7 +10,7 @@ import threading
 import traceback
 from pathlib import Path
 
-from PySide6.QtCore import QObject, QProcess, QSettings, QSize, Qt, QThread, QUrl, Signal, Slot
+from PySide6.QtCore import QObject, QProcess, QSettings, QSize, Qt, QThread, QTimer, QUrl, Signal, Slot
 from PySide6.QtGui import QBrush, QDesktopServices, QGuiApplication, QKeySequence
 from PySide6.QtWidgets import (
     QApplication,
@@ -61,7 +61,7 @@ from mindyourownbytes.core import (
     process_items,
     stop_bundled_gnupg,
 )
-from mindyourownbytes.gui import icons, theme
+from mindyourownbytes.gui import handover, icons, theme
 from mindyourownbytes.gui.dialogs import PassphraseDialog, ProtectionDialog
 from mindyourownbytes.gui.library_page import LibraryPage
 from mindyourownbytes.gui.vault_page import VaultPage
@@ -1433,6 +1433,49 @@ class MainWindow(QMainWindow):
             self.cancel_button.setEnabled(False)
             self.status_text.setText("Cancelling after the current file…")
 
+    def open_paths(self, paths: list[str]) -> bool:
+        """Put files chosen in File Explorer on the Encrypt screen. Nothing is encrypted yet.
+
+        Returns False while a job is running, because the list can't change then.
+        """
+        if self.running:
+            return False
+        self.set_operation("encrypt")
+        self.add_paths([path for path in paths if Path(path).exists()])
+        if self.isMinimized():
+            self.showNormal()
+        self.raise_()
+        self.activateWindow()
+        return True
+
+    def nativeEvent(self, event_type, message):
+        """Receive files handed over by another copy of the app. See gui/handover.py.
+
+        While a job runs, this says no, and the other copy opens a window of its own, so that
+        right-clicking a file still does something straight away.
+        """
+        if handover.IS_WINDOWS and bytes(event_type) == b"windows_generic_MSG":
+            paths = handover.read_message(int(message))
+            if paths is not None:
+                if self.running or not paths:
+                    return True, 0
+                # Answer first: the sender is waiting, and adding files can show a message box.
+                QTimer.singleShot(0, lambda: self._open_when_ready(paths))
+                return True, 1
+        return super().nativeEvent(event_type, message)
+
+    def _open_when_ready(self, paths: list[str]) -> None:
+        """Add handed-over files once no dialog is open and no job is running.
+
+        Files must never join a list that someone is already confirming or encrypting, such as
+        while the passphrase dialog is open. Waiting, rather than refusing, also keeps a burst of
+        files from Explorer from opening a window each while one message box is showing.
+        """
+        if self.running or QApplication.activeModalWidget() is not None:
+            QTimer.singleShot(250, lambda: self._open_when_ready(paths))
+            return
+        self.open_paths(paths)
+
     def closeEvent(self, event):
         if self.running:
             QMessageBox.warning(
@@ -1464,15 +1507,6 @@ def _use_own_taskbar_icon() -> None:
         ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("mindyourownbytes.app")
 
 
-def _mark_as_running() -> None:
-    """Lets the Windows installer and uninstaller see that the app is open.
-
-    They ask people to close it first, rather than replacing files in the middle of a batch.
-    """
-    if sys.platform == "win32":
-        # Never closed on purpose: Windows releases it when the app exits.
-        ctypes.windll.kernel32.CreateMutexW(None, False, "mindyourownbytes-running")
-
 
 def create_application() -> QApplication:
     _use_own_taskbar_icon()
@@ -1485,11 +1519,17 @@ def create_application() -> QApplication:
 
 
 def main():
-    _mark_as_running()
+    # Files chosen with "Encrypt with mindyourownbytes" in File Explorer arrive here.
+    paths = handover.paths_from(sys.argv[1:])
+    if handover.mark_as_running() and handover.hand_over(paths):
+        return
     app = create_application()
     sys.excepthook = _show_unexpected_error
     window = MainWindow()
     window.show()
+    handover.announce_window(int(window.winId()))
+    if paths:
+        window.open_paths(paths)
     sys.exit(app.exec())
 
 

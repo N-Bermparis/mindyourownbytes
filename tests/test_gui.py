@@ -496,6 +496,153 @@ class TransferFlowTests(GuiCase):
         self.assertIn("locked", self.message_boxes["warning"].call_args.args[2])
 
 
+class FromFileExplorerTests(GuiCase):
+    """Right-clicking a file in File Explorer starts the app with that file's path."""
+
+    def test_files_land_on_the_encrypt_screen_and_nothing_is_encrypted(self):
+        self.window.show_library()
+        taken = self.window.open_paths([str(self.write("a.txt")), str(self.write("b.txt"))])
+        self.assertTrue(taken)
+        self.assertIs(self.window.pages.currentWidget(), self.window.transfer_page)
+        self.assertEqual(self.window.operation, "encrypt")
+        self.assertEqual([item.source.name for item in self.window.items], ["a.txt", "b.txt"])
+        self.assertFalse(self.window.running)
+        self.assertFalse((self.root / "exports").exists())
+
+    def test_a_folder_brings_what_is_inside_it(self):
+        self.write("Taxes/a.txt")
+        self.write("Taxes/2026/b.txt")
+        self.window.open_paths([str(self.root / "input" / "Taxes")])
+        self.assertEqual(sorted(str(item.relative) for item in self.window.items),
+                         sorted([str(Path("Taxes/a.txt")), str(Path("Taxes/2026/b.txt"))]))
+
+    def test_each_further_file_joins_the_same_list(self):
+        self.window.open_paths([str(self.write("a.txt"))])
+        self.window.open_paths([str(self.write("b.txt"))])
+        self.window.open_paths([str(self.root / "input" / "a.txt")])
+        self.assertEqual(sorted(item.source.name for item in self.window.items), ["a.txt", "b.txt"])
+
+    def test_it_switches_from_the_restore_screen(self):
+        self.window.set_operation("restore")
+        self.window.open_paths([str(self.write("a.txt"))])
+        self.assertEqual(self.window.operation, "encrypt")
+        self.assertEqual([item.source.name for item in self.window.items], ["a.txt"])
+
+    def test_a_path_that_is_gone_is_left_out_without_a_fuss(self):
+        self.window.open_paths([str(self.root / "input" / "gone.txt"), str(self.write("a.txt"))])
+        self.assertEqual([item.source.name for item in self.window.items], ["a.txt"])
+        self.message_boxes["warning"].assert_not_called()
+
+    def test_nothing_is_added_while_a_job_runs(self):
+        self.window.open_paths([str(self.write("a.txt"))])
+        self.window.running = True
+        self.addCleanup(setattr, self.window, "running", False)
+        self.assertFalse(self.window.open_paths([str(self.write("b.txt"))]))
+        self.assertEqual([item.source.name for item in self.window.items], ["a.txt"])
+
+    def native(self, paths, magic=None):
+        """Deliver a message the way Windows would, and say how the window answered."""
+        import ctypes
+        from ctypes import wintypes
+
+        from PySide6.QtCore import QByteArray
+        from shiboken6 import VoidPtr
+
+        from mindyourownbytes.gui import handover
+
+        data = handover.encode(paths)
+        buffer = ctypes.create_string_buffer(data, len(data))
+        copy = handover._CopyData(magic or handover._MAGIC, len(data), ctypes.cast(buffer, ctypes.c_void_p))
+        message = wintypes.MSG()
+        message.message = handover._WM_COPYDATA
+        message.lParam = ctypes.addressof(copy)
+        answer = self.window.nativeEvent(QByteArray(b"windows_generic_MSG"), VoidPtr(ctypes.addressof(message)))
+        QApplication.processEvents()
+        return answer
+
+    @unittest.skipUnless(sys.platform == "win32", "Windows messages")
+    def test_a_second_copy_of_the_app_can_pass_its_file_to_this_window(self):
+        handled, answer = self.native([str(self.write("a.txt"))])
+        self.assertEqual((handled, answer), (True, 1))
+        self.assertEqual([item.source.name for item in self.window.items], ["a.txt"])
+
+    @unittest.skipUnless(sys.platform == "win32", "Windows messages")
+    def test_the_window_says_no_while_a_job_runs_so_the_second_copy_opens_its_own(self):
+        self.window.running = True
+        self.addCleanup(setattr, self.window, "running", False)
+        self.assertEqual(tuple(self.native([str(self.write("a.txt"))])), (True, 0))
+        self.assertEqual(self.window.items, [])
+
+    @unittest.skipUnless(sys.platform == "win32", "Windows messages")
+    def test_files_that_arrive_while_a_dialog_is_open_wait_for_it_to_close(self):
+        # Such as the passphrase dialog: files must not join a list someone is confirming.
+        self.window.open_paths([str(self.write("a.txt"))])
+        with patch.object(QApplication, "activeModalWidget", return_value=QWidget()):
+            self.assertEqual(tuple(self.native([str(self.write("b.txt"))])), (True, 1))
+            deadline = time.monotonic() + 0.6
+            while time.monotonic() < deadline:
+                QApplication.processEvents(QEventLoop.ProcessEventsFlag.AllEvents, 50)
+            self.assertEqual([item.source.name for item in self.window.items], ["a.txt"])
+        self.wait_until(lambda: len(self.window.items) == 2, timeout=5)
+        self.assertEqual([item.source.name for item in self.window.items], ["a.txt", "b.txt"])
+
+    def test_files_accepted_just_before_a_job_starts_wait_until_it_ends(self):
+        self.window.running = True
+        self.window._open_when_ready([str(self.write("a.txt"))])
+        deadline = time.monotonic() + 0.6
+        while time.monotonic() < deadline:
+            QApplication.processEvents(QEventLoop.ProcessEventsFlag.AllEvents, 50)
+        self.assertEqual(self.window.items, [])
+        self.window.running = False
+        self.wait_until(lambda: len(self.window.items) == 1, timeout=5)
+
+    @unittest.skipUnless(sys.platform == "win32", "Windows messages")
+    def test_messages_from_anything_else_change_nothing(self):
+        self.native([str(self.write("a.txt"))], magic=12345)
+        self.assertEqual(self.window.items, [])
+
+    def test_starting_with_a_file_while_the_app_is_open_hands_it_over_and_opens_no_window(self):
+        path = str(self.write("a.txt"))
+        with patch.object(sys, "argv", ["mindyourownbytes", path]), patch.object(
+            main_window.handover, "mark_as_running", return_value=True
+        ), patch.object(main_window.handover, "hand_over", return_value=True) as hand_over, patch.object(
+            main_window, "create_application"
+        ) as create:
+            main_window.main()
+        hand_over.assert_called_once_with([path])
+        create.assert_not_called()
+
+    def test_starting_with_a_file_opens_a_window_holding_it_when_nothing_takes_it(self):
+        path = str(self.write("a.txt"))
+        for already_open in (False, True):
+            with self.subTest(already_open=already_open), patch.object(
+                sys, "argv", ["mindyourownbytes", path]
+            ), patch.object(main_window.handover, "mark_as_running", return_value=already_open), patch.object(
+                main_window.handover, "hand_over", return_value=False
+            ), patch.object(main_window.handover, "announce_window") as announce, patch.object(
+                main_window, "create_application"
+            ), patch.object(main_window, "MainWindow") as window, patch.object(
+                main_window.sys, "exit"
+            ), patch.object(main_window.sys, "excepthook"):
+                window.return_value.winId.return_value = 4242
+                main_window.main()
+                window.return_value.open_paths.assert_called_once_with([path])
+                announce.assert_called_once_with(4242)
+
+    def test_starting_normally_opens_a_window_and_adds_nothing(self):
+        with patch.object(sys, "argv", ["mindyourownbytes"]), patch.object(
+            main_window.handover, "mark_as_running", return_value=True
+        ), patch.object(main_window.handover, "announce_window"), patch.object(
+            main_window, "create_application"
+        ), patch.object(main_window, "MainWindow") as window, patch.object(main_window.sys, "exit"), patch.object(
+            main_window.sys, "excepthook"
+        ):
+            window.return_value.winId.return_value = 1
+            main_window.main()
+        window.return_value.show.assert_called_once()
+        window.return_value.open_paths.assert_not_called()
+
+
 class CheckAfterEncryptingTests(GuiCase):
     def finish(self):
         self.wait_until(lambda: not self.window.running)

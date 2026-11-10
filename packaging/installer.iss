@@ -46,6 +46,22 @@ Source: "{#AppFolder}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs 
 Type: filesandordirs; Name: "{app}\_internal"
 Type: filesandordirs; Name: "{app}\gnupg"
 
+[Tasks]
+Name: "rightclick"; Description: "Add ""Encrypt with mindyourownbytes"" to the right-click menu for files and folders"
+
+[Registry]
+; For this account only, like the rest of the installation. The app is started with the file's
+; path and nothing else, and only shows it on the Encrypt screen. Uninstalling removes all of it.
+Root: HKCU; Subkey: "Software\Classes\*\shell\mindyourownbytes"; ValueType: string; ValueData: "Encrypt with mindyourownbytes"; Flags: uninsdeletekey; Tasks: rightclick
+Root: HKCU; Subkey: "Software\Classes\*\shell\mindyourownbytes"; ValueType: string; ValueName: "Icon"; ValueData: "{app}\mindyourownbytes.exe"; Tasks: rightclick
+Root: HKCU; Subkey: "Software\Classes\*\shell\mindyourownbytes\command"; ValueType: string; ValueData: """{app}\mindyourownbytes.exe"" ""%1"""; Tasks: rightclick
+Root: HKCU; Subkey: "Software\Classes\Directory\shell\mindyourownbytes"; ValueType: string; ValueData: "Encrypt with mindyourownbytes"; Flags: uninsdeletekey; Tasks: rightclick
+Root: HKCU; Subkey: "Software\Classes\Directory\shell\mindyourownbytes"; ValueType: string; ValueName: "Icon"; ValueData: "{app}\mindyourownbytes.exe"; Tasks: rightclick
+Root: HKCU; Subkey: "Software\Classes\Directory\shell\mindyourownbytes\command"; ValueType: string; ValueData: """{app}\mindyourownbytes.exe"" ""%1"""; Tasks: rightclick
+; Unticking the box when installing again takes the entries away.
+Root: HKCU; Subkey: "Software\Classes\*\shell\mindyourownbytes"; ValueType: none; Flags: deletekey dontcreatekey; Tasks: not rightclick
+Root: HKCU; Subkey: "Software\Classes\Directory\shell\mindyourownbytes"; ValueType: none; Flags: deletekey dontcreatekey; Tasks: not rightclick
+
 [Icons]
 ; The ID matches the one the app sets, so a pinned icon and the running window are one taskbar button.
 Name: "{autoprograms}\mindyourownbytes"; Filename: "{app}\mindyourownbytes.exe"; AppUserModelID: "mindyourownbytes.app"

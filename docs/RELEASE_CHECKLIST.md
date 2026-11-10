@@ -21,6 +21,9 @@ release pull request. Passing this list is not a security certification.
 - [ ] Check what each method reports: "Encrypted and checked" with a typed or saved passphrase, and
       "Encrypted, not checked" with GnuPG's own prompt or a key. Turn the check off in the Tools menu, and on again.
 - [ ] Drag and drop files and folders onto the Encrypt and Restore screens.
+- [ ] In File Explorer, right-click a file, a folder, and a selection of several files, and choose
+      **Encrypt with mindyourownbytes**: once with the app closed and once with it open. Each time,
+      one window should show them all. On Windows 11, use **Show more options**.
 - [ ] Encrypt, upload manually, download, restore, and compare file hashes.
 - [ ] Restore on a second, clean computer, using only your backup of the passphrase or key.
 - [ ] Open a file and the vault using plain `gpg`, without this app.
