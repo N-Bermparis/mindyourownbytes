@@ -62,7 +62,7 @@ from mindyourownbytes.core import (
     process_items,
     stop_bundled_gnupg,
 )
-from mindyourownbytes.gui import handover, icons, theme
+from mindyourownbytes.gui import handover, icons, provider_view, theme
 from mindyourownbytes.gui.dialogs import PassphraseDialog, ProtectionDialog
 from mindyourownbytes.gui.library_page import LibraryPage
 from mindyourownbytes.gui.vault_page import VaultPage
@@ -361,6 +361,9 @@ class MainWindow(QMainWindow):
         self.update_gpg_status()
         self.refresh_keys()
         self.refresh_algorithms()
+        self.advanced_action.setChecked(self._initial_advanced())
+        self.advanced_action.toggled.connect(self._set_advanced)
+        self._apply_mode()
         self._show_early_version_notice()
         self.set_operation("encrypt")
         QGuiApplication.styleHints().colorSchemeChanged.connect(self._apply_theme)
@@ -647,6 +650,12 @@ class MainWindow(QMainWindow):
         algorithm_row.addWidget(self.algorithm_help, stretch=1)
         grid.addWidget(self.algorithm_label, 3, 0)
         grid.addLayout(algorithm_row, 3, 1)
+
+        self.more_options = label(
+            "<a href='#more'>More options</a>: OpenPGP keys, a choice of algorithm, and GnuPG's own passphrase "
+            "prompt.", "muted", wrap=True)
+        self.more_options.linkActivated.connect(lambda _link: self.advanced_action.setChecked(True))
+        grid.addWidget(self.more_options, 4, 0, 1, 2)
         return frame
 
     def _build_destination_card(self) -> QFrame:
@@ -679,6 +688,9 @@ class MainWindow(QMainWindow):
         grid.addWidget(self.collection_combo, 1, 1, 1, 2)
         self.privacy_note = label("", "muted", wrap=True)
         grid.addWidget(self.privacy_note, 2, 1, 1, 2)
+        self.provider_link = label("<a href='#provider'>See what your provider sees</a>", wrap=True)
+        self.provider_link.linkActivated.connect(lambda _link: self.show_provider_view())
+        grid.addWidget(self.provider_link, 3, 1, 1, 2)
         return frame
 
     def _build_menus(self) -> None:
@@ -699,6 +711,13 @@ class MainWindow(QMainWindow):
         tools_menu = bar.addMenu("&Tools")
         # Each switch below has a cost, which its tooltip states.
         tools_menu.setToolTipsVisible(True)
+        self.advanced_action = tools_menu.addAction("Show &advanced options")
+        self.advanced_action.setCheckable(True)
+        self.advanced_action.setToolTip(
+            "OpenPGP keys, a choice of algorithm, and the switches below. Without them, files get AES-256, "
+            "each one is checked, and this app asks for passphrases."
+        )
+        tools_menu.addSeparator()
         self.check_action = tools_menu.addAction("&Check each file after encrypting it")
         self.check_action.setCheckable(True)
         # On unless it was turned off here, so that a damaged setting can't quietly stop the checks.
@@ -738,6 +757,7 @@ class MainWindow(QMainWindow):
 
         help_menu = bar.addMenu("&Help")
         self._add_action(help_menu, "&What this protects", self.show_protection, "F1")
+        self._add_action(help_menu, "What your &provider sees", self.show_provider_view)
         self._add_action(help_menu, "&Report a problem", lambda: self._open_url(f"{REPOSITORY_URL}/issues"))
         help_menu.addSeparator()
         self._add_action(help_menu, "&About mindyourownbytes", self.show_about)
@@ -782,7 +802,7 @@ class MainWindow(QMainWindow):
         self.key_radio.setText(copy["key_title"])
         self.key_help.setText(copy["key_help"])
         self.privacy_note.setText(copy["save_note"])
-        for widget in (self.collection_label, self.collection_combo):
+        for widget in (self.collection_label, self.collection_combo, self.provider_link):
             widget.setVisible(is_encryption)
         self._refresh_collections()
         self._refresh_saved_combo()
@@ -804,6 +824,17 @@ class MainWindow(QMainWindow):
         self.pages.setCurrentWidget(self.vault_page)
         self.vault_nav.setChecked(True)
         self.vault_page.refresh()
+
+    def show_provider_view(self):
+        """Your own files, if there are some to encrypt, or examples."""
+        files = []
+        if self.operation == "encrypt" and self.items:
+            try:
+                collection = validate_collection_name(self.collection_combo.currentText())
+            except ValueError:
+                collection = ""
+            files = provider_view.from_items(self.items, collection)
+        provider_view.ProviderView(self, files).exec()
 
     def show_protection(self):
         ProtectionDialog(self).exec()
@@ -899,13 +930,46 @@ class MainWindow(QMainWindow):
     def _remember_method_choice(self):
         self._method_chosen_by_user = True
 
+    def advanced(self) -> bool:
+        """Whether keys, the algorithm, and GnuPG's own prompt are on offer. Simple mode uses safe defaults."""
+        return self.advanced_action.isChecked()
+
+    def _initial_advanced(self) -> bool:
+        """Simple mode, unless this person already relies on something only advanced mode offers.
+
+        Decided once, and then remembered, so that nothing they use disappears after an update.
+        """
+        saved = str(self.settings.value("advanced", "")).lower()
+        if saved in ("true", "false"):
+            return saved == "true"
+        relies = (any(key.has_secret for key in self._keys.values())
+                  or self.algorithm_combo.currentData() not in (None, DEFAULT_CIPHER)
+                  or self.pinentry_action.isChecked() or not self.check_action.isChecked()
+                  or not self.records_action.isChecked())
+        self.settings.setValue("advanced", "true" if relies else "false")
+        return relies
+
+    @Slot(bool)
+    def _set_advanced(self, enabled: bool):
+        self.settings.setValue("advanced", "true" if enabled else "false")
+        self._apply_mode()
+
+    def _apply_mode(self):
+        advanced = self.advanced()
+        for action in (self.check_action, self.pinentry_action, self.records_action):
+            action.setVisible(advanced)
+        if not advanced and self.operation == "encrypt" and self.key_radio.isChecked():
+            self.passphrase_radio.setChecked(True)
+        self._show_passphrase_help()
+        self._update_method()
+
     def method(self) -> str:
         """The current choice: "once", "pinentry", "saved", or "public-key"."""
         if self.saved_radio.isChecked():
             return "saved"
-        if self.key_radio.isChecked():
+        if self.key_radio.isChecked() and (self.advanced() or self.operation == "restore"):
             return "public-key" if self.operation == "encrypt" else "pinentry"
-        return "pinentry" if self.pinentry_action.isChecked() else "once"
+        return "pinentry" if self.pinentry_action.isChecked() and self.advanced() else "once"
 
     def set_method(self, method: str) -> None:
         if method == "saved":
@@ -928,7 +992,8 @@ class MainWindow(QMainWindow):
 
     def _show_passphrase_help(self):
         self.passphrase_help.setText(
-            "GnuPG will ask for the passphrase once for each file." if self.pinentry_action.isChecked()
+            "GnuPG will ask for the passphrase once for each file."
+            if self.pinentry_action.isChecked() and self.advanced()
             else COPY[self.operation]["passphrase_help"]
         )
 
@@ -978,20 +1043,27 @@ class MainWindow(QMainWindow):
             self.vault_button.setText("Add a passphrase")
         else:
             self.vault_button.setText("Unlock" if self.vault.exists else "Set up")
-        self.key_help.setVisible(not choosing_key)
-        self.key_combo.setVisible(choosing_key)
-        self.refresh_keys_button.setVisible(choosing_key)
+        # Restoring still offers a key when the files need one, which the list's first bytes decide.
+        show_key = self.advanced() or (self.operation == "restore" and key)
+        self.key_radio.setVisible(show_key)
+        self.key_help.setVisible(show_key and not choosing_key)
+        self.key_combo.setVisible(show_key and choosing_key)
+        self.refresh_keys_button.setVisible(show_key and choosing_key)
+        self.more_options.setVisible(not self.advanced() and self.operation == "encrypt")
         self._update_algorithm()
 
     def _update_algorithm(self):
         """Only passphrases have a choice: a key decides its own, and a restore reads it from the file."""
         for widget in (self.algorithm_label, self.algorithm_combo, self.algorithm_help):
-            widget.setVisible(self.operation == "encrypt")
+            widget.setVisible(self.operation == "encrypt" and self.advanced())
         by_key = self.key_radio.isChecked()
         self.algorithm_combo.setEnabled(not by_key and not self.running)
         self.algorithm_help.setText(CIPHER_SET_BY_KEY if by_key else CIPHER_HELP.get(self.chosen_cipher(), ""))
 
     def chosen_cipher(self) -> str:
+        """The algorithm new files get. Simple mode always uses the default, and keeps the choice for later."""
+        if not self.advanced():
+            return DEFAULT_CIPHER
         return str(self.algorithm_combo.currentData() or DEFAULT_CIPHER)
 
     def _remember_algorithm(self):
@@ -1379,7 +1451,8 @@ class MainWindow(QMainWindow):
         self._job_output = output
         cipher = self.chosen_cipher()
         self._job_algorithm = CIPHER_LABELS[cipher] if self.operation == "encrypt" and method == "password" else ""
-        verify = self.operation == "encrypt" and self.check_action.isChecked()
+        # Simple mode always checks: turning that off is an advanced choice.
+        verify = self.operation == "encrypt" and (self.check_action.isChecked() or not self.advanced())
         self._job_not_checked = NOT_CHECKED.get(selection, "") if verify else ""
         self._succeeded_rows: set[int] = set()
         self._findings = {}
@@ -1393,7 +1466,7 @@ class MainWindow(QMainWindow):
         self._thread = QThread(self)
         self.worker = BackupWorker(self.gpg, list(self.items), output, self.operation, method,
                                    fingerprint, passphrases, cipher, verify, ledger=self.ledger,
-                                   keep_records=self.records_action.isChecked(),
+                                   keep_records=self.records_action.isChecked() or not self.advanced(),
                                    records_root=self.current_output("encrypt"))
         self.worker.moveToThread(self._thread)
         self._thread.started.connect(self.worker.run)

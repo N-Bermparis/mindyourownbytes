@@ -2,21 +2,24 @@
 
 from __future__ import annotations
 
+from PySide6.QtCore import Signal
 from PySide6.QtWidgets import (
     QCheckBox,
+    QComboBox,
     QDialog,
     QDialogButtonBox,
     QFormLayout,
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QMessageBox,
     QPushButton,
     QVBoxLayout,
     QWidget,
 )
 
+from mindyourownbytes import generator
 from mindyourownbytes.core import encode_passphrase
-from mindyourownbytes.vault import generate_passphrase
 
 #: Below this, a typed passphrase gets a warning. Not a hard rule, because length
 #: alone says little, but it catches the most common mistake.
@@ -29,6 +32,57 @@ def _password_field() -> QLineEdit:
     field = QLineEdit()
     field.setEchoMode(QLineEdit.EchoMode.Password)
     return field
+
+
+class GeneratorRow(QWidget):
+    """Pick words or characters, generate, and say exactly how strong the result is.
+
+    The passphrase goes out as a signal. Keeping a callback into the dialog instead would tie the two
+    in a reference cycle, which Python frees whenever its collector happens to run, even on a worker
+    thread, where Qt must never destroy a window.
+    """
+
+    generated = Signal(str)
+
+    def __init__(self) -> None:
+        super().__init__()
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(4)
+        row = QHBoxLayout()
+        row.setSpacing(6)
+        row.addWidget(QLabel("Or let your computer pick one:"))
+        self.kind = QComboBox()
+        self.kind.setAccessibleName("Kind of passphrase to generate")
+        self.kind.addItem("Random words, easy to type", "words")
+        self.kind.addItem("Random letters and digits, strongest", "characters")
+        row.addWidget(self.kind, stretch=1)
+        self.button = QPushButton("Generate")
+        self.button.setToolTip("Uses your computer's secure random numbers")
+        self.button.clicked.connect(self.generate)
+        row.addWidget(self.button)
+        layout.addLayout(row)
+        self.strength = QLabel()
+        # Muted, not a warning: it's good news.
+        self.strength.setObjectName("muted")
+        self.strength.setWordWrap(True)
+        self.strength.hide()
+        layout.addWidget(self.strength)
+
+    def generate(self) -> None:
+        kind = self.kind.currentData()
+        try:
+            passphrase = generator.generate(kind)
+        except (OSError, RuntimeError) as exc:
+            QMessageBox.warning(self, "Couldn't generate a passphrase", str(exc))
+            return
+        self.strength.setText(generator.describe(kind))
+        self.strength.show()
+        self.generated.emit(passphrase)
+
+    def forget(self) -> None:
+        """The passphrase was changed by hand, so its strength is no longer known."""
+        self.strength.hide()
 
 
 class PassphraseDialog(QDialog):
@@ -67,6 +121,19 @@ class PassphraseDialog(QDialog):
         self.show_box.toggled.connect(self._toggle_echo)
         layout.addWidget(self.show_box)
 
+        #: The passphrase the generator filled in, while it's still what the fields hold.
+        self._generated = ""
+        self.generator: GeneratorRow | None = None
+        self.saved_box = QCheckBox("I've saved this passphrase somewhere safe, such as my Passphrases list or on paper")
+        self.saved_box.hide()
+        if confirm:
+            # Only when choosing a new passphrase. There's nothing to generate when entering one.
+            self.generator = GeneratorRow()
+            self.generator.generated.connect(self._use_generated)
+            layout.addWidget(self.generator)
+            self.saved_box.toggled.connect(self._validate)
+            layout.addWidget(self.saved_box)
+
         self.hint = QLabel()
         self.hint.setObjectName("hintLabel")
         self.hint.setWordWrap(True)
@@ -83,6 +150,14 @@ class PassphraseDialog(QDialog):
         self.second.textChanged.connect(self._validate)
         self._validate()
         self.first.setFocus()
+
+    def _use_generated(self, passphrase: str) -> None:
+        self._generated = passphrase
+        self.first.setText(passphrase)
+        self.second.setText(passphrase)
+        self.show_box.setChecked(True)
+        self.saved_box.setChecked(False)
+        self._validate()
 
     def _toggle_echo(self, visible: bool) -> None:
         mode = QLineEdit.EchoMode.Normal if visible else QLineEdit.EchoMode.Password
@@ -102,13 +177,22 @@ class PassphraseDialog(QDialog):
             return False, f"Use at least {self._min_length} characters."
         if self._confirm and value != self.second.text():
             return False, "Type the same passphrase in both boxes." if self.second.text() else ""
+        if self._is_generated() and not self.saved_box.isChecked():
+            return False, "Save it before you continue. Nobody can recover it for you, including this app."
         if value != value.strip():
             return True, "Note: this starts or ends with a space, which you will need to type every time."
         if self._confirm and len(value) < RECOMMENDED_LENGTH:
             return True, "This is short enough to be guessed. Five or more random words is far stronger."
         return True, ""
 
+    def _is_generated(self) -> bool:
+        return bool(self._generated) and self.first.text() == self._generated
+
     def _validate(self) -> None:
+        generated = self._is_generated()
+        self.saved_box.setVisible(generated)
+        if self.generator is not None and not generated:
+            self.generator.forget()
         acceptable, message = self._problem()
         self.buttons.button(QDialogButtonBox.StandardButton.Ok).setEnabled(acceptable)
         self.hint.setText(message)
@@ -136,16 +220,14 @@ class VaultEntryDialog(QDialog):
         self.label.setPlaceholderText("For example: Taxes, Medical, Work")
         form.addRow("Name", self.label)
 
-        row = QHBoxLayout()
-        row.setSpacing(6)
         self.passphrase_field = _password_field()
         self.passphrase_field.setAccessibleName("Passphrase")
-        row.addWidget(self.passphrase_field)
-        self.generate_button = QPushButton("Generate")
-        self.generate_button.setToolTip("Create a strong random passphrase (about 147 bits)")
-        self.generate_button.clicked.connect(self._generate)
-        row.addWidget(self.generate_button)
-        form.addRow("Passphrase", row)
+        form.addRow("Passphrase", self.passphrase_field)
+        self._generated = ""
+        self.generator = GeneratorRow()
+        self.generator.generated.connect(self._use_generated)
+        self.generate_button = self.generator.button
+        form.addRow("", self.generator)
 
         self.note = QLineEdit()
         self.note.setPlaceholderText("Optional. Stored inside the encrypted vault.")
@@ -169,11 +251,14 @@ class VaultEntryDialog(QDialog):
     def _toggle_echo(self, visible: bool) -> None:
         self.passphrase_field.setEchoMode(QLineEdit.EchoMode.Normal if visible else QLineEdit.EchoMode.Password)
 
-    def _generate(self) -> None:
-        self.passphrase_field.setText(generate_passphrase())
+    def _use_generated(self, passphrase: str) -> None:
+        self._generated = passphrase
+        self.passphrase_field.setText(passphrase)
         self.show_box.setChecked(True)
 
     def _validate(self) -> None:
+        if self.passphrase_field.text() != self._generated:
+            self.generator.forget()
         self.buttons.button(QDialogButtonBox.StandardButton.Save).setEnabled(
             bool(self.label.text().strip()) and bool(self.passphrase_field.text())
         )

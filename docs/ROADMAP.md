@@ -43,9 +43,11 @@ specific provider. Those are not missing features; they are the point.
 
 ## Quality and reach
 
+- [x] A simple mode for newcomers, with advanced options a switch away
 - [ ] Accessibility and full keyboard navigation
 - [ ] Translations
 - [ ] Move folder scanning off the UI thread for very large trees
+- [x] Show, with your own files, what a cloud provider can and can't see
 - [ ] Better detection of cloud-synced folders
 - [ ] Periodic restore-test reminders
 - [ ] Input fuzzing

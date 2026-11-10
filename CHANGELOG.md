@@ -10,18 +10,25 @@ First public version. Not independently audited.
 ### Added
 
 - A guided, plain-language desktop app using native controls, with the system's light or dark mode.
+- Simple and advanced modes. New installations start simple, with a passphrase or a saved one,
+  AES-256, and the check after encrypting. Tools > Show advanced options adds OpenPGP keys, the
+  algorithm, and GnuPG's own prompt. Anyone already using those starts in advanced mode.
 - Drag-and-drop encryption of files and folders to standard OpenPGP `.gpg` files.
 - **Encrypt with mindyourownbytes** in File Explorer's right-click menu, added by the installer for
   your account only. It adds the files to the list in the open window, and encrypts nothing by itself.
 - Passphrase encryption with a choice of AES-256 (the default), Twofish, or Camellia-256, and
   public-key encryption with Kleopatra/GnuPG keys, with each key's type shown in the list.
 - Type one passphrase for a whole batch, instead of one prompt per file.
+- Generate a passphrase wherever you choose one: seven random words from EFF's Long Wordlist, or 30
+  random letters and digits, with its exact strength stated in plain words.
 - Each file encrypted with a typed or saved passphrase is decrypted again and compared with its
   original before it's reported as done. A copy that fails is deleted, with the reason shown.
   It's on by default, and can be turned off in the Tools menu.
 - Encrypted vault for saved passphrases, with generation and auto-lock. Stored as a plain
   GnuPG file that opens without this application.
 - Library screen with collections, search, and moving files between collections.
+- "What your provider sees", which shows the same files as you see them and as your cloud provider
+  does, with lists of what it can and can't see.
 - Restore that selects how to unlock files, can try every saved passphrase, and retries only what failed.
 - A checksum of each encrypted file, saved on your computer, so that restoring flags a download that
   is an older version or a swapped file. Checksums can be saved as a `SHA256SUMS` list and imported

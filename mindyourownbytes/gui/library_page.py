@@ -29,6 +29,7 @@ from PySide6.QtWidgets import (
 from mindyourownbytes import records
 from mindyourownbytes.core import SourceItem
 from mindyourownbytes.gui import icons
+from mindyourownbytes.gui.provider_view import ProviderView, from_library
 from mindyourownbytes.gui.widgets import (
     EmptyState,
     FileIcons,
@@ -126,11 +127,13 @@ class LibraryPage(QWidget):
         frame_layout.addWidget(self.table)
         right.addWidget(frame, stretch=1)
 
-        right.addWidget(label(
+        self.privacy_line = label(
             "Your cloud provider can see file and collection names, so keep them vague. "
-            "Only the contents are encrypted.",
+            "Only the contents are encrypted. <a href='#provider'>See what your provider sees</a>",
             "muted", wrap=True,
-        ))
+        )
+        self.privacy_line.linkActivated.connect(lambda _link: self.show_provider_view())
+        right.addWidget(self.privacy_line)
 
         actions = QHBoxLayout()
         actions.setSpacing(8)
@@ -297,6 +300,11 @@ class LibraryPage(QWidget):
             "downloads against it on another computer, use Tools > Import checksums. Without this app, "
             "sha256sum --check reads it as it is.",
         )
+
+    def show_provider_view(self) -> None:
+        """The selected files, or every one shown, as you see them and as your provider does."""
+        chosen = self._selected_entries() or list(self.visible)
+        ProviderView(self, from_library(chosen)).exec()
 
     def open_folder(self) -> None:
         root = self._root()

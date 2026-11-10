@@ -51,7 +51,9 @@ can't read. This app makes that a drag and drop.
   compares it with your original. A copy that doesn't match is thrown away, and you're told why.
 - **Choose the algorithm** for passphrase encryption: AES-256 (recommended), Twofish, or Camellia-256.
 - **Save different passphrases** for different kinds of documents, in an optional vault
-  encrypted under one master passphrase. It can also generate strong ones.
+  encrypted under one master passphrase.
+- **Let your computer pick a passphrase**, wherever you choose one: seven random words that are
+  easy to type, or 30 random letters and digits. The app says exactly how strong it is.
 - **Organize into collections** such as Taxes or Medical, then browse, search, and move files
   in the Library. Collections are plain folders, so they work in Explorer and on any cloud too.
 - **Or use OpenPGP keys** you already manage in Kleopatra, with each key's type shown, including
@@ -63,6 +65,8 @@ can't read. This app makes that a drag and drop.
   iCloud, a NAS, or a USB stick. You upload the files yourself.
 - **Clear, guided steps** in plain language, using your system's own controls and its light or
   dark mode. Failed files can be retried with one click.
+- **Simple unless you ask for more.** New installations offer a passphrase or a saved one, with safe
+  settings. **Tools > Show advanced options** adds OpenPGP keys, a choice of algorithm, and more.
 
 | Library | Saved passphrases |
 | --- | --- |
@@ -146,8 +150,9 @@ been tested on macOS. Reports are very welcome.
    **Encrypt with mindyourownbytes**. On Windows 11, that's under **Show more options**. They're
    added to the list, and nothing is encrypted until you click **Encrypt**. For a lot of files at
    once, right-click their folder instead, because Windows can leave the entry out for a large selection.
-2. Choose how to protect them. *Passphrase* is the simplest. You can also pick an algorithm, but
-   AES-256 suits nearly everyone.
+2. Choose how to protect them. *Passphrase* is the simplest. For OpenPGP keys or a choice of
+   algorithm, click **More options**, or turn on **Tools > Show advanced options**. AES-256, which
+   simple mode always uses, suits nearly everyone.
 3. Optionally type a collection name, such as `Taxes`.
 4. Click **Encrypt**. Each file is encrypted, then decrypted again and compared with your original,
    and its row then says **Encrypted and checked**.
@@ -174,7 +179,11 @@ reads it. Keep that list somewhere your provider can't change, such as a USB sti
 | **Saved passphrase** | Different secrets for different documents | One master passphrase guards them all |
 | **OpenPGP key** | Existing Kleopatra users | You must back up your private key, and forged files aren't detected ([why](docs/THREAT_MODEL.md#tampering)) |
 
-Would you rather this app never saw your passphrase? Turn on **Tools > Let GnuPG ask for each
+**Simple mode**, which new installations start in, offers the first two. Anyone who already has a
+key of their own, or has changed an advanced setting, starts in advanced mode, so nothing they use
+disappears.
+
+Would you rather this app never saw your passphrase? In advanced mode, turn on **Tools > Let GnuPG ask for each
 passphrase**. You'll then be asked once for every file, so it's slower for folders, and the app
 can't check the new files.
 
@@ -252,7 +261,11 @@ a copy of your cloud data, as long as your passphrase is strong.
   two files that share a passphrase. The app flags both when restoring files it made on this
   computer, or whose checksums you imported, but can't tell for any other file.
 - **A compromised computer.** Malware can read whatever you can.
-- **A weak passphrase.** Use five or more random words, or the Generate button.
+- **A weak passphrase.** Use five or more random words, or let the app generate one. It can't
+  measure a passphrase you make up, so it only states the strength of ones it generates.
+
+To see it with your own files, open **Help > What your provider sees**, or the link on the Encrypt
+screen or in the Library. It shows the same files as you see them and as your provider does.
 
 The [threat model](docs/THREAT_MODEL.md) has the full picture, including the vault's trade-offs.
 
@@ -292,6 +305,9 @@ is going. Please follow the [Code of Conduct](CODE_OF_CONDUCT.md).
 
 [GNU General Public License v3.0 or later](LICENSE). Anyone who distributes a modified version
 must publish its source, so nobody can ship a closed copy of a privacy tool that can't be audited.
+
+Generated passphrases use [EFF's Long Wordlist](https://www.eff.org/dice), by the Electronic
+Frontier Foundation, under [Creative Commons Attribution](https://www.eff.org/copyright).
 
 Maintained by [Nikolaos Bermparis](https://github.com/N-Bermparis). Not affiliated with any cloud
 provider, or with the GnuPG project.

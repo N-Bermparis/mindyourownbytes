@@ -16,6 +16,8 @@ release pull request. Passing this list is not a security certification.
 
 ## Functional checks with real Pinentry, on Windows
 
+- [ ] On a fresh installation, check that the app starts in simple mode, and that More options switches to
+      advanced. Upgrade an installation that used a key, and check that it starts in advanced mode.
 - [ ] Encrypt and restore with each method: passphrase, GnuPG's own prompt (Tools menu), saved passphrase, key.
 - [ ] Encrypt and restore with each algorithm: AES-256, Twofish, Camellia-256.
 - [ ] Check what each method reports: "Encrypted and checked" with a typed or saved passphrase, and
@@ -31,8 +33,12 @@ release pull request. Passing this list is not a security certification.
 - [ ] Open a file and the vault using plain `gpg`, without this app.
 - [ ] Try a wrong passphrase, a missing key, a corrupt file, and Cancel.
 - [ ] Test spaces, Unicode, very long names, and name collisions.
+- [ ] Generate a passphrase of each kind when encrypting, in the vault, and for the master passphrase,
+      and check that encrypting waits until "I've saved this passphrase" is ticked.
 - [ ] Test from an ordinary, non-administrator account.
 - [ ] Check keyboard use, and that every screen and dialog is readable in light and dark Windows themes.
+- [ ] Open "What your provider sees" from Help, from the Encrypt screen with files listed, and from the
+      Library, and check that it shows those files both ways.
 
 ## Safety and packaging
 

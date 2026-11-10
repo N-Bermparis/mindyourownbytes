@@ -44,7 +44,8 @@ class SelfTestTests(unittest.TestCase):
                     "Twofish encrypts and restores", "Camellia-256 encrypts and restores",
                     "Checks each file after encrypting it", "The check refuses a damaged copy, keeping nothing",
                     "The check refuses a copy of something else, keeping nothing",
-                    "Recognizes a download as the file made here", "Notices a file under another name"}
+                    "Generates passphrases from the word list", "Recognizes a download as the file made here",
+                    "Notices a file under another name"}
         self.assertLessEqual(expected, names)
 
     def test_fails_without_gnupg(self):
