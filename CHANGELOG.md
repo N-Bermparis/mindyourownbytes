@@ -14,6 +14,8 @@ First public version. Not independently audited.
   AES-256, and the check after encrypting. Tools > Show advanced options adds OpenPGP keys, the
   algorithm, and GnuPG's own prompt. Anyone already using those starts in advanced mode.
 - Drag-and-drop encryption of files and folders to standard OpenPGP `.gpg` files.
+- Encrypt everything into one archive, an ordinary zip inside one `.zip.gpg` file, which hides the
+  names, folders, and number of the files inside. Restoring it gives the folder back.
 - **Encrypt with mindyourownbytes** in File Explorer's right-click menu, added by the installer for
   your account only. It adds the files to the list in the open window, and encrypts nothing by itself.
 - Passphrase encryption with a choice of AES-256 (the default), Twofish, or Camellia-256, and
@@ -33,6 +35,8 @@ First public version. Not independently audited.
 - "What your provider sees", which shows the same files as you see them and as your cloud provider
   does, with lists of what it can and can't see.
 - Restore that selects how to unlock files, can try every saved passphrase, and retries only what failed.
+  One batch can mix passphrase files and files for your key, and the Library restores everything shown,
+  such as a whole collection, keeping its folders.
 - Warnings before restoring into a synced folder, when originals already appear to be in
   one, and before encrypting to a key you can't decrypt with.
 - Real-GnuPG test suite, including forged, tampered, and truncated input.
@@ -60,7 +64,8 @@ These issues were found and fixed during the pre-release review, before any publ
 
 ### Known limitations
 
-- **File and folder names, and approximate sizes, are visible to your provider.**
+- **File and folder names, and approximate sizes, are visible to your provider**, unless you
+  encrypt them into one archive. An archive's own name and size still show.
 - Rollback and swapping of files aren't detected, and public-key files aren't signed.
 - Files encrypted to an OpenPGP key, or through GnuPG's own passphrase prompt, aren't checked after
   encrypting. Nothing checks that an upload reached your provider intact.

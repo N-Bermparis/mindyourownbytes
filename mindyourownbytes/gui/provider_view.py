@@ -22,7 +22,7 @@ from PySide6.QtWidgets import (
 
 from mindyourownbytes.core import SourceItem, output_relative
 from mindyourownbytes.gui import icons, theme
-from mindyourownbytes.gui.widgets import configure_table, human_size, label
+from mindyourownbytes.gui.widgets import configure_table, human_size, label, plural
 from mindyourownbytes.library import LibraryEntry
 
 #: How many of an encrypted file's bytes to show. Enough to see that they mean nothing.
@@ -73,6 +73,20 @@ CANNOT_SEE = (
     "Your passphrase or your private key, which never leave this computer",
     "Your saved passphrases, which are encrypted again under your master passphrase",
 )
+#: The same, when every file goes into one archive.
+ARCHIVE_CAN_SEE = (
+    "The archive's name, and its collection's",
+    "Roughly how big it is, in total",
+    "Which algorithm protects it, with a passphrase",
+    "When you upload or change it",
+    "With an OpenPGP key, which key it's for, by its ID",
+    "Your account, and the internet address you upload from",
+)
+ARCHIVE_CANNOT_SEE = (
+    "The names, folders, sizes, and number of the files inside",
+    "What's inside them",
+    "Your passphrase or your private key, which never leave this computer",
+)
 
 
 def from_items(items: Iterable[SourceItem], collection: str = "") -> list[Shown]:
@@ -115,10 +129,12 @@ def sample_bytes(path: Path | None) -> str:
 
 
 class ProviderView(QDialog):
-    def __init__(self, parent: QWidget | None, files: Sequence[Shown] = ()) -> None:
+    def __init__(self, parent: QWidget | None, files: Sequence[Shown] = (), archive: str = "") -> None:
+        """``archive`` is where the files will go as one archive, such as "Taxes/Paperwork.zip.gpg"."""
         super().__init__(parent)
         self.examples = not files
         self.files = list(files or EXAMPLES)
+        self.archive = archive
         self.setWindowTitle("What your provider sees")
         self.setMinimumSize(720, 520)
         layout = QVBoxLayout(self)
@@ -151,8 +167,9 @@ class ProviderView(QDialog):
 
         lists = QHBoxLayout()
         lists.setSpacing(24)
-        for title, lines, icon, color in (("Your provider can see", CAN_SEE, "alert", "warn"),
-                                          ("Your provider can't see", CANNOT_SEE, "encrypt", "ok")):
+        can_see, cannot_see = (ARCHIVE_CAN_SEE, ARCHIVE_CANNOT_SEE) if archive else (CAN_SEE, CANNOT_SEE)
+        for title, lines, icon, color in (("Your provider can see", can_see, "alert", "warn"),
+                                          ("Your provider can't see", cannot_see, "encrypt", "ok")):
             column = QVBoxLayout()
             column.setSpacing(4)
             column.addWidget(label(title, "stepTitle"))
@@ -161,8 +178,10 @@ class ProviderView(QDialog):
             column.addStretch(1)
             lists.addLayout(column, stretch=1)
         layout.addLayout(lists)
-        layout.addWidget(label("Names say a lot, so keep them vague. Encryption hides what's inside, not what "
-                               "a file is called.", wrap=True))
+        layout.addWidget(label(
+            "One archive hides the names inside, but its own name shows, so keep that vague." if archive
+            else "Names say a lot, so keep them vague. Encryption hides what's inside, not what a file is called.",
+            wrap=True))
 
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
         buttons.rejected.connect(self.reject)
@@ -190,6 +209,9 @@ class ProviderView(QDialog):
     def render(self) -> None:
         theirs = self.providers_view()
         visible, hidden = theme.color("warn"), theme.color("ok")
+        if theirs and self.archive:
+            self._render_archive(visible, hidden)
+            return
         self.table.setRowCount(len(self.files))
         for row, shown in enumerate(self.files):
             if theirs:
@@ -214,3 +236,23 @@ class ProviderView(QDialog):
         self.caption.setText(
             "Orange is what they can see. Green is what they can't." if theirs
             else "This is how they look on your computer, before they're encrypted or after they're restored.")
+
+    def _render_archive(self, visible, hidden) -> None:
+        """Your provider gets one file, whatever went into it."""
+        stored = PurePosixPath(self.archive)
+        folder = "" if str(stored.parent) == "." else str(stored.parent)
+        total = sum(shown.size for shown in self.files)
+        cells = (
+            (stored.name, visible, "Your provider can see this name."),
+            (folder or "—", visible, "Your provider can see this folder."),
+            (f"about {human_size(total)}", visible, "Your provider can see roughly how big it is, in total."),
+            (f"{plural(len(self.files))}, unreadable once encrypted", hidden,
+             "Encrypted: your provider can't see the names, folders, sizes, or number of the files inside."),
+        )
+        self.table.setRowCount(1)
+        for column, (text, color, tip) in enumerate(cells):
+            cell = QTableWidgetItem(text)
+            cell.setForeground(QBrush(color))
+            cell.setToolTip(tip)
+            self.table.setItem(0, column, cell)
+        self.caption.setText("One archive: your provider sees a single file. Switch views to see what's in it.")
