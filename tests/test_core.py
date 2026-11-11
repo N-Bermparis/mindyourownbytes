@@ -457,6 +457,22 @@ class ProcessItemsTests(TempDirCase):
         self.assertEqual((job.failed, len(progress)), (2, 2))
         self.assertEqual(len(job.leftovers), 2)
 
+    def test_a_restore_opens_files_for_a_key_with_the_key_and_the_rest_with_the_passphrase(self):
+        (self.source / "for-key.txt.gpg").write_bytes(b"\x85\x01\x0c rest of a public-key packet")
+        (self.source / "typed.txt.gpg").write_bytes(b"\x8c\x0d\x04\x09 rest of a passphrase packet")
+        seen = {}
+
+        def restoring(argv, cancel, secret=None):
+            seen[Path(argv[-1]).name] = (secret, argv[argv.index("--pinentry-mode") + 1])
+            Path(argv[argv.index("--output") + 1]).write_bytes(b"plain")
+            return 0, DECRYPTED_OK
+
+        items = [SourceItem(self.source / name, Path(name), 1) for name in ("for-key.txt.gpg", "typed.txt.gpg")]
+        job, _ = self.run_job(items, "restore", restoring, passphrases=["first", "second"])
+        self.assertEqual(job.succeeded, 2)
+        self.assertEqual(seen["for-key.txt.gpg"], (None, "ask"), "GnuPG asks for the key's passphrase itself")
+        self.assertEqual(seen["typed.txt.gpg"], (b"first", "loopback"))
+
     def test_rejects_invalid_requests(self):
         with self.assertRaisesRegex(ValueError, "exactly one"):
             self.run_job([self.item()], "encrypt", None, passphrases=["a", "b"])

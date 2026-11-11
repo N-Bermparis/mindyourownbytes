@@ -32,6 +32,8 @@ First public version. Not independently audited.
 - "What your provider sees", which shows the same files as you see them and as your cloud provider
   does, with lists of what it can and can't see.
 - Restore that selects how to unlock files, can try every saved passphrase, and retries only what failed.
+  One batch can mix passphrase files and files for your key, and the Library restores everything shown,
+  such as a whole collection, keeping its folders.
 - A checksum of each encrypted file, saved on your computer, so that restoring flags a download that
   is an older version or a swapped file. Checksums can be saved as a `SHA256SUMS` list and imported
   on another computer.
