@@ -64,6 +64,7 @@ first. `build_windows_exe.bat` does the first two steps for you.
 | `mindyourownbytes/eff_large_wordlist.txt` | EFF's word list, exactly as published. Never edit it |
 | `mindyourownbytes/vault.py` | The saved passphrase vault |
 | `mindyourownbytes/library.py` | Collections and the library scan |
+| `mindyourownbytes/recovery.py` | The steps for restoring on another computer |
 | `mindyourownbytes/gui/` | The PySide6 interface. No cryptography goes here |
 | `mindyourownbytes/styles.qss` | Only what native controls can't do. Colors live in `gui/theme.py` |
 | `mindyourownbytes/selftest.py` | The check that the built app runs on itself |

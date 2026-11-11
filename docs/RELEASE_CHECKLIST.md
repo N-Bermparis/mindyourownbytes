@@ -33,7 +33,8 @@ release pull request. Passing this list is not a security certification.
 - [ ] Encrypt, upload manually, download, restore, and compare file hashes. The row should say
       **matches your record**. Then restore a renamed copy, and check that it's flagged.
 - [ ] Save checksums in the Library, import them on a second computer, and restore there.
-- [ ] Restore on a second, clean computer, using only your backup of the passphrase or key.
+- [ ] Restore on a second, clean computer, using only your backup of the passphrase or key, by following
+      Help > Restore on another computer, once with the app and once with its plain GnuPG commands.
 - [ ] Open a file and the vault using plain `gpg`, without this app.
 - [ ] Try a wrong passphrase, a missing key, a corrupt file, and Cancel.
 - [ ] Restore one batch that mixes passphrase files with files for a key that has its own passphrase,
