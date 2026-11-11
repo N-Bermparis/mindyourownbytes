@@ -23,7 +23,7 @@ from pathlib import Path
 from PySide6 import __version__ as pyside_version
 from PySide6.QtCore import QSettings
 
-from mindyourownbytes import __version__, core, generator
+from mindyourownbytes import __version__, core, generator, records
 from mindyourownbytes.gui import icons
 from mindyourownbytes.gui.main_window import MainWindow, create_application
 from mindyourownbytes.vault import Vault, WrongMasterPassphrase, generate_passphrase
@@ -142,6 +142,23 @@ def _check_the_check(checks: _Checks, gpg: str, source: Path, scratch: Path) -> 
         shutil.copyfile(other.outputs[0], staged)
 
     checks.record(name, *_refuses(gpg, source, scratch / "swapped", swap))
+
+
+def _check_records(checks: _Checks, gpg: str, source: Path, scratch: Path) -> None:
+    """The record of what was made here, which tells a download apart from an older or swapped copy."""
+    folder = scratch / "records-encrypted"
+    first = _job(gpg, source, folder, "encrypt", "password", passphrases=(PASSPHRASE,))
+    if not checks.record("Encrypts a file to keep a record of", first.succeeded == 1):
+        return
+    ledger = records.Ledger(scratch / "records.jsonl")
+    ledger.add(records.records_for(first.outputs, folder))
+    made = first.outputs[0]
+    checks.record("Recognizes a download as the file made here",
+                  records.Ledger(ledger.path).check(made, records.sha256_of(made)).verdict == "match")
+    swapped = made.with_name("someone else's file.txt.gpg")
+    made.rename(swapped)
+    checks.record("Notices a file under another name",
+                  records.Ledger(ledger.path).check(swapped, records.sha256_of(swapped)).verdict == "renamed")
 
 
 def _check_archive_round_trip(checks: _Checks, gpg: str, scratch: Path) -> None:
@@ -273,6 +290,7 @@ def _check_gnupg(checks: _Checks, report: dict, source: Path, scratch: Path) -> 
 
     _check_passphrase_round_trip(checks, gpg, source, scratch)
     _check_the_check(checks, gpg, source, scratch)
+    _check_records(checks, gpg, source, scratch)
     _check_archive_round_trip(checks, gpg, scratch)
     _check_every_algorithm(checks, gpg, source, scratch)
     _check_key_round_trip(checks, gpg, source, scratch)
