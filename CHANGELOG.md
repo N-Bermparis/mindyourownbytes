@@ -34,6 +34,9 @@ First public version. Not independently audited.
 - Restore that selects how to unlock files, can try every saved passphrase, and retries only what failed.
   One batch can mix passphrase files and files for your key, and the Library restores everything shown,
   such as a whole collection, keeping its folders.
+- A checksum of each encrypted file, saved on your computer, so that restoring flags a download that
+  is an older version or a swapped file. Checksums can be saved as a `SHA256SUMS` list and imported
+  on another computer.
 - Warnings before restoring into a synced folder, when originals already appear to be in
   one, and before encrypting to a key you can't decrypt with.
 - Real-GnuPG test suite, including forged, tampered, and truncated input.
@@ -63,7 +66,8 @@ These issues were found and fixed during the pre-release review, before any publ
 
 - **File and folder names, and approximate sizes, are visible to your provider**, unless you
   encrypt them into one archive. An archive's own name and size still show.
-- Rollback and swapping of files aren't detected, and public-key files aren't signed.
+- Rollback and swapping of files are only flagged for files with a saved checksum, and public-key
+  files aren't signed.
 - Files encrypted to an OpenPGP key, or through GnuPG's own passphrase prompt, aren't checked after
   encrypting. Nothing checks that an upload reached your provider intact.
 - With `textmode` in `gpg.conf`, GnuPG changes line endings in what it encrypts. The check after

@@ -45,6 +45,6 @@ Findings about GnuPG itself should go to the
 ## Known limitations, not vulnerabilities
 
 The [threat model](docs/THREAT_MODEL.md) documents limits we already know about, including
-visible file names and sizes, undetected rollback and file swapping, forged files in
+visible file names and sizes, rollback and file swapping without a saved checksum, forged files in
 public-key mode, and secrets staying in memory while the vault is unlocked. Ideas for
 closing those gaps are very welcome as ordinary issues.
