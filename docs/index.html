@@ -1,0 +1,188 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<!-- Nothing on this page comes from anyone else: no fonts, scripts, or trackers. This holds it to that. -->
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src 'self'; style-src 'self'; script-src 'self'; base-uri 'none'; form-action 'none'">
+<meta name="referrer" content="no-referrer">
+<meta name="color-scheme" content="dark">
+<meta name="theme-color" content="#0a0a0a">
+<title>mindyourownbytes: encrypt your files before any cloud sees them</title>
+<meta name="description" content="A desktop app that encrypts your files on your own computer with GnuPG, so the cloud you upload them to keeps bytes it can't read. Standard OpenPGP files, no account, no telemetry.">
+<link rel="icon" href="assets/logo.png">
+<link rel="stylesheet" href="site.css">
+<script src="site.js" defer></script>
+</head>
+<body>
+<a class="skip" href="#why">Skip to the content</a>
+
+<header class="site-nav">
+  <nav class="nav-inner" aria-label="Sections">
+    <a class="brand" href="#top">mind your own bytes</a>
+    <div class="nav-links">
+      <a href="#why">Why</a>
+      <a href="#what">What it does</a>
+      <a href="#how">How it works</a>
+      <a href="#seen">What they see</a>
+      <a href="#limits">Limits</a>
+      <a href="#get">Get it</a>
+    </div>
+  </nav>
+</header>
+
+<main>
+  <section class="hero" id="top" aria-label="Introduction">
+    <div class="window" data-typewriter>
+      <div class="titlebar">
+        <span class="close" aria-hidden="true"></span>
+        <span class="title">A note before you upload</span>
+        <span class="stripes" aria-hidden="true"></span>
+        <span class="byline">mindyourownbytes</span>
+      </div>
+      <div class="pane typing-area">
+        <article class="motive">
+          <h1>Your files. Your keys. None of their business.</h1>
+          <p>Every big cloud can read what you keep there, because it holds the keys.</p>
+          <p>This app moves the keys back to you. It encrypts your files on your own computer, with GnuPG, before they go anywhere.</p>
+          <p>What leaves your computer is standard OpenPGP. It opens with plain gpg, with or without this app, on any system, years from now.</p>
+          <p>No account. No telemetry. No network connections.</p>
+        </article>
+      </div>
+    </div>
+    <div class="controls" hidden>
+      <button type="button" class="pill" data-action="pause" aria-pressed="false">Pause</button>
+      <button type="button" class="pill" data-action="finish">Show all</button>
+    </div>
+  </section>
+
+  <section id="why">
+    <h2>Why this exists</h2>
+    <p>Cloud storage is a trade. You get space, and your files everywhere. The provider holds the keys, so it can read what you upload, and the big providers' terms say they do: files are scanned for search, previews, and abuse.</p>
+    <p>Most of the time that's harmless. But anything a company can read can also be breached, subpoenaed, misused by someone on the inside, or fed into a product you never agreed to.</p>
+    <p>The oldest fix still works best. Encrypt on your own computer, before anything leaves it. Then the provider stores bytes it can't read, and the keys stay with you.</p>
+    <blockquote>
+      <p>“Privacy is necessary for an open society in the electronic age.”</p>
+      <cite>Eric Hughes, <a href="https://cypherpunks.to/">A Cypherpunk's Manifesto</a>, 1993</cite>
+    </blockquote>
+    <p>Strong encryption has been free for decades. <a href="https://gnupg.org/">GnuPG</a>, which does all of the cryptography in this app, has done it since 1999. What was missing was a way to use it without a command line, and without trading one company's lock-in for another's. This app is that way.</p>
+  </section>
+
+  <section id="what">
+    <h2>What it does</h2>
+    <ul class="marked">
+      <li><strong>Encrypts files and folders</strong> that you drag in, or right-click in File Explorer, into standard OpenPGP <code>.gpg</code> files. Your originals are never changed.</li>
+      <li><strong>Checks every file before calling it done.</strong> It decrypts each new copy again and compares it with your original, and throws away a copy that doesn't match.</li>
+      <li><strong>Hides names when you ask it to,</strong> by packing everything into one archive. Your provider sees one <code>.zip.gpg</code> file, and nothing of what's inside.</li>
+      <li><strong>Makes strong passphrases easy:</strong> seven random words, or 30 random letters and digits, with their strength stated exactly. An optional vault keeps them under one master passphrase.</li>
+      <li><strong>Works with your OpenPGP keys</strong> from Kleopatra, including post-quantum keys with GnuPG 2.5 or later.</li>
+      <li><strong>Restores carefully.</strong> Forged, damaged, and cut-short files are refused, with nothing written. Each download is compared with a checksum saved when it was made, and you're asked before an older or swapped copy is decrypted.</li>
+      <li><strong>Works with any storage,</strong> because it never connects to any: Google Drive, OneDrive, Dropbox, iCloud, a NAS, or a USB stick. You upload the files yourself.</li>
+    </ul>
+    <p>There's no account to make and nothing reporting back. The Windows download doesn't even contain its libraries' network code.</p>
+  </section>
+
+  <section id="how">
+    <h2>How it works</h2>
+    <ol class="steps">
+      <li>
+        <h3>Choose files</h3>
+        <p>Drag in files or folders, or right-click them in File Explorer and choose <em>Encrypt with mindyourownbytes</em>.</p>
+      </li>
+      <li>
+        <h3>Choose how to protect them</h3>
+        <p>Type one passphrase for the whole batch, use a saved one, or pick an OpenPGP key. The app can make a strong passphrase for you.</p>
+      </li>
+      <li>
+        <h3>Choose where to save them</h3>
+        <p>As separate files, or as one archive that hides their names. Each new file is decrypted again and checked before it's called done.</p>
+      </li>
+      <li>
+        <h3>Upload them yourself</h3>
+        <p>Copy the encrypted files to any cloud, drive, or stick. The app never touches the network.</p>
+      </li>
+    </ol>
+
+    <figure class="window shot">
+      <div class="titlebar">
+        <span class="close" aria-hidden="true"></span>
+        <span class="title">Encrypt files</span>
+        <span class="stripes" aria-hidden="true"></span>
+        <span class="byline">mindyourownbytes</span>
+      </div>
+      <img src="assets/screenshot-encrypt.png" width="1080" height="760" loading="lazy"
+           alt="The Encrypt screen: five files from a Taxes 2026 folder in a list, a passphrase chosen to protect them, and the Encrypted Exports folder chosen to save them in.">
+    </figure>
+
+    <p>To get files back, download the <code>.gpg</code> files and drop them on the Restore screen. The app works out how each one was protected, and asks first if a download isn't the copy you made.</p>
+
+    <h3 class="aside-title">Without this app</h3>
+    <p>Your files never depend on this project still existing. Plain GnuPG opens them on any system:</p>
+    <div class="window">
+      <div class="titlebar">
+        <span class="close" aria-hidden="true"></span>
+        <span class="title">Any computer, years from now</span>
+        <span class="stripes" aria-hidden="true"></span>
+        <span class="byline">gpg</span>
+      </div>
+      <pre class="pane"><span class="prompt" aria-hidden="true">$ </span>gpg --output report.pdf --decrypt report.pdf.gpg
+<span class="prompt" aria-hidden="true">$ </span>gpg --output Paperwork.zip --decrypt Paperwork.zip.gpg</pre>
+    </div>
+    <p>In the app, <em>Help &gt; Restore on another computer</em> walks through it on Windows, macOS, or Linux, and saves the steps as a text file to keep with your backups.</p>
+  </section>
+
+  <section id="seen">
+    <h2>What your provider sees</h2>
+    <div class="columns">
+      <div>
+        <h3>It can see</h3>
+        <ul class="marked">
+          <li>File and folder names, unless you use one archive</li>
+          <li>Roughly how big each file is</li>
+          <li>When you upload, and how many files</li>
+          <li>An archive's own name and total size</li>
+          <li>With an OpenPGP key, which key a file is for</li>
+        </ul>
+      </div>
+      <div>
+        <h3>It can't see</h3>
+        <ul class="marked">
+          <li>What's in any file</li>
+          <li>The names, folders, number, and sizes of the files in an archive</li>
+          <li>Your passphrases and private keys, which never leave your computer</li>
+        </ul>
+      </div>
+    </div>
+    <p>In the app, <em>Help &gt; What your provider sees</em> shows this with your own files.</p>
+  </section>
+
+  <section id="limits">
+    <h2>Honest limits</h2>
+    <ul class="marked">
+      <li><strong>It's an early version, not independently audited.</strong> Try it with unimportant files first, and keep other backups.</li>
+      <li><strong>Names show unless you use an archive.</strong> <code>divorce-settlement.pdf.gpg</code> says plenty on its own.</li>
+      <li><strong>Lose your passphrase or key, and nobody can recover your files.</strong> That's the point, and the risk. Keep a copy somewhere other than the cloud you're protecting against.</li>
+      <li><strong>It can't protect a computer that's already compromised,</strong> or files that already sit in a synced folder.</li>
+      <li><strong>The Windows download isn't code-signed yet,</strong> so Windows warns about it. Check its SHA-256 against the release page first.</li>
+    </ul>
+    <p>The <a href="https://github.com/N-Bermparis/mindyourownbytes/blob/main/docs/THREAT_MODEL.md">threat model</a> has the full picture.</p>
+  </section>
+
+  <section id="get">
+    <h2>Get it</h2>
+    <p>On Windows 10 and 11, the installer needs no administrator rights and includes GnuPG. If you already use Gpg4win, the app uses that instead, so your keys keep working. On Linux and macOS, run it from source.</p>
+    <p class="actions">
+      <a class="pill" href="https://github.com/N-Bermparis/mindyourownbytes/releases">Download for Windows</a>
+      <a class="pill" href="https://github.com/N-Bermparis/mindyourownbytes#run-from-source">Run from source</a>
+      <a class="pill" href="https://github.com/N-Bermparis/mindyourownbytes">Read the code</a>
+    </p>
+    <p>It's free software under the GPL, version 3 or later, so nobody can ship a closed copy of a privacy tool that can't be checked. The most useful help right now is <a href="https://github.com/N-Bermparis/mindyourownbytes/blob/main/docs/THREAT_MODEL.md">trying to break it</a>: an independent security review is what this release is asking for.</p>
+  </section>
+</main>
+
+<footer class="site-footer">
+  <p>Free software under GPL-3.0-or-later</p>
+  <p>This page loads nothing from anyone else</p>
+</footer>
+</body>
+</html>

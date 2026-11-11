@@ -71,6 +71,7 @@ first. `build_windows_exe.bat` does the first two steps for you.
 | `packaging/` | The Windows download: its recipes, and the script that tests the result |
 | `tests/` | One test file per module, plus real-GnuPG integration tests |
 | `docs/THREAT_MODEL.md` | What is and isn't protected. Keep this accurate |
+| `docs/index.html` | The project's website, with `site.css` and `site.js`. It loads nothing from anywhere else |
 
 ## Pull request checklist
 
