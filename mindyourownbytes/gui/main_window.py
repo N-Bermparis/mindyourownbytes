@@ -93,6 +93,13 @@ GPG4WIN_URL = "https://gpg4win.org/download.html"
 TRY_ALL_SAVED = "\0all"
 
 CIPHER_LABELS = {cipher.name: cipher.label for cipher in CIPHERS}
+#: Added to the passphrase's help when the Restore list mixes passphrase files with files for a key.
+MIXED_HELP = {
+    "one": " One of them is for your key, so it's opened with the key instead, and GnuPG asks for the key's "
+           "passphrase if it has one.",
+    "many": " {count} of them are for your key, so those are opened with the key instead, and GnuPG asks for "
+            "the key's passphrase if it has one.",
+}
 #: What to say beside each encryption algorithm, because the choice has a real cost.
 CIPHER_HELP = {
     "AES256": "The usual choice. Almost every OpenPGP tool can open it.",
@@ -311,6 +318,8 @@ class MainWindow(QMainWindow):
         self._job_state: str | None = None
         self._unfinished_items: list[SourceItem] = []
         self._method_chosen_by_user = False
+        #: How many files in the Restore list are encrypted to a key, as far as their first bytes say.
+        self._key_files = 0
         self._file_icons = FileIcons()
         self.vault = Vault(self.gpg, vault_path or default_vault_path())
 
@@ -973,21 +982,30 @@ class MainWindow(QMainWindow):
         self.settings.setValue("check_after_encrypting", "true" if enabled else "false")
 
     def _show_passphrase_help(self):
-        self.passphrase_help.setText(
-            "GnuPG will ask for the passphrase once for each file."
-            if self.pinentry_action.isChecked() and self.advanced()
-            else COPY[self.operation]["passphrase_help"]
-        )
+        text = ("GnuPG will ask for the passphrase once for each file."
+                if self.pinentry_action.isChecked() and self.advanced()
+                else COPY[self.operation]["passphrase_help"])
+        if self.operation == "restore" and self._key_files and len(self.items) > self._key_files:
+            text += (MIXED_HELP["one"] if self._key_files == 1
+                     else MIXED_HELP["many"].format(count=self._key_files))
+        self.passphrase_help.setText(text)
 
     def _choose_restore_method(self):
         """Open files the way they were protected, without asking the user to remember.
 
         Only ever a starting point: anything the user picked themselves stays picked.
         """
-        if self.operation != "restore" or self._method_chosen_by_user or not self.items:
+        if self.operation != "restore" or not self.items:
+            self._key_files = 0
             return
-        kinds = {peek_protection(item.source) for item in itertools.islice(self.items, 200)}
-        (self.key_radio if "key" in kinds else self.passphrase_radio).setChecked(True)
+        kinds = [peek_protection(item.source) for item in itertools.islice(self.items, 200)]
+        self._key_files = kinds.count("key")
+        self._show_passphrase_help()
+        if self._method_chosen_by_user:
+            return
+        # Only a list that's all for keys needs the key. In a mix, the passphrase opens the rest.
+        all_keys = bool(kinds) and self._key_files == len(kinds)
+        (self.key_radio if all_keys else self.passphrase_radio).setChecked(True)
         self._method_chosen_by_user = False
 
     def _refresh_collections(self):
@@ -1198,6 +1216,7 @@ class MainWindow(QMainWindow):
         self.items = [item for i, item in enumerate(self.items) if i not in rows]
         self._source_paths = []
         self._reset_job_state()
+        self._choose_restore_method()
         self.render_queue()
 
     def clear_files(self):
@@ -1502,7 +1521,7 @@ class MainWindow(QMainWindow):
 
     def _show_progress(self, done: int):
         text = self._words("working").format(done=min(done + 1, len(self.items)), total=len(self.items))
-        if self.method() == "pinentry":
+        if self.method() == "pinentry" or (self.operation == "restore" and self._key_files):
             text += " GnuPG may ask for a passphrase."
         self.status_text.setText(text)
 

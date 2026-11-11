@@ -190,6 +190,28 @@ class PinentryTests(GpgTestCase):
         self.assertEqual(restored.succeeded, 1, self.progress)
         self.assertEqual(self.dialogs(), 1, "restoring must still ask for the passphrase")
 
+    def test_one_batch_can_mix_passphrase_files_and_files_for_a_protected_key(self):
+        # Regression: the typed passphrase was also given to GnuPG for the key's file, as if it were the
+        # key's own passphrase, so that file failed unless the two happened to be the same.
+        fingerprint = self.generate_key("Protected <protected@example.invalid>", passphrase=PASSPHRASE)
+        for_key = process_items(self.gpg, [self.write("for-key.txt", b"opened with the key")],
+                                self.root / "exports", "encrypt", "public-key", fingerprint, threading.Event(),
+                                lambda *args: None).outputs[0]
+        typed = "a different passphrase, typed for the batch"
+        for_passphrase = process_items(self.gpg, [self.write("typed.txt", b"opened with the passphrase")],
+                                       self.root / "exports", "encrypt", "password", None, threading.Event(),
+                                       lambda *args: None, passphrases=[typed]).outputs[0]
+        self._stop_agent()  # Nothing remembered, as after a restart.
+        self.reset_dialog_count()
+        items = [SourceItem(path, Path(path.name), path.stat().st_size) for path in (for_key, for_passphrase)]
+        restored = process_items(self.gpg, items, self.root / "restored", "restore", "password", None,
+                                 threading.Event(), lambda *args: self.progress.append(args), passphrases=[typed])
+        self.assertEqual((restored.succeeded, restored.failed), (2, 0), self.progress)
+        self.assertEqual((self.root / "restored" / "for-key.txt").read_bytes(), b"opened with the key")
+        self.assertEqual((self.root / "restored" / "typed.txt").read_bytes(), b"opened with the passphrase")
+        self.assertEqual(self.dialogs(), 1, "GnuPG asked once, for the key's passphrase only")
+
+
     def test_an_archive_works_when_gnupg_asks_for_the_passphrase(self):
         # Nothing then goes ahead of the archive on GnuPG's input, so this is a different path.
         items = [self.write("a.txt", b"first"), self.write("b.txt", b"second")]
