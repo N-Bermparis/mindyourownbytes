@@ -32,5 +32,11 @@ PyInstaller {pyinstaller}, the launcher inside mindyourownbytes.exe
   licenses\PyInstaller.txt.
   Source code: https://github.com/pyinstaller/pyinstaller
 
+EFF's Long Wordlist, in "_internal\mindyourownbytes\eff_large_wordlist.txt"
+  The words that generated passphrases are made from, unmodified. By the Electronic
+  Frontier Foundation, from https://www.eff.org/dice
+  License: Creative Commons Attribution (CC BY), as https://www.eff.org/copyright
+  states for original material on EFF's website.
+
 Microsoft Visual C++ runtime, in the "_internal" folders
   Redistributed with Python and Qt, under Microsoft's terms for redistributable code.

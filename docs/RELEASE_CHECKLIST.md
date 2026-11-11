@@ -16,11 +16,15 @@ release pull request. Passing this list is not a security certification.
 
 ## Functional checks with real Pinentry, on Windows
 
+- [ ] On a fresh installation, check that the app starts in simple mode, and that More options switches to
+      advanced. Upgrade an installation that used a key, and check that it starts in advanced mode.
 - [ ] Encrypt and restore with each method: passphrase, GnuPG's own prompt (Tools menu), saved passphrase, key.
 - [ ] Encrypt and restore with each algorithm: AES-256, Twofish, Camellia-256.
 - [ ] Check what each method reports: "Encrypted and checked" with a typed or saved passphrase, and
       "Encrypted, not checked" with GnuPG's own prompt or a key. Turn the check off in the Tools menu, and on again.
 - [ ] Drag and drop files and folders onto the Encrypt and Restore screens.
+- [ ] Encrypt a folder into one archive, then restore it, and also decrypt it with plain `gpg` and open
+      the zip by double-clicking it in File Explorer.
 - [ ] In File Explorer, right-click a file, a folder, and a selection of several files, and choose
       **Encrypt with mindyourownbytes**: once with the app closed and once with it open. Each time,
       one window should show them all. On Windows 11, use **Show more options**.
@@ -31,8 +35,12 @@ release pull request. Passing this list is not a security certification.
 - [ ] Restore one batch that mixes passphrase files with files for a key that has its own passphrase,
       and restore a whole collection from the Library with nothing selected.
 - [ ] Test spaces, Unicode, very long names, and name collisions.
+- [ ] Generate a passphrase of each kind when encrypting, in the vault, and for the master passphrase,
+      and check that encrypting waits until "I've saved this passphrase" is ticked.
 - [ ] Test from an ordinary, non-administrator account.
 - [ ] Check keyboard use, and that every screen and dialog is readable in light and dark Windows themes.
+- [ ] Open "What your provider sees" from Help, from the Encrypt screen with files listed, and from the
+      Library, and check that it shows those files both ways.
 
 ## Safety and packaging
 

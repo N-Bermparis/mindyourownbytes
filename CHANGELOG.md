@@ -10,18 +10,27 @@ First public version. Not independently audited.
 ### Added
 
 - A guided, plain-language desktop app using native controls, with the system's light or dark mode.
+- Simple and advanced modes. New installations start simple, with a passphrase or a saved one,
+  AES-256, and the check after encrypting. Tools > Show advanced options adds OpenPGP keys, the
+  algorithm, and GnuPG's own prompt. Anyone already using those starts in advanced mode.
 - Drag-and-drop encryption of files and folders to standard OpenPGP `.gpg` files.
+- Encrypt everything into one archive, an ordinary zip inside one `.zip.gpg` file, which hides the
+  names, folders, and number of the files inside. Restoring it gives the folder back.
 - **Encrypt with mindyourownbytes** in File Explorer's right-click menu, added by the installer for
   your account only. It adds the files to the list in the open window, and encrypts nothing by itself.
 - Passphrase encryption with a choice of AES-256 (the default), Twofish, or Camellia-256, and
   public-key encryption with Kleopatra/GnuPG keys, with each key's type shown in the list.
 - Type one passphrase for a whole batch, instead of one prompt per file.
+- Generate a passphrase wherever you choose one: seven random words from EFF's Long Wordlist, or 30
+  random letters and digits, with its exact strength stated in plain words.
 - Each file encrypted with a typed or saved passphrase is decrypted again and compared with its
   original before it's reported as done. A copy that fails is deleted, with the reason shown.
   It's on by default, and can be turned off in the Tools menu.
 - Encrypted vault for saved passphrases, with generation and auto-lock. Stored as a plain
   GnuPG file that opens without this application.
 - Library screen with collections, search, and moving files between collections.
+- "What your provider sees", which shows the same files as you see them and as your cloud provider
+  does, with lists of what it can and can't see.
 - Restore that selects how to unlock files, can try every saved passphrase, and retries only what failed.
   One batch can mix passphrase files and files for your key, and the Library restores everything shown,
   such as a whole collection, keeping its folders.
@@ -52,7 +61,8 @@ These issues were found and fixed during the pre-release review, before any publ
 
 ### Known limitations
 
-- **File and folder names, and approximate sizes, are visible to your provider.**
+- **File and folder names, and approximate sizes, are visible to your provider**, unless you
+  encrypt them into one archive. An archive's own name and size still show.
 - Rollback and swapping of files aren't detected, and public-key files aren't signed.
 - Files encrypted to an OpenPGP key, or through GnuPG's own passphrase prompt, aren't checked after
   encrypting. Nothing checks that an upload reached your provider intact.

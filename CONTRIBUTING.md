@@ -58,6 +58,9 @@ first. `build_windows_exe.bat` does the first two steps for you.
 | Path | Purpose |
 | --- | --- |
 | `mindyourownbytes/core.py` | Finding GnuPG, expanding inputs, encrypting, restoring |
+| `mindyourownbytes/archive.py` | Packing files into one zip, and unpacking it safely |
+| `mindyourownbytes/generator.py` | Random passphrases, from words or characters |
+| `mindyourownbytes/eff_large_wordlist.txt` | EFF's word list, exactly as published. Never edit it |
 | `mindyourownbytes/vault.py` | The saved passphrase vault |
 | `mindyourownbytes/library.py` | Collections and the library scan |
 | `mindyourownbytes/gui/` | The PySide6 interface. No cryptography goes here |

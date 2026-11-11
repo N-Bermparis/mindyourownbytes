@@ -21,7 +21,9 @@ from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
 from functools import partial
 from pathlib import Path
-from typing import Literal, NamedTuple
+from typing import BinaryIO, Literal, NamedTuple
+
+from mindyourownbytes import archive
 
 Operation = Literal["encrypt", "restore"]
 Method = Literal["password", "public-key"]
@@ -82,9 +84,11 @@ def symmetric_args(cipher: str = DEFAULT_CIPHER) -> tuple[str, ...]:
 #: Hands gpg the passphrase over stdin, in place of asking through Pinentry.
 _PIPE_ARGS = ("--pinentry-mode", "loopback", "--passphrase-fd", "0")
 
-#: What ``on_progress`` says about a file that worked, and about one that was also checked.
+#: What ``on_progress`` says about a file that worked, about one that was also checked, and about an
+#: archive that was restored and unpacked into a folder.
 READY = "Ready"
 CHECKED = "Checked"
+UNPACKED = "Unpacked"
 
 #: How much of a file is in memory at a time while it is checked.
 _CHECK_CHUNK = 1024 * 1024
@@ -716,6 +720,56 @@ def run_gpg_hashed(argv: list[str], cancel: threading.Event, secret: bytes) -> t
                 pump.join(timeout=3)
 
 
+def run_gpg_feeding(argv: list[str], cancel: threading.Event, secret: bytes | None,
+                    feed: Callable[[BinaryIO], None]) -> tuple[int, str]:
+    """Run gpg on what ``feed`` writes to its stdin, after the passphrase line if there is one.
+
+    Returns (exit code, stderr). Whatever is fed never touches disk on the way in. If gpg stops
+    reading early, which it does when it fails, its own explanation is what's reported.
+    """
+    process = subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
+                               creationflags=windows_flags())
+    diagnostics = bytearray()
+
+    def keep_diagnostics() -> None:
+        with process.stderr:
+            diagnostics.extend(process.stderr.read())
+
+    reader = threading.Thread(target=keep_diagnostics, daemon=True)
+    reader.start()
+    try:
+        complete = False
+        try:
+            with process.stdin as stdin:
+                if secret is not None:
+                    stdin.write(secret + b"\n")
+                feed(stdin)
+            complete = True
+        except (archive.OutputClosed, OSError):
+            # gpg stopped reading. Its exit code and messages, below, say why.
+            if cancel.is_set():
+                raise Cancelled() from None
+        while process.poll() is None:
+            if cancel.is_set():
+                raise Cancelled()
+            with contextlib.suppress(subprocess.TimeoutExpired):
+                process.wait(timeout=0.25)
+        reader.join(timeout=10)
+        stderr = diagnostics.decode("utf-8", errors="replace")
+        if not complete and process.returncode == 0:
+            raise GpgFailure("GnuPG stopped reading before it had everything, so nothing was kept.")
+        return process.returncode, stderr
+    finally:
+        if process.poll() is None:
+            process.terminate()
+            try:
+                process.wait(timeout=3)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait()
+        reader.join(timeout=3)
+
+
 def _status_lines(stderr: str) -> list[list[str]]:
     return [line.split()[1:] for line in stderr.splitlines() if line.startswith("[GNUPG:] ")]
 
@@ -824,13 +878,12 @@ def _remove_staged(staged: Path, leftovers: list[Path]) -> None:
         leftovers.append(staged)
 
 
-def _file_state(path: Path) -> tuple[int, ...] | None:
-    """Enough to notice, cheaply, that a file was written to or replaced. None if it can't be found."""
-    try:
-        status = os.stat(path)
-    except OSError:
-        return None
-    return status.st_size, status.st_mtime_ns, status.st_ino, status.st_dev
+_file_state = archive.file_state
+
+
+def _stop_if_cancelled(cancel: threading.Event) -> None:
+    if cancel.is_set():
+        raise Cancelled()
 
 
 def _hash_file(path: Path, cancel: threading.Event) -> bytes:
@@ -908,6 +961,11 @@ def _process_one(binary: str, item: SourceItem, output_directory: Path, operatio
             state_before = _file_state(item.source) if checking else None
             code, stderr = run_gpg(command, cancel, secret)
             _check_success(operation, code, stderr, staged)
+            if operation == "restore" and target.suffix.lower() == archive.SUFFIX and archive.is_archive(staged):
+                # One of this app's archives: its files come out into a folder, and the zip is deleted below.
+                folder = unique_target(target.with_suffix(""))
+                archive.unpack(staged, folder, partial(_stop_if_cancelled, cancel), leftovers)
+                return folder, False
             if checking:
                 if cancel.is_set():
                     raise Cancelled()
@@ -994,5 +1052,118 @@ def process_items(
             outputs.append(target)
             succeeded += 1
             checked += was_checked
-            on_progress(index, True, CHECKED if was_checked else READY, target)
+            on_progress(index, True, CHECKED if was_checked else UNPACKED if target.is_dir() else READY, target)
     return JobResult(succeeded, failed, was_cancelled, tuple(outputs), tuple(leftovers), checked)
+
+
+def _check_archive(binary: str, staged: Path, packed: bytes, states: list[tuple[str, Path, tuple[int, ...] | None]],
+                   secret: bytes, cancel: threading.Event) -> None:
+    """Prove that a new archive decrypts to exactly the zip that was packed, from originals that held still.
+
+    Like the check for a single file, it needs exit code 0, DECRYPTION_OKAY, and the same SHA-256.
+    The originals aren't read a second time, which could take as long again for a large folder.
+    Instead, each one's size, time, and identity must be what they were just before it was packed.
+    """
+    command = [binary, *_BASE_ARGS, *_PIPE_ARGS, "--output", "-", "--decrypt", "--", str(staged)]
+    try:
+        code, stderr, decrypted = run_gpg_hashed(command, cancel, secret)
+    except OSError as exc:
+        raise GpgFailure("Check failed: GnuPG couldn't be run again to decrypt the new archive, so it wasn't "
+                         f"kept. The reason given was: {exc}") from exc
+    if code != 0:
+        raise GpgFailure("Check failed: GnuPG couldn't decrypt the archive it had just made, so it wasn't kept. "
+                         f"GnuPG said: {_last_diagnostic(stderr)}")
+    if "DECRYPTION_OKAY" not in {line[0] for line in _status_lines(stderr) if line}:
+        raise GpgFailure("Check failed: the archive GnuPG made isn't actually encrypted, so it wasn't kept.")
+    if decrypted != packed:
+        raise GpgFailure("Check failed: decrypting the new archive didn't give back what was packed, so it "
+                         "wasn't kept. Your originals haven't been touched. Try again.")
+    changed = [name for name, source, state in states if _file_state(source) != state]
+    if changed:
+        raise GpgFailure(f"The original changed: something wrote to {changed[0]} while the archive was being "
+                         "made, so no archive was kept. Try again when nothing is changing it.")
+
+
+def encrypt_archive(
+    binary: str, items: list[SourceItem], output_directory: Path, name: str,
+    method: Method, fingerprint: str | None, cancel: threading.Event,
+    on_progress: Callable[[int, bool, str, Path | None], None],
+    *, passphrases: Sequence[str] = (), cipher: str = DEFAULT_CIPHER, verify: bool = True,
+    on_packing: Callable[[int], None] | None = None, on_checking: Callable[[], None] | None = None,
+) -> JobResult:
+    """Encrypt every item into one archive, ``name``.zip.gpg, which hides their names and folders.
+
+    The zip is written straight into GnuPG, so no readable archive ever touches disk. All of it
+    succeeds or none of it does, so ``on_progress`` reports every item at the end, with the archive
+    as each one's output. ``on_packing`` hears as each item goes in. With a passphrase in hand and
+    ``verify``, the archive is decrypted again and checked before it gets its final name, as for
+    single files, and ``on_checking`` hears when that starts.
+
+    The archive's name, and roughly its size, are what whoever stores it can see.
+    """
+    if not is_valid_gpg(binary):
+        raise RuntimeError(
+            "The selected GnuPG executable is not available, or is older than "
+            f"{'.'.join(map(str, MIN_GPG_VERSION))}."
+        )
+    encryption = symmetric_args(cipher)  # Refuses an algorithm this app doesn't offer, before any work.
+    if method == "public-key":
+        if not fingerprint or not re.fullmatch(r"[0-9A-Fa-f]{40,64}", fingerprint):
+            raise ValueError("Select a valid OpenPGP recipient key.")
+        if passphrases:
+            raise ValueError("Public-key encryption does not use a passphrase.")
+        encryption = ("--encrypt", "--recipient", fingerprint)
+    if len(passphrases) > 1:
+        raise ValueError("Encryption uses exactly one passphrase.")
+    if not items:
+        raise ValueError("There's nothing to put in the archive.")
+    name = archive.check_name(name)
+    secret = encode_passphrase(passphrases[0]) if passphrases else None
+    checking = verify and method == "password" and secret is not None
+
+    target = unique_target(output_directory / f"{name}{archive.SUFFIX}.gpg")
+    target.parent.mkdir(parents=True, exist_ok=True)
+    staged = target.parent / f".myob-{uuid.uuid4().hex[:16]}.partial"
+    # The zip is compressed already, so GnuPG compressing it again would only take time.
+    command = [binary, *_BASE_ARGS, *(_PIPE_ARGS if secret is not None else ("--pinentry-mode", "ask")),
+               "--output", str(staged), *encryption, "--compress-algo", "none"]
+    files = list(zip((item.source for item in items),
+                     archive.member_names([item.relative.as_posix() for item in items]), strict=True))
+    current = [0]
+    packed: dict[str, object] = {}
+
+    def packing(index: int) -> None:
+        current[0] = index
+        if on_packing is not None:
+            on_packing(index)
+
+    def feed(stdin: BinaryIO) -> None:
+        packed["digest"], packed["states"] = archive.pack(files, stdin, partial(_stop_if_cancelled, cancel), packing)
+
+    leftovers: list[Path] = []
+    problem: Exception | None = None
+    try:
+        code, stderr = run_gpg_feeding(command, cancel, secret, feed)
+        _check_success("encrypt", code, stderr, staged)
+        if checking:
+            _stop_if_cancelled(cancel)
+            if on_checking is not None:
+                on_checking()
+            # Still under its temporary name, so an archive that fails never gets its final one.
+            _check_archive(binary, staged, packed["digest"], packed["states"], secret, cancel)
+        publish_no_overwrite(staged, target)
+    except Exception as exc:  # Including Cancelled. Reported below, once the temporary file is gone.
+        problem = exc
+    finally:
+        _remove_staged(staged, leftovers)
+    if isinstance(problem, Cancelled):
+        on_progress(current[0], False, "Cancelled", None)
+        return JobResult(0, 0, True, (), tuple(leftovers))
+    if problem is not None:
+        # Every item failed with the archive, so each row says why.
+        for index in range(len(items)):
+            on_progress(index, False, str(problem), None)
+        return JobResult(0, len(items), False, (), tuple(leftovers))
+    for index in range(len(items)):
+        on_progress(index, True, CHECKED if checking else READY, target)
+    return JobResult(len(items), 0, False, (target,), tuple(leftovers), len(items) if checking else 0)

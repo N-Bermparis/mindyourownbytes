@@ -5,3 +5,5 @@
 *.gif binary
 *.ico binary
 *.zip binary
+# Kept byte for byte as EFF publishes it, because the app checks its SHA-256.
+mindyourownbytes/eff_large_wordlist.txt -text
