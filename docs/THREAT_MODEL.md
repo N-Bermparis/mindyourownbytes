@@ -219,12 +219,18 @@ mode is not affected, because creating a valid file requires the passphrase. Sig
 is on the roadmap.
 
 **Checksums kept on your computer.** Each file the app encrypts gets its SHA-256 written to
-`records.jsonl`, beside the vault, which your provider can't reach. Before restoring a file, the
-app hashes the download and looks it up. Its row then says whether it **matches your record**, or
-is **an older copy** (a newer file of that name was made later), was **renamed or swapped** (its
-contents were saved under another name), or is **not the copy you made** (its name is known, and
-its contents aren't). A doubtful file is still restored, because it decrypted correctly, but the
-row and the result say so in a warning. Numbers that browsers and this app add to a taken name,
+`records.jsonl`, beside the vault, which your provider can't reach. Before anything is decrypted,
+the app hashes every download and looks it up. Its row then says whether it **matches your
+record**, or is **an older copy** (a newer file was made later in the same place), was **renamed
+or swapped** (its contents were saved under another name, or in another collection), or is **not
+the copy you made** (its name is known, and its contents aren't). If any download is doubtful, the
+app asks before decrypting it: restore it anyway, or leave it out and restore the rest. Leaving it
+out is the default, and a file left out is never decrypted.
+
+A name alone can't tell apart two files called `report.pdf.gpg` in different collections. So a
+download in a folder named like a collection that has a file of its name has to be that file, and
+a match anywhere else names the file it matched, such as `Medical/report.pdf.gpg`, whenever more
+than one file made here has that name. Numbers that browsers and this app add to a taken name,
 such as "report (1).pdf.gpg", are ignored when names are compared.
 
 The Library's **Save checksums** writes a plain `SHA256SUMS` file, which `sha256sum --check`
@@ -238,8 +244,8 @@ Its limits:
   turned off restore without a verdict, as before.
 - **The record can be lost or changed** by anything that can write to your user profile, which
   could already do far more. Losing it means losing the verdicts, not your files.
-- **It only knows what it was told.** A rollback is flagged when a newer file of the same name was
-  recorded later. A file replaced under a new name, of content never recorded, is just unknown.
+- **It only knows what it was told.** A rollback is flagged when a newer file was recorded later in
+  the same place. A file replaced under a new name, of content never recorded, is just unknown.
 - **The names are kept here too.** They're visible to your provider anyway, but the record keeps
   them on your computer. Tools can turn the record off, and forget it.
 

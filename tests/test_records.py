@@ -84,6 +84,41 @@ class CheckTests(LedgerCase):
         self.assertEqual(changed.verdict, "changed")
         self.assertIn("isn't the report.pdf.gpg made here", changed.message)
 
+    def test_a_file_from_another_collection_is_not_called_a_match(self):
+        # Regression: two collections each had a report.pdf.gpg. The Medical one, handed back in place of
+        # the Taxes one, matched by name and checksum, so it was called a match.
+        self.made("report.pdf.gpg", b"taxes", path="Taxes/report.pdf.gpg")
+        self.made("report.pdf.gpg", b"medical", path="Medical/report.pdf.gpg")
+        swapped = self.check("Taxes/report.pdf.gpg", b"medical")
+        self.assertEqual(swapped.verdict, "renamed")
+        self.assertIn("saved as Medical/report.pdf.gpg", swapped.message)
+        for name, content in (("Taxes/report.pdf.gpg", b"taxes"), ("Medical/report.pdf.gpg", b"medical"),
+                              ("Taxes (1)/report (1).pdf.gpg", b"taxes")):
+            with self.subTest(name):
+                self.assertEqual((self.check(name, content).verdict, self.check(name, content).where), ("match", ""))
+        changed = self.check("Taxes/report.pdf.gpg", b"something else")
+        self.assertEqual(changed.verdict, "changed")
+        self.assertIn("isn't the Taxes/report.pdf.gpg made here", changed.message)
+
+    def test_with_no_collection_to_go_by_a_match_says_which_file_it_is(self):
+        self.made("report.pdf.gpg", b"taxes", path="Taxes/report.pdf.gpg")
+        self.made("report.pdf.gpg", b"medical", path="Medical/report.pdf.gpg")
+        finding = self.check("report.pdf.gpg", b"medical")
+        self.assertEqual((finding.verdict, finding.where), ("match", "Medical/report.pdf.gpg"))
+        self.assertIn("Matches Medical/report.pdf.gpg, made here on 2026-11-01", finding.message)
+        self.assertIn("Taxes/report.pdf.gpg is a different file with the same name", finding.message)
+        self.assertEqual(self.check("report.pdf.gpg", b"taxes").where, "Taxes/report.pdf.gpg")
+
+    def test_a_newer_file_in_another_collection_is_not_a_newer_version(self):
+        # Regression: a later Medical/report.pdf.gpg made the Taxes one look like an older copy.
+        self.made("report.pdf.gpg", b"taxes", EARLIER, path="Taxes/report.pdf.gpg")
+        self.made("report.pdf.gpg", b"medical", LATER, path="Medical/report.pdf.gpg")
+        self.assertEqual(self.check("Taxes/report.pdf.gpg", b"taxes").verdict, "match")
+        self.made("report.pdf.gpg", b"taxes, again", LATER, path="Taxes/report.pdf.gpg")
+        older = self.check("Taxes/report.pdf.gpg", b"taxes")
+        self.assertEqual(older.verdict, "older")
+        self.assertIn("A newer Taxes/report.pdf.gpg was made", older.message)
+
     def test_a_file_never_recorded_is_simply_unknown(self):
         self.made("report.pdf.gpg", b"v1")
         finding = self.check("holiday.jpg.gpg", b"photo")

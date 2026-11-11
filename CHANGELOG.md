@@ -39,8 +39,8 @@ First public version. Not independently audited.
   One batch can mix passphrase files and files for your key, and the Library restores everything shown,
   such as a whole collection, keeping its folders.
 - A checksum of each encrypted file, saved on your computer, so that restoring flags a download that
-  is an older version or a swapped file. Checksums can be saved as a `SHA256SUMS` list and imported
-  on another computer.
+  is an older version or a swapped file, even between collections, and asks before decrypting it.
+  Checksums can be saved as a `SHA256SUMS` list and imported on another computer.
 - A step-by-step guide to restoring on another computer, under Help, for Windows, macOS, or Linux,
   with or without this app. It can be saved as a text file to keep beside your backups.
 - Warnings before restoring into a synced folder, when originals already appear to be in
