@@ -14,6 +14,7 @@ import threading
 import unittest
 from pathlib import Path
 
+from mindyourownbytes import recovery
 from mindyourownbytes.core import SourceItem, encrypt_archive, process_items
 from tests.support import GpgTestCase
 
@@ -189,6 +190,30 @@ class PinentryTests(GpgTestCase):
         restored = self.job([item], "restored", "restore")
         self.assertEqual(restored.succeeded, 1, self.progress)
         self.assertEqual(self.dialogs(), 1, "restoring must still ask for the passphrase")
+
+    def test_the_recovery_guides_commands_really_restore_everything(self):
+        # Exactly as the guide prints them, with GnuPG asking for the passphrase as it would for a person.
+        folder = self.root / "Downloads"
+        (folder / "Taxes").mkdir(parents=True)
+        made = {"Taxes/return.pdf": b"return", "notes.txt": b"notes"}
+        for relative, content in made.items():
+            original = self.root / "originals" / relative
+            original.parent.mkdir(parents=True, exist_ok=True)
+            original.write_bytes(content)
+            encrypted = process_items(self.gpg, [SourceItem(original, Path(original.name), len(content))],
+                                      (folder / relative).parent, "encrypt", "password", None, threading.Event(),
+                                      lambda *args: None, passphrases=[PASSPHRASE])
+            self.assertEqual(encrypted.succeeded, 1)
+        windows = os.name == "nt"
+        command = recovery.steps("windows" if windows else "linux")[3].commands[1]
+        shell = (["powershell", "-NoProfile", "-NonInteractive", "-Command", command] if windows
+                 else ["sh", "-c", command])
+        environment = {**os.environ, "PATH": f"{Path(self.gpg).parent}{os.pathsep}{os.environ.get('PATH', '')}"}
+        result = subprocess.run(shell, cwd=folder, env=environment, capture_output=True, timeout=120, check=False)
+        self.assertEqual(result.returncode, 0, result.stderr[-500:])
+        for relative, content in made.items():
+            self.assertEqual((folder / relative).read_bytes(), content, relative)
+        self.assertEqual(self.dialogs(), 2, "GnuPG asked once for each file")
 
     def test_one_batch_can_mix_passphrase_files_and_files_for_a_protected_key(self):
         # Regression: the typed passphrase was also given to GnuPG for the key's file, as if it were the

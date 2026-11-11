@@ -68,6 +68,7 @@ from mindyourownbytes.core import (
 from mindyourownbytes.gui import handover, icons, provider_view, theme
 from mindyourownbytes.gui.dialogs import PassphraseDialog, ProtectionDialog
 from mindyourownbytes.gui.library_page import LibraryPage
+from mindyourownbytes.gui.recovery_guide import RecoveryGuide
 from mindyourownbytes.gui.vault_page import VaultPage
 from mindyourownbytes.gui.widgets import (
     EmptyState,
@@ -846,6 +847,7 @@ class MainWindow(QMainWindow):
 
         help_menu = bar.addMenu("&Help")
         self._add_action(help_menu, "&What this protects", self.show_protection, "F1")
+        self._add_action(help_menu, "Restore on another &computer…", lambda: RecoveryGuide(self).exec())
         self._add_action(help_menu, "What your &provider sees", self.show_provider_view)
         self._add_action(help_menu, "&Report a problem", lambda: self._open_url(f"{REPOSITORY_URL}/issues"))
         help_menu.addSeparator()

@@ -533,6 +533,86 @@ class TransferFlowTests(GuiCase):
         self.assertIn("locked", self.message_boxes["warning"].call_args.args[2])
 
 
+@unittest.skipUnless(HAS_QT, "PySide6 is not installed")
+class RecoveryGuideTests(unittest.TestCase):
+    def setUp(self):
+        app()
+        from shiboken6 import delete
+
+        from mindyourownbytes.gui.recovery_guide import RecoveryGuide
+        self.guide = RecoveryGuide(None)
+        # Destroyed now, while Qt is running: left for Python's exit, it crashed the test process.
+        self.addCleanup(delete, self.guide)
+        self.addCleanup(self.guide.close)
+        temp = tempfile.TemporaryDirectory(prefix="myobtest")
+        self.addCleanup(temp.cleanup)
+        self.folder = Path(temp.name)
+
+    def page_text(self) -> str:
+        page = self.guide.pages.currentWidget()
+        from PySide6.QtWidgets import QLineEdit
+        return " ".join([child.text() for child in page.findChildren(QLabel)]
+                        + [child.text() for child in page.findChildren(QLineEdit)])
+
+    def test_starts_on_this_computers_system_and_steps_through(self):
+        self.assertEqual(self.guide.chosen(), "windows" if sys.platform == "win32" else self.guide.chosen())
+        self.assertEqual(self.guide.position.text(), "Step 1 of 5")
+        self.assertFalse(self.guide.back_button.isEnabled())
+        for expected in range(2, 6):
+            self.guide.next_button.click()
+            self.assertEqual(self.guide.position.text(), f"Step {expected} of 5")
+        self.assertEqual(self.guide.next_button.text(), "Done")
+        self.guide.back_button.click()
+        self.assertEqual(self.guide.position.text(), "Step 4 of 5")
+        self.assertEqual(self.guide.next_button.text(), "Next")
+
+    def test_choosing_another_system_changes_the_commands_but_not_the_step(self):
+        for _ in range(3):
+            self.guide.next_button.click()
+        self.guide.platform.setCurrentIndex(self.guide.platform.findData("windows"))
+        self.assertIn("Get-ChildItem", self.page_text())
+        self.guide.platform.setCurrentIndex(self.guide.platform.findData("linux"))
+        self.assertEqual(self.guide.position.text(), "Step 4 of 5")
+        self.assertIn("find . -name", self.page_text())
+        self.assertNotIn("Get-ChildItem", self.page_text())
+
+    def test_copy_puts_the_command_on_the_clipboard(self):
+        from PySide6.QtWidgets import QPushButton
+        for _ in range(3):
+            self.guide.next_button.click()
+        copy = next(button for button in self.guide.pages.currentWidget().findChildren(QPushButton)
+                    if button.text() == "Copy")
+        self.addCleanup(QApplication.clipboard().clear)
+        copy.click()
+        if QApplication.clipboard().text() == "":
+            self.skipTest("this platform has no clipboard to test against")
+        self.assertEqual(QApplication.clipboard().text(), "gpg --output report.pdf --decrypt report.pdf.gpg")
+
+    def test_saves_every_step_as_text_with_the_systems_line_endings(self):
+        from mindyourownbytes import recovery
+        from mindyourownbytes.gui import recovery_guide
+        for platform, ending in (("windows", b"\r\n"), ("linux", b"\n")):
+            with self.subTest(platform):
+                self.guide.platform.setCurrentIndex(self.guide.platform.findData(platform))
+                target = self.folder / f"{platform}.txt"
+                with patch.object(recovery_guide.QFileDialog, "getSaveFileName", return_value=(str(target), "")), \
+                        patch.object(QMessageBox, "information") as told:
+                    self.guide.save()
+                data = target.read_bytes()
+                self.assertEqual(data.decode("utf-8").replace("\r\n", "\n"), recovery.as_text(platform))
+                self.assertIn(ending, data)
+                if ending == b"\n":
+                    self.assertNotIn(b"\r\n", data)
+                self.assertIn("no secrets", told.call_args.args[2])
+
+    def test_the_help_menu_opens_it(self):
+        settings_folder = Path(tempfile.mkdtemp(prefix="myobtest"))
+        window = MainWindow(isolated_settings(settings_folder), settings_folder / "vault.gpg")
+        self.addCleanup(window.close)
+        titles = [action.text().replace("&", "") for action in window.findChildren(QAction)]
+        self.assertIn("Restore on another computer…", titles)
+
+
 class DownloadCheckTests(GuiCase):
     """Restoring checks each download against the checksums saved here when it was made."""
 
