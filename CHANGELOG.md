@@ -61,6 +61,10 @@ These issues were found and fixed during the pre-release review, before any publ
 - Revoked and expired keys were offered as encryption targets.
 - Keys without a local private key looked the same as your own, risking files you couldn't restore.
 - Scrolling the page with the pointer over a dropdown could quietly pick a different key or saved passphrase.
+- With `textmode` in `gpg.conf`, GnuPG changed line endings in what it encrypted. The check after
+  encrypting refused such files, but files for a key, which aren't checked, came back different,
+  and archives for a key came back damaged, without a warning. Every GnuPG call now turns
+  `textmode` off.
 
 ### Changed
 
@@ -75,8 +79,6 @@ These issues were found and fixed during the pre-release review, before any publ
   files aren't signed.
 - Files encrypted to an OpenPGP key, or through GnuPG's own passphrase prompt, aren't checked after
   encrypting. Nothing checks that an upload reached your provider intact.
-- With `textmode` in `gpg.conf`, GnuPG changes line endings in what it encrypts. The check after
-  encrypting refuses such files, but files that aren't checked are affected without any warning.
 - Hands-on testing with real Pinentry dialogs on a wider range of systems is still needed.
 - The Windows download isn't code-signed yet, so Windows warns about it, and Smart App Control
   blocks it. Its builds aren't reproducible yet either.

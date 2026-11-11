@@ -632,17 +632,26 @@ class CheckAfterEncryptingTests(IntegrationCase):
         self.assertEqual(holding_content, [])
         self.assertEqual(list(self.root.rglob("*.partial")), [])
 
-    def test_a_gnupg_setting_that_changes_line_endings_is_caught(self):
-        # With "textmode" in gpg.conf, GnuPG encrypts and decrypts without complaint, but the file
-        # that comes back differs: a real way to get a copy that isn't the original.
+    def test_textmode_in_gpg_conf_changes_nothing(self):
+        # Regression: with "textmode" in gpg.conf, GnuPG encrypted and decrypted without complaint, but
+        # the file that came back had different line endings. The check refused those copies, but files
+        # it can't check, such as those for a key, were changed without a word.
         (self.home / "gpg.conf").write_text("textmode\n", encoding="utf-8")
-        content = b"one\ntwo\r\nthree\n"
+        content = b"one\ntwo\r\nthree\n\x00\xff binary\r"
         source = self.write("notes.txt", content)
-        result = self.encrypt_job(source)
-        self.assert_refused(result, "exports", "didn't give back the original")
+        checked = self.encrypt_job(source)
+        self.assertEqual((checked.succeeded, checked.checked), (1, 1), self.progress)
         unchecked = self.encrypt_job(source, "unchecked", verify=False)
-        restored = self.job([self.item(unchecked.outputs[0])], "restored", "restore", passphrases=[PASSPHRASE])
-        self.assertNotEqual(restored.outputs[0].read_bytes(), content, "the check was right to refuse it")
+        fingerprint = self.generate_key()
+        for_key = self.job([self.item(source)], "for-key", "encrypt", "public-key", fingerprint)
+        self.assertEqual(for_key.succeeded, 1, self.progress)
+        for made, method, options in ((checked.outputs[0], "password", {"passphrases": [PASSPHRASE]}),
+                                      (unchecked.outputs[0], "password", {"passphrases": [PASSPHRASE]}),
+                                      (for_key.outputs[0], "public-key", {})):
+            with self.subTest(made.parent.name):
+                restored = self.job([self.item(made)], f"restored-{made.parent.name}", "restore", method,
+                                    **options)
+                self.assertEqual(restored.outputs[0].read_bytes(), content, self.progress)
 
     def test_a_newer_file_format_passes_the_check(self):
         # OCB files have no separate integrity status, so the check must not wait for one.
@@ -688,6 +697,20 @@ class ArchiveTests(IntegrationCase):
         self.assertEqual((result.succeeded, result.outputs, result.checked), (0, (), 0), self.progress)
         left = list((self.root / out).rglob("*")) if (self.root / out).exists() else []
         self.assertEqual(left, [], "a failed archive must leave nothing behind")
+
+    def test_textmode_in_gpg_conf_leaves_an_archive_for_a_key_whole(self):
+        # Regression: GnuPG stored the zip as text. Wherever the zip held a CR LF pair, which random
+        # data does by chance, the archive came back damaged, and one for a key is never checked.
+        (self.home / "gpg.conf").write_text("textmode\n", encoding="utf-8")
+        fingerprint = self.generate_key()
+        scan = random.Random(7).randbytes(1_000_000)
+        self.write("Taxes 2026/scan.bin", scan)
+        made = self.pack([self.folder()], method="public-key", fingerprint=fingerprint)
+        self.assertEqual((made.succeeded, made.failed, made.checked), (4, 0, 0), self.progress)
+        self.assertIn("mode b", self.packets(made.outputs[0]), "stored as binary, whatever gpg.conf says")
+        restored = self.restore(made.outputs[0], method="public-key", passphrases=[])
+        self.assertEqual(restored.succeeded, 1, self.progress)
+        self.assertEqual(self.contents(restored.outputs[0] / "Taxes 2026"), {**self.FILES, "scan.bin": scan})
 
     def test_a_folder_goes_into_one_file_that_hides_its_names_and_comes_back_whole(self):
         made = self.pack([self.folder()])
