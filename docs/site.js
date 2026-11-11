@@ -103,6 +103,9 @@
         return;
       }
       shown = id;
+      if (!ids.includes(id)) {
+        strip.scrollLeft = 0;
+      }
       links.forEach((link, index) => {
         if (ids[index] === id) {
           link.setAttribute("aria-current", "true");

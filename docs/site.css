@@ -1,22 +1,35 @@
-/* The project's website: one page, in the style of an old terminal and a classic desktop window.
+/* The project's website: one page, in the style of an old terminal and a classic desktop window,
+   in the app's own colors: its dark-mode teal, and its logo's gradient on the title bars.
    Only fonts already on the visitor's computer are used, so nothing is fetched from elsewhere. */
 
 :root {
   color-scheme: dark;
-  --black: #0a0a0a;
-  --pane: #0d0d0d;
-  --rule: #1e1e1e;
-  --cream: #d4c9a8;
-  --dust: #8c7f5e;
-  --amber: #f59e0b;
-  --platinum: #c8c4bc;
-  --platinum-hover: #d6d2ca;
-  --bevel-light: #f0ede8;
-  --bevel-dark: #504840;
-  --button-light: #e8e4dc;
-  --button-dark: #706860;
-  --stripe: #9d968c;
-  --ink: #1a1614;
+  /* The page: black with a cast of the logo's teal. */
+  --night: #06110f;
+  --pane: #081a17;
+  --rule: #12302b;
+  --text: #d6e7e2;
+  --text-strong: #eef6f3;
+  --muted: #7fa39b;
+  /* The app's own accent in dark mode, and the dark text it puts on it. */
+  --accent: #2dd4bf;
+  --accent-hover: #5eead4;
+  --accent-edge: #0f8f80;
+  --on-accent: #04211e;
+  /* Window chrome, tinted toward the same teal. */
+  --chrome: #c9d6d2;
+  --chrome-hover: #d7e2de;
+  --chrome-ink: #0c2622;
+  --bevel-light: #eef4f2;
+  --bevel-dark: #3f524d;
+  --button-light: #e4ece9;
+  --button-dark: #61756f;
+  /* Title bars wear the logo's gradient, kept dark enough for white text. */
+  --title-top: #0f7f72;
+  --title-bottom: #0b5a50;
+  --title-text: #ffffff;
+  --title-byline: #d5ece7;
+  --title-stripe: rgba(255, 255, 255, 0.2);
   --serif: "Playfair Display", "Bodoni MT", Didot, "Palatino Linotype", Georgia, serif;
   --mono: "Lucida Sans Typewriter", "Lucida Console", Consolas, "Courier New", monospace;
   --ui: "IBM Plex Mono", Consolas, "Lucida Console", "Courier New", monospace;
@@ -31,36 +44,36 @@
 }
 
 html {
-  background: var(--black);
+  background: var(--night);
   scroll-padding-top: 76px;
   -webkit-text-size-adjust: 100%;
 }
 
 body {
   margin: 0;
-  background: var(--black);
-  color: var(--cream);
+  background: var(--night);
+  color: var(--text);
   font: 14px/1.75 var(--mono);
 }
 
 ::selection {
-  background: var(--amber);
-  color: var(--black);
+  background: var(--accent);
+  color: var(--on-accent);
 }
 
 a {
-  color: var(--amber);
+  color: var(--accent);
   text-decoration: underline;
   text-decoration-thickness: 1px;
   text-underline-offset: 3px;
 }
 
 a:hover {
-  color: var(--cream);
+  color: var(--accent-hover);
 }
 
 :focus-visible {
-  outline: 2px solid var(--amber);
+  outline: 2px solid var(--accent);
   outline-offset: 3px;
 }
 
@@ -70,8 +83,8 @@ a:hover {
   top: 12px;
   z-index: 20;
   padding: 6px 12px;
-  background: var(--amber);
-  color: var(--black);
+  background: var(--accent);
+  color: var(--on-accent);
   font: 13px var(--ui);
 }
 
@@ -79,13 +92,13 @@ a:hover {
   left: 16px;
 }
 
-/* The bar along the top. */
+/* The bar along the top, led by the app's own padlock, as in the app's sidebar. */
 
 .site-nav {
   position: sticky;
   top: 0;
   z-index: 10;
-  background: rgba(10, 10, 10, 0.96);
+  background: rgba(6, 17, 15, 0.96);
   border-bottom: 1px solid var(--rule);
 }
 
@@ -99,16 +112,25 @@ a:hover {
 }
 
 .brand {
+  display: flex;
+  align-items: center;
+  gap: 9px;
   margin-right: 24px;
-  color: var(--amber);
+  color: var(--text-strong);
   font: 700 17px/55px var(--serif);
   letter-spacing: 0.03em;
   text-decoration: none;
   white-space: nowrap;
 }
 
+.brand img {
+  display: block;
+  width: 22px;
+  height: 22px;
+}
+
 .brand:hover {
-  color: var(--amber);
+  color: var(--text-strong);
 }
 
 .nav-links {
@@ -126,7 +148,7 @@ a:hover {
   align-items: center;
   padding: 0 12px;
   border-bottom: 2px solid transparent;
-  color: var(--dust);
+  color: var(--muted);
   font: 12px var(--ui);
   letter-spacing: 0.06em;
   text-decoration: none;
@@ -135,12 +157,12 @@ a:hover {
 }
 
 .nav-links a:hover {
-  color: var(--cream);
+  color: var(--text);
 }
 
 .nav-links a[aria-current="true"] {
-  border-bottom-color: var(--amber);
-  color: var(--amber);
+  border-bottom-color: var(--accent);
+  color: var(--accent);
 }
 
 /* The page. */
@@ -157,14 +179,14 @@ section + section {
 
 h2 {
   margin: 0 0 14px;
-  color: var(--amber);
+  color: var(--accent);
   font: 700 30px/1.2 var(--serif);
   letter-spacing: 0.01em;
 }
 
 h3 {
   margin: 28px 0 6px;
-  color: var(--amber);
+  color: var(--accent);
   font: 700 17px/1.35 var(--serif);
   letter-spacing: 0.01em;
 }
@@ -179,13 +201,13 @@ p {
 }
 
 strong {
-  color: #e8dfc4;
+  color: var(--text-strong);
   font-weight: 700;
 }
 
 em {
   font-style: normal;
-  color: #e8dfc4;
+  color: var(--text-strong);
 }
 
 code {
@@ -198,17 +220,17 @@ code {
 blockquote {
   margin: 28px 0;
   padding: 2px 0 2px 20px;
-  border-left: 2px solid var(--amber);
+  border-left: 2px solid var(--accent);
 }
 
 blockquote p {
   margin: 0 0 8px;
-  color: #e8dfc4;
+  color: var(--text-strong);
   font: italic 400 20px/1.5 var(--serif);
 }
 
 blockquote cite {
-  color: var(--dust);
+  color: var(--muted);
   font: 12px/1.6 var(--ui);
   font-style: normal;
 }
@@ -234,7 +256,7 @@ ul.marked li::before {
   left: 2px;
   width: 7px;
   height: 7px;
-  background: var(--amber);
+  background: var(--accent);
 }
 
 /* The steps really are a sequence: the app numbers them too. */
@@ -258,7 +280,7 @@ ul.marked li::before {
   position: absolute;
   top: -1px;
   left: 4px;
-  color: var(--amber);
+  color: var(--accent);
   font: 700 30px/1 var(--serif);
 }
 
@@ -289,13 +311,13 @@ ul.marked li::before {
   margin: 21px 0 28px;
 }
 
-/* A window from an old desktop: bevelled platinum, a striped title bar, a dark pane. */
+/* A window from an old desktop: a bevelled frame, a striped title bar in the logo's teal, a dark pane. */
 
 .window {
   margin: 0 0 28px;
   border: 2px solid;
   border-color: var(--bevel-light) var(--bevel-dark) var(--bevel-dark) var(--bevel-light);
-  background: var(--platinum);
+  background: var(--chrome);
 }
 
 .titlebar {
@@ -303,8 +325,8 @@ ul.marked li::before {
   align-items: center;
   gap: 10px;
   padding: 6px 8px;
-  border-bottom: 2px solid #a09890;
-  background: var(--platinum);
+  border-bottom: 2px solid var(--bevel-dark);
+  background: linear-gradient(to bottom, var(--title-top), var(--title-bottom));
 }
 
 .titlebar .close {
@@ -313,12 +335,12 @@ ul.marked li::before {
   height: 15px;
   border: 1px solid;
   border-color: var(--button-light) var(--button-dark) var(--button-dark) var(--button-light);
-  background: var(--platinum);
+  background: var(--chrome);
 }
 
 .titlebar .title {
   flex: none;
-  color: var(--ink);
+  color: var(--title-text);
   font: 700 12px/1.5 var(--mono);
   letter-spacing: 0.03em;
 }
@@ -327,12 +349,12 @@ ul.marked li::before {
   flex: 1;
   min-width: 16px;
   height: 11px;
-  background: repeating-linear-gradient(to bottom, var(--stripe) 0 1px, transparent 1px 3px);
+  background: repeating-linear-gradient(to bottom, var(--title-stripe) 0 1px, transparent 1px 3px);
 }
 
 .titlebar .byline {
   flex: none;
-  color: var(--bevel-dark);
+  color: var(--title-byline);
   font: 10px/1.5 var(--mono);
   letter-spacing: 0.04em;
 }
@@ -341,7 +363,7 @@ ul.marked li::before {
   margin: 0;
   padding: 21px 28px;
   background: var(--pane);
-  color: var(--cream);
+  color: var(--text);
   font: 13px/1.75 var(--mono);
 }
 
@@ -351,7 +373,7 @@ pre.pane {
 }
 
 .prompt {
-  color: var(--amber);
+  color: var(--accent);
 }
 
 .shot img {
@@ -368,7 +390,7 @@ pre.pane {
 
 .motive h1 {
   margin: 0 0 14px;
-  color: var(--amber);
+  color: var(--accent);
   font: 700 15px/1.6 var(--mono);
   letter-spacing: 0.02em;
 }
@@ -400,7 +422,7 @@ pre.pane {
   height: 1.15em;
   margin-left: 1px;
   vertical-align: text-bottom;
-  background: var(--amber);
+  background: var(--accent);
   animation: blink 1s steps(1) infinite;
 }
 
@@ -419,7 +441,7 @@ pre.pane {
   display: none;
 }
 
-/* Rounded, bevelled buttons, as on the same old desktop. */
+/* Rounded, bevelled buttons, as on the same old desktop. The main one is filled like the app's own. */
 
 .pill {
   display: inline-block;
@@ -428,20 +450,36 @@ pre.pane {
   border: 2px solid;
   border-color: var(--button-light) var(--button-dark) var(--button-dark) var(--button-light);
   border-radius: 50px;
-  background: var(--platinum);
-  color: #1a1a1a;
+  background: var(--chrome);
+  color: var(--chrome-ink);
   font: 13px/1.6 var(--ui);
   text-decoration: none;
   cursor: pointer;
 }
 
 .pill:hover {
-  background: var(--platinum-hover);
-  color: #1a1a1a;
+  background: var(--chrome-hover);
+  color: var(--chrome-ink);
 }
 
 .pill:active {
   border-color: var(--button-dark) var(--button-light) var(--button-light) var(--button-dark);
+}
+
+.pill.primary {
+  border-color: var(--accent-hover) var(--accent-edge) var(--accent-edge) var(--accent-hover);
+  background: var(--accent);
+  color: var(--on-accent);
+  font-weight: 700;
+}
+
+.pill.primary:hover {
+  background: var(--accent-hover);
+  color: var(--on-accent);
+}
+
+.pill.primary:active {
+  border-color: var(--accent-edge) var(--accent-hover) var(--accent-hover) var(--accent-edge);
 }
 
 .controls .pill {
@@ -453,7 +491,7 @@ pre.pane {
 .site-footer {
   padding: 18px var(--gutter) 32px;
   border-top: 1px solid var(--rule);
-  color: var(--dust);
+  color: var(--muted);
   font: 11px/2 var(--ui);
   letter-spacing: 0.1em;
   text-align: center;
