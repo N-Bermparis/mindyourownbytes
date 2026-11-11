@@ -8,6 +8,7 @@ import re
 import sys
 import threading
 import traceback
+from datetime import date
 from pathlib import Path
 
 from PySide6.QtCore import QObject, QProcess, QSettings, QSize, Qt, QThread, QTimer, QUrl, Signal, Slot
@@ -38,13 +39,14 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from mindyourownbytes import __version__, records
+from mindyourownbytes import __version__, archive, records
 from mindyourownbytes.core import (
     CHECKED,
     CIPHERS,
     DEFAULT_CIPHER,
     ENCRYPTED_SUFFIXES,
     MIN_GPG_VERSION,
+    UNPACKED,
     Cancelled,
     JobResult,
     PublicKey,
@@ -52,6 +54,7 @@ from mindyourownbytes.core import (
     available_ciphers,
     bundled_gpg,
     collect_files,
+    encrypt_archive,
     find_gpg,
     find_kleopatra,
     gpg_version,
@@ -166,6 +169,25 @@ RECORD_WORDS = {
     "changed": "but not the copy you made",
     "all_match": "Each one matches the checksum saved when it was made.",
 }
+#: What the screen says when every file goes into one archive.
+ARCHIVE_COPY = {
+    "help": "Hides the names of the files and folders inside. Your provider sees one file and its size. "
+            "To change one file later, you encrypt the whole archive again.",
+    "save_note": "Upload the one .zip.gpg file this makes. Your provider can see its name and size, "
+                 "but not the names inside.",
+    "working": "Packing {done} of {total}…",
+    "row_working": "Adding to the archive…",
+    "checking": "Checking the archive…",
+    "row_done": "In the archive",
+    "row_checked": "In the archive, checked",
+    "row_tip": "The archive was decrypted again, and matched what was packed.",
+    "row_skipped": "In the archive, not checked",
+    "result_title": "{files} encrypted into one archive",
+    "result_checked": "It was decrypted again and matched what was packed.",
+    "result_detail": "Upload only {name}. Your provider can't see the names of the files inside.",
+}
+#: What a restored archive's row says, since it became a folder rather than one file.
+UNPACKED_ROW = "Restored and unpacked"
 
 #: Why a file wasn't checked although checking is on, by how it was protected.
 NOT_CHECKED = {
@@ -226,19 +248,22 @@ class DropZone(QFrame):
 
 class BackupWorker(QObject):
     progress = Signal(int, bool, str, object)
-    #: The file at this position is encrypted, and is now being checked.
+    #: The file at this position is encrypted, and is now being checked. -1 means the whole archive.
     checking = Signal(int)
     #: What the record says about the downloaded file at this position, as a records.Finding.
     found = Signal(int, object)
     #: Something worth saying that doesn't change the result, such as a record that couldn't be saved.
     note = Signal(str)
+    #: The file at this position is going into the archive.
+    packing = Signal(int)
     completed = Signal(object)
     error = Signal(str)
     finished = Signal()
 
     def __init__(self, gpg: str, files: list[SourceItem], output: Path, operation: str,
                  method: str, fingerprint: str | None, passphrases: list[str], cipher: str, verify: bool,
-                 ledger: Ledger | None = None, keep_records: bool = False, records_root: Path | None = None):
+                 archive_name: str | None = None, ledger: Ledger | None = None, keep_records: bool = False,
+                 records_root: Path | None = None):
         super().__init__()
         self.gpg = gpg
         self.files = files
@@ -249,6 +274,8 @@ class BackupWorker(QObject):
         self.passphrases = passphrases
         self.cipher = cipher
         self.verify = verify
+        #: Every file goes into one archive with this name, rather than into a .gpg file of its own.
+        self.archive_name = archive_name
         #: Checked against before each restore, and added to after encrypting if ``keep_records``.
         self.ledger = ledger
         self.keep_records = keep_records
@@ -284,13 +311,20 @@ class BackupWorker(QObject):
                     self.ledger.load()
                 except OSError:
                     restoring = False
-            result = process_items(
-                self.gpg, self.files, self.output, self.operation, self.method, self.fingerprint,
-                self.cancel_event,
-                lambda index, ok, message, output: self.progress.emit(index, ok, message, output),
-                passphrases=self.passphrases, cipher=self.cipher, verify=self.verify,
-                on_checking=self.checking.emit, on_start=self._check_record if restoring else None,
-            )
+            report = lambda index, ok, message, output: self.progress.emit(index, ok, message, output)  # noqa: E731
+            if self.archive_name:
+                result = encrypt_archive(
+                    self.gpg, self.files, self.output, self.archive_name, self.method, self.fingerprint,
+                    self.cancel_event, report, passphrases=self.passphrases, cipher=self.cipher,
+                    verify=self.verify, on_packing=self.packing.emit, on_checking=lambda: self.checking.emit(-1),
+                )
+            else:
+                result = process_items(
+                    self.gpg, self.files, self.output, self.operation, self.method, self.fingerprint,
+                    self.cancel_event, report, passphrases=self.passphrases, cipher=self.cipher,
+                    verify=self.verify, on_checking=self.checking.emit,
+                    on_start=self._check_record if restoring else None,
+                )
             if self.operation == "encrypt" and self.ledger is not None and self.keep_records and result.outputs:
                 self._keep_records(result)
             self.completed.emit(result)
@@ -319,6 +353,8 @@ class MainWindow(QMainWindow):
         self._job_algorithm = ""
         #: Why the current job's files can't be checked although checking is on. Empty if they can.
         self._job_not_checked = ""
+        #: Whether the current job puts every file into one archive.
+        self._job_archive = False
         #: None before a job, then "done" or "incomplete" until the list changes.
         self._job_state: str | None = None
         self._unfinished_items: list[SourceItem] = []
@@ -686,12 +722,56 @@ class MainWindow(QMainWindow):
             "A subfolder that keeps related files together. Type a new name to create one."
         )
         grid.addWidget(self.collection_combo, 1, 1, 1, 2)
+
+        self.save_as_label = QLabel("Save as")
+        grid.addWidget(self.save_as_label, 2, 0)
+        save_as_row = QHBoxLayout()
+        save_as_row.setSpacing(10)
+        self.save_as_group = QButtonGroup(self)
+        self.separate_radio = QRadioButton("Separate files")
+        self.archive_radio = QRadioButton("One archive, named")
+        for radio in (self.separate_radio, self.archive_radio):
+            self.save_as_group.addButton(radio)
+            save_as_row.addWidget(radio)
+        self.archive_name_edit = QLineEdit()
+        self.archive_name_edit.setAccessibleName("Name of the archive")
+        self.archive_name_edit.setMaxLength(archive.MAX_NAME)
+        self.archive_name_edit.setToolTip("Your provider can see this name, so keep it vague.")
+        save_as_row.addWidget(self.archive_name_edit, stretch=1)
+        grid.addLayout(save_as_row, 2, 1, 1, 2)
+        self.archive_help = label(ARCHIVE_COPY["help"], "muted", wrap=True)
+        grid.addWidget(self.archive_help, 3, 1, 1, 2)
+        remembered = self.settings.value("save_as", "") == "archive"
+        (self.archive_radio if remembered else self.separate_radio).setChecked(True)
+        self.archive_radio.toggled.connect(self._update_save_as)
+        self.archive_radio.clicked.connect(lambda: self.settings.setValue("save_as", "archive"))
+        self.separate_radio.clicked.connect(lambda: self.settings.setValue("save_as", "files"))
+
         self.privacy_note = label("", "muted", wrap=True)
-        grid.addWidget(self.privacy_note, 2, 1, 1, 2)
+        grid.addWidget(self.privacy_note, 4, 1, 1, 2)
         self.provider_link = label("<a href='#provider'>See what your provider sees</a>", wrap=True)
         self.provider_link.linkActivated.connect(lambda _link: self.show_provider_view())
-        grid.addWidget(self.provider_link, 3, 1, 1, 2)
+        grid.addWidget(self.provider_link, 5, 1, 1, 2)
         return frame
+
+    def archive_chosen(self) -> bool:
+        return self.operation == "encrypt" and self.archive_radio.isChecked()
+
+    def _update_save_as(self):
+        """Only encrypting can make an archive, and its name only matters when one is chosen."""
+        encrypting = self.operation == "encrypt"
+        for widget in (self.save_as_label, self.separate_radio, self.archive_radio, self.archive_name_edit):
+            widget.setVisible(encrypting)
+        self.archive_help.setVisible(self.archive_chosen())
+        self.archive_name_edit.setEnabled(self.archive_chosen() and not self.running)
+        # A date says little about what's inside, which matters because the provider sees this name.
+        self.archive_name_edit.setPlaceholderText(f"Archive {date.today().isoformat()}")
+        self.privacy_note.setText(ARCHIVE_COPY["save_note"] if self.archive_chosen()
+                                  else COPY[self.operation]["save_note"])
+
+    def archive_name(self) -> str:
+        """The name typed, or the suggested one. Raises ValueError if it can't be used."""
+        return archive.check_name(self.archive_name_edit.text().strip() or self.archive_name_edit.placeholderText())
 
     def _build_menus(self) -> None:
         bar = self.menuBar()
@@ -801,9 +881,9 @@ class MainWindow(QMainWindow):
         self.saved_help.setText(copy["saved_help"])
         self.key_radio.setText(copy["key_title"])
         self.key_help.setText(copy["key_help"])
-        self.privacy_note.setText(copy["save_note"])
         for widget in (self.collection_label, self.collection_combo, self.provider_link):
             widget.setVisible(is_encryption)
+        self._update_save_as()
         self._refresh_collections()
         self._refresh_saved_combo()
         self._update_method()
@@ -834,7 +914,14 @@ class MainWindow(QMainWindow):
             except ValueError:
                 collection = ""
             files = provider_view.from_items(self.items, collection)
-        provider_view.ProviderView(self, files).exec()
+        stored = ""
+        if files and self.archive_chosen():
+            try:
+                name = f"{self.archive_name()}{archive.SUFFIX}.gpg"
+            except ValueError:
+                name = f"{self.archive_name_edit.placeholderText()}{archive.SUFFIX}.gpg"
+            stored = f"{collection}/{name}" if collection else name
+        provider_view.ProviderView(self, files, stored).exec()
 
     def show_protection(self):
         ProtectionDialog(self).exec()
@@ -1423,7 +1510,16 @@ class MainWindow(QMainWindow):
             )
             return
         output = self._job_directory()
-        if output is None or not self._confirm_locations(output):
+        if output is None:
+            return
+        archive_name = None
+        if self.archive_chosen():
+            try:
+                archive_name = self.archive_name()
+            except ValueError as exc:
+                QMessageBox.warning(self, "Check the archive name", str(exc))
+                return
+        if not self._confirm_locations(output):
             return
         if fingerprint and not self._confirm_recipient(fingerprint):
             return
@@ -1454,6 +1550,7 @@ class MainWindow(QMainWindow):
         # Simple mode always checks: turning that off is an advanced choice.
         verify = self.operation == "encrypt" and (self.check_action.isChecked() or not self.advanced())
         self._job_not_checked = NOT_CHECKED.get(selection, "") if verify else ""
+        self._job_archive = archive_name is not None
         self._succeeded_rows: set[int] = set()
         self._findings = {}
         self._notes = []
@@ -1465,7 +1562,7 @@ class MainWindow(QMainWindow):
 
         self._thread = QThread(self)
         self.worker = BackupWorker(self.gpg, list(self.items), output, self.operation, method,
-                                   fingerprint, passphrases, cipher, verify, ledger=self.ledger,
+                                   fingerprint, passphrases, cipher, verify, archive_name, ledger=self.ledger,
                                    keep_records=self.records_action.isChecked() or not self.advanced(),
                                    records_root=self.current_output("encrypt"))
         self.worker.moveToThread(self._thread)
@@ -1474,6 +1571,7 @@ class MainWindow(QMainWindow):
         self.worker.checking.connect(self._checking)
         self.worker.found.connect(self._found)
         self.worker.note.connect(self._note)
+        self.worker.packing.connect(self._packing)
         self.worker.completed.connect(self._completed)
         self.worker.error.connect(self._error)
         self.worker.finished.connect(self._thread.quit)
@@ -1492,7 +1590,8 @@ class MainWindow(QMainWindow):
                        self.add_files_button, self.add_folder_button, self.remove_button,
                        self.clear_button, self.browse_button, self.passphrase_radio, self.saved_radio,
                        self.key_radio, self.key_combo, self.saved_combo,
-                       self.collection_combo, self.refresh_keys_button, self.vault_button, self.menuBar()):
+                       self.collection_combo, self.refresh_keys_button, self.vault_button, self.menuBar(),
+                       self.separate_radio, self.archive_radio):
             widget.setEnabled(not is_busy)
         self.start_button.setVisible(not is_busy)
         self.open_button.setVisible(not is_busy)
@@ -1501,21 +1600,38 @@ class MainWindow(QMainWindow):
         self.progress_bar.setVisible(is_busy)
         self.drop_area.setAcceptDrops(not is_busy)
         self._update_algorithm()
+        self._update_save_as()
+
+    def _words(self, key: str) -> str:
+        """This screen's wording, or the archive's when the job makes one."""
+        return ARCHIVE_COPY[key] if self._job_archive and key in ARCHIVE_COPY else COPY[self.operation][key]
 
     def _mark_working(self, row: int):
         if row < self.table.rowCount():
-            self._set_row_status(row, COPY[self.operation]["row_working"], "clock", "text")
+            self._set_row_status(row, self._words("row_working"), "clock", "text")
             self.table.scrollToItem(self.table.item(row, 0))
 
     def _show_progress(self, done: int):
-        text = COPY[self.operation]["working"].format(done=min(done + 1, len(self.items)), total=len(self.items))
+        text = self._words("working").format(done=min(done + 1, len(self.items)), total=len(self.items))
         if self.method() == "pinentry":
             text += " GnuPG may ask for a passphrase."
         self.status_text.setText(text)
 
     @Slot(int)
+    def _packing(self, index: int):
+        if self.worker is None or self.worker.cancel_event.is_set():
+            return
+        self._mark_working(index)
+        self.progress_bar.setValue(index)
+        self._show_progress(index)
+
+    @Slot(int)
     def _checking(self, index: int):
         if self.worker is None or self.worker.cancel_event.is_set():
+            return
+        if index < 0:  # The whole archive.
+            self.progress_bar.setValue(len(self.items))
+            self.status_text.setText(ARCHIVE_COPY["checking"])
             return
         if index < self.table.rowCount():
             self._set_row_status(index, CHECK_COPY["row_working"], "clock", "text")
@@ -1531,13 +1647,23 @@ class MainWindow(QMainWindow):
 
     def _show_row_done(self, row: int, checked: bool, output):
         """Only a file the job really checked may say so."""
-        finding = self._findings.get(row)
-        if checked:
-            text, note = CHECK_COPY["row_done"], CHECK_COPY["row_tip"]
-        elif self._job_not_checked:
-            text, note = CHECK_COPY["row_skipped"], self._job_not_checked
+        if self._job_archive:
+            words = ARCHIVE_COPY
+            done = ARCHIVE_COPY["row_done"]
         else:
-            text, note = COPY[self.operation]["row_done"], ""
+            words = {**CHECK_COPY, "row_checked": CHECK_COPY["row_done"]}
+            done = COPY[self.operation]["row_done"]
+        if checked:
+            text, note = words["row_checked"], words["row_tip"]
+        elif self._job_not_checked:
+            text, note = words["row_skipped"], self._job_not_checked
+        else:
+            text, note = done, ""
+        self._show_finished_row(row, text, note, output)
+
+    def _show_finished_row(self, row: int, text: str, note: str, output):
+        """A finished row, with what the record says if it was a download being restored."""
+        finding = self._findings.get(row)
         if finding is not None and finding.is_warning:
             # Restored, because it decrypted, but not the file that was made here.
             self._set_row_status(row, f"{text}, {RECORD_WORDS[finding.verdict]}", "alert", "warn",
@@ -1551,7 +1677,10 @@ class MainWindow(QMainWindow):
     def _progress(self, index: int, ok: bool, message: str, output):
         cancelled = not ok and message == "Cancelled"
         if index < self.table.rowCount():
-            if ok:
+            if ok and message == UNPACKED:
+                self._show_finished_row(index, UNPACKED_ROW, "", output)
+                self._succeeded_rows.add(index)
+            elif ok:
                 self._show_row_done(index, message == CHECKED, output)
                 self._succeeded_rows.add(index)
             elif cancelled:
@@ -1604,16 +1733,23 @@ class MainWindow(QMainWindow):
             reasons = set(self._failures)
             detail = self._failures[0] if len(reasons) == 1 else "See the Status column for the reason for each file."
             title = (f"{result.failed} of {plural(total)} failed" if result.succeeded
+                     else "The archive wasn't made" if self._job_archive
                      else f"{'That file' if total == 1 else f'All {total} files'} failed")
             self.result_bar.show_message("error", title, detail, actions=[open_folder] if result.succeeded else [])
         elif result.succeeded:
-            title = copy["result_title"].format(files=plural(result.succeeded))
+            if self._job_archive:
+                title = ARCHIVE_COPY["result_title"].format(files=plural(result.succeeded))
+                detail = ARCHIVE_COPY["result_detail"].format(name=result.outputs[0].name)
+                checked_words = ARCHIVE_COPY["result_checked"]
+            else:
+                title = copy["result_title"].format(files=plural(result.succeeded))
+                detail = copy["result_detail"]
+                checked_words = CHECK_COPY["result_one" if result.succeeded == 1 else "result_many"]
             if self._job_algorithm:
                 title += f" with {self._job_algorithm}"
-            detail = copy["result_detail"]
             if result.checked == result.succeeded:
                 title += " and checked"
-                detail = f"{CHECK_COPY['result_one' if result.succeeded == 1 else 'result_many']} {detail}"
+                detail = f"{checked_words} {detail}"
             elif self._job_not_checked:
                 detail = f"{self._job_not_checked} {detail}"
             restored = [self._findings[row] for row in self._succeeded_rows if row in self._findings]

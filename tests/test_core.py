@@ -12,12 +12,14 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from mindyourownbytes import archive
 from mindyourownbytes.core import (
     CHECKED,
     CIPHERS,
     DEFAULT_CIPHER,
     READY,
     Cancelled,
+    GpgFailure,
     SourceItem,
     available_ciphers,
     bundled_gpg,
@@ -31,6 +33,7 @@ from mindyourownbytes.core import (
     looks_cloud_synced,
     output_relative,
     process_items,
+    run_gpg_feeding,
     run_gpg_hashed,
     stop_bundled_gnupg,
     unique_target,
@@ -682,6 +685,66 @@ class RunGpgHashedTests(unittest.TestCase):
             with self.subTest(program), patch("mindyourownbytes.core.hashlib.sha256", return_value=Failing()), \
                     self.assertRaises(OSError):
                 run_gpg_hashed([sys.executable, "-c", program], threading.Event(), b"secret")
+
+
+#: Stands in for gpg reading from stdin: checks the passphrase line, then reports how much it read.
+_READING = ("import sys; secret = sys.stdin.buffer.readline(); data = sys.stdin.buffer.read(); "
+            "sys.stderr.write(f'{secret!r} {len(data)}'); sys.exit(0)")
+
+
+class RunGpgFeedingTests(unittest.TestCase):
+    """Feeding an archive to gpg, with a small program standing in for gpg."""
+
+    def feed(self, size):
+        def write(stdin):
+            for _ in range(size // 65536):
+                stdin.write(b"x" * 65536)
+
+        return write
+
+    def test_the_passphrase_line_comes_first_and_everything_else_follows(self):
+        code, stderr = run_gpg_feeding([sys.executable, "-c", _READING], threading.Event(), b"open sesame",
+                                       self.feed(4 * 1024 * 1024))
+        self.assertEqual((code, stderr), (0, f"{b'open sesame' + bytes([10])!r} {4 * 1024 * 1024}"))
+
+    def test_without_a_passphrase_only_the_data_is_sent(self):
+        reading_all = "import sys; data = sys.stdin.buffer.read(); sys.stderr.write(str(len(data)))"
+        code, stderr = run_gpg_feeding([sys.executable, "-c", reading_all], threading.Event(), None,
+                                       self.feed(65536 * 3))
+        self.assertEqual((code, stderr), (0, str(65536 * 3)))
+
+    def test_a_program_that_fails_early_is_reported_by_its_own_words(self):
+        failing = "import sys; sys.stderr.write('gpg: no such option'); sys.exit(2)"
+        code, stderr = run_gpg_feeding([sys.executable, "-c", failing], threading.Event(), b"secret",
+                                       self.feed(64 * 1024 * 1024))
+        self.assertEqual((code, stderr), (2, "gpg: no such option"))
+
+    def test_one_that_stops_reading_but_claims_success_is_still_a_failure(self):
+        with self.assertRaisesRegex(GpgFailure, "stopped reading"):
+            run_gpg_feeding([sys.executable, "-c", "import sys; sys.stdin.close()"], threading.Event(), b"secret",
+                            self.feed(64 * 1024 * 1024))
+
+    def test_a_problem_with_the_originals_stops_the_program(self):
+        def broken(stdin):
+            stdin.write(b"part of it")
+            raise archive.ArchiveError("The original is gone")
+
+        started = time.monotonic()
+        with self.assertRaises(archive.ArchiveError):
+            run_gpg_feeding([sys.executable, "-c", "import sys, time; sys.stdin.buffer.read(); time.sleep(60)"],
+                            threading.Event(), b"secret", broken)
+        self.assertLess(time.monotonic() - started, 10)
+
+    def test_cancel_stops_it(self):
+        cancel = threading.Event()
+
+        def slow(stdin):
+            stdin.write(b"x")
+            cancel.set()
+            raise Cancelled()
+
+        with self.assertRaises(Cancelled):
+            run_gpg_feeding([sys.executable, "-c", "import time; time.sleep(60)"], cancel, b"secret", slow)
 
 
 class AvailableCiphersTests(unittest.TestCase):
