@@ -69,6 +69,9 @@ def _restore(platform: Platform) -> Step:
         "Without this app, GnuPG restores one file with the first command below, and asks for the "
         "passphrase. The second command restores every .gpg file in the current folder and the folders "
         "inside it, next to where each one is.",
+        "An archive, a file ending in .zip.gpg, comes back as an ordinary zip, which you open to get the "
+        "files inside. On Windows, open it in File Explorer, because Windows' own tar command can't read "
+        "every name.",
     )
     one = "gpg --output report.pdf --decrypt report.pdf.gpg"
     if platform == "windows":

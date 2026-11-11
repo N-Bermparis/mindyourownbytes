@@ -15,7 +15,7 @@ import unittest
 from pathlib import Path
 
 from mindyourownbytes import recovery
-from mindyourownbytes.core import SourceItem, process_items
+from mindyourownbytes.core import SourceItem, encrypt_archive, process_items
 from tests.support import GpgTestCase
 
 PASSPHRASE = "correct horse battery staple"
@@ -214,6 +214,18 @@ class PinentryTests(GpgTestCase):
         for relative, content in made.items():
             self.assertEqual((folder / relative).read_bytes(), content, relative)
         self.assertEqual(self.dialogs(), 2, "GnuPG asked once for each file")
+    def test_an_archive_works_when_gnupg_asks_for_the_passphrase(self):
+        # Nothing then goes ahead of the archive on GnuPG's input, so this is a different path.
+        items = [self.write("a.txt", b"first"), self.write("b.txt", b"second")]
+        made = encrypt_archive(self.gpg, items, self.root / "exports", "Archive", "password", None,
+                               threading.Event(), lambda *args: self.progress.append(args))
+        self.assertEqual((made.succeeded, made.checked), (2, 0), self.progress)
+        self.assertEqual(self.dialogs(), 1, "one archive, so one prompt")
+        self.reset_dialog_count()
+        restored = self.job([SourceItem(made.outputs[0], Path(made.outputs[0].name), 1)], "restored", "restore")
+        self.assertEqual((restored.outputs[0] / "a.txt").read_bytes(), b"first")
+        self.assertEqual((restored.outputs[0] / "b.txt").read_bytes(), b"second")
+        self.assertEqual(self.dialogs(), 1)
 
     def test_cancelling_the_prompt_is_reported_as_a_cancel(self):
         self.answer_with(None)

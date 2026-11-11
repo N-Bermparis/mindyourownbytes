@@ -51,7 +51,7 @@ version = { attr = "mindyourownbytes.__version__" }
 include = ["mindyourownbytes*"]
 
 [tool.setuptools.package-data]
-mindyourownbytes = ["styles.qss"]
+mindyourownbytes = ["styles.qss", "eff_large_wordlist.txt"]
 
 [tool.ruff]
 line-length = 120

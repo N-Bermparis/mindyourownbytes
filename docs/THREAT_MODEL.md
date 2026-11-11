@@ -42,6 +42,12 @@ format (AES-256 by default, with an MDC integrity check), which is the most wide
 mode uses whatever the recipient's key asks for. With keys made by GnuPG 2.4 or later,
 that is a newer OCB packet, which GnuPG older than 2.3 and some other tools cannot read.
 
+**Safe settings unless you ask for others.** New installations start in simple mode, which always
+uses AES-256, always checks each new file, and always asks for passphrases in this app, whatever
+was chosen before. **Tools > Show advanced options** offers the rest. Anyone who already relies on
+an advanced option, such as a key of their own, starts in advanced mode, and the choice is then
+remembered.
+
 **Explicit, verified encryption settings.** Passphrase mode pins these options
 rather than relying on defaults:
 
@@ -134,11 +140,34 @@ final file as a copy of the checked one, and that copy isn't checked again.
 **Decrypted filenames come from you.** Output paths are chosen by the app, so a name
 embedded in a malicious file cannot write outside the restore folder.
 
+**Archives are packed and unpacked carefully.** An archive is an ordinary zip, made with
+Python's standard `zipfile` and written straight into GnuPG, so no readable archive touches disk
+while it's made. GnuPG's own compression is turned off for archives (`--compress-algo none`),
+because the zip is compressed already. Everything else, including the key derivation and the
+integrity check, is the same as for a single file. The check after encrypting decrypts the
+archive again and compares it with the exact zip that was packed. It doesn't read the originals
+a second time, which could take as long again for a large folder. Instead, each original's size,
+time, and identity must be what they were just before it was packed.
+
+Restoring needs the decrypted zip on disk for a while, because a zip keeps its table of contents
+at its end. It stays under a temporary name, and is deleted once it's unpacked. Only a zip that
+carries this app's mark in its comment is unpacked. Any other zip you encrypted as an ordinary
+file restores as that zip. Before anything is written, every name inside is checked: none may
+leave the folder (`..`, an absolute path, or a drive), or be a name Windows can't create, and no
+name may appear twice. The total size it claims must fit on the disk, and each file is cut off at
+the size it claims. Everything is unpacked into a temporary folder that only gets its final name
+once every file is out and has passed zip's own CRC check. Anything that fails leaves nothing.
+
+Someone who knows the passphrase, or anyone who has your public key, can make an archive that
+passes all of this, just as they can make a single file. It still can't write outside the folder.
+
 ## What is NOT protected
 
 Please read this section. These are real limits, not fine print.
 
 ### Names and sizes are visible
+
+With separate files, which is the default:
 
 | Visible to your provider | Why it matters |
 | --- | --- |
@@ -147,12 +176,29 @@ Please read this section. These are real limits, not fine print.
 | File sizes, approximately | Can help identify known files |
 | File count and timestamps | Reveal activity patterns |
 | Your account, IP, and upload times | Encryption cannot hide these |
+| The algorithm of a passphrase file, such as AES-256 | Says nothing about the contents |
 
-Encrypting a name would need an archive mode or a name-mapping layer, which is on the
-[roadmap](ROADMAP.md). **If you need hidden names today, use a tool that encrypts them,
-such as [Cryptomator](https://cryptomator.org/) or
-[rclone crypt](https://rclone.org/crypt/).** In the meantime, keep names vague, or put
-files in an archive before encrypting it.
+**Help > What your provider sees** shows this with your own files: the Encrypt screen's list, the
+Library's files, or examples. One switch flips between your view and your provider's. For files
+already encrypted, it shows 16 real bytes from the middle of each, which is all their contents look
+like to anyone without the secret. With **One archive** chosen, your provider's view shows the single
+file it gets.
+
+**One archive hides the names inside.** Under "Save as", choosing **One archive** puts every
+file into one zip, which GnuPG encrypts as one `.zip.gpg` file. The names, folders, number, and
+sizes of the files inside are then encrypted along with their contents. Your provider still sees:
+
+| Still visible with an archive | Why it matters |
+| --- | --- |
+| The archive's own name, and its collection | You choose them, so keep them vague. The suggestion is a date |
+| Its size, approximately | The total of what's inside, after compression |
+| When it was uploaded, and when it changes | Encryption cannot hide these |
+
+The cost: the archive is one file, so changing one file inside means encrypting and uploading the
+whole archive again, and restoring one file means restoring them all. Separate files avoid both,
+but show their names. A name-mapping mode, which would hide names and keep files separate, is
+still on the [roadmap](ROADMAP.md). [Cryptomator](https://cryptomator.org/) and
+[rclone crypt](https://rclone.org/crypt/) already work that way.
 
 ### Tampering
 
@@ -180,8 +226,23 @@ Passphrase mode has no such identifier.
 
 OpenPGP's S2K function is deliberately slow but **not memory-hard**, so it resists
 GPU cracking far less than modern functions such as Argon2. A strong passphrase is what
-really protects you. Use five or more random words, or the Generate button, which gives
-about 147 bits. A weak passphrase cannot be fixed by any setting.
+really protects you. A weak passphrase cannot be fixed by any setting.
+
+**Let the computer pick.** Wherever you choose a new passphrase, the app can generate one, using
+Python's `secrets` module, which draws on the operating system's cryptographic random numbers:
+
+| Kind | Made of | Strength |
+| --- | --- | --- |
+| Random words, the default | 7 words from EFF's Long Wordlist of 7,776 | About 90 bits |
+| Random letters and digits | 30 from an alphabet of 30, without look-alikes such as 0 and O | About 147 bits |
+
+Only a generated passphrase's strength can be stated exactly, so the app doesn't pretend to measure
+one you make up. EFF's list is shipped exactly as EFF publishes it, and the app checks its SHA-256
+before using it, so a changed or shortened list is refused rather than quietly weakening anything. No
+word is the start of another, so words run together can only be read one way.
+
+A generated passphrase is shown in full, and when it's for encrypting or for the vault's master
+passphrase, the app won't continue until you tick that you've saved it. Nobody can recover it.
 
 ### The saved passphrase vault
 
@@ -219,8 +280,8 @@ Its costs, which you should weigh:
   folder, but detection is a heuristic and misses clients it doesn't know.
 - Restoring into a synced folder would upload the plaintext. The app warns about this too,
   with the same limitation.
-- A crash or power cut during a restore can leave a hidden `.myob-*.partial` file containing
-  plaintext in the restore folder.
+- A crash or power cut during a restore can leave a hidden `.myob-*.partial` file or folder
+  containing plaintext in the restore folder. For an archive, that can be the whole decrypted zip.
 - The operating system may keep traces such as thumbnails, search indexes, and recent-file lists.
 - Restored files do not carry Windows' Mark-of-the-Web, so SmartScreen will not warn about
   them. Be careful running anything you restored, particularly in public-key mode.
@@ -228,7 +289,8 @@ Its costs, which you should weigh:
 ### Other limits
 
 - **Malicious compressed input** can expand hugely on restore and fill your disk. It cannot
-  overwrite anything, and the partial output is removed.
+  overwrite anything, and the partial output is removed. An archive is held to the sizes it
+  claims, and those must fit on the disk before anything is unpacked.
 - **Quantum computers.** AES-256 is considered comfortable against known quantum attacks,
   so passphrase mode has a good margin. Classical public keys (RSA, ECC) are not safe against
   a future quantum attacker who has saved your ciphertext. GnuPG 2.5 and later can create

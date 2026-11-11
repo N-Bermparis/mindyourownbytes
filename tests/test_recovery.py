@@ -30,6 +30,11 @@ class GuideTests(unittest.TestCase):
         self.assertIn("~/Library/Application Support/mindyourownbytes/vault.gpg", recovery.as_text("macos"))
         self.assertIn("~/.config/mindyourownbytes/vault.gpg", recovery.as_text("linux"))
 
+    def test_explains_that_an_archive_comes_back_as_a_zip(self):
+        for platform in recovery.PLATFORMS:
+            self.assertIn("comes back as an ordinary zip", recovery.as_text(platform))
+        self.assertIn("open it in File Explorer", recovery.as_text("windows"))
+
     def test_the_plain_gpg_command_for_one_file_is_the_one_the_readme_gives(self):
         for platform in recovery.PLATFORMS:
             self.assertIn("gpg --output report.pdf --decrypt report.pdf.gpg", recovery.as_text(platform))

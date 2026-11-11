@@ -23,7 +23,7 @@ from pathlib import Path
 from PySide6 import __version__ as pyside_version
 from PySide6.QtCore import QSettings
 
-from mindyourownbytes import __version__, core
+from mindyourownbytes import __version__, core, generator
 from mindyourownbytes.gui import icons
 from mindyourownbytes.gui.main_window import MainWindow, create_application
 from mindyourownbytes.vault import Vault, WrongMasterPassphrase, generate_passphrase
@@ -144,6 +144,31 @@ def _check_the_check(checks: _Checks, gpg: str, source: Path, scratch: Path) -> 
     checks.record(name, *_refuses(gpg, source, scratch / "swapped", swap))
 
 
+def _check_archive_round_trip(checks: _Checks, gpg: str, scratch: Path) -> None:
+    """A folder in, one file out that hides the names, and the same folder back. This uses zipfile and zlib,
+    which the download's trimming could leave out."""
+    folder = scratch / "archive-originals" / "Αρχείο"
+    (folder / "inner").mkdir(parents=True)
+    (folder / FILE_NAME).write_bytes(CONTENT)
+    (folder / "inner" / "empty.txt").write_bytes(b"")
+    encrypted_folder = scratch / "archive-encrypted"
+    items = core.collect_files([folder], encrypted_folder, "encrypt").items
+    made = core.encrypt_archive(gpg, items, encrypted_folder, "Self test", "password", None, threading.Event(),
+                                lambda *_: None, passphrases=(PASSPHRASE,))
+    names = [path.name for path in encrypted_folder.iterdir()]
+    packed = made.checked == 2 and names == ["Self test.zip.gpg"]
+    if not checks.record("Packs a folder into one checked archive", packed, names):
+        return
+    checks.record("The archive hides the names inside", FILE_NAME.encode() not in made.outputs[0].read_bytes()
+                  and "Αρχείο".encode() not in made.outputs[0].read_bytes())
+    restored = _job(gpg, made.outputs[0], scratch / "archive-restored", "restore", "password",
+                    passphrases=(PASSPHRASE,))
+    unpacked = restored.outputs[0] / "Αρχείο" if restored.succeeded else scratch
+    checks.record("Restores an archive into the same folder",
+                  restored.succeeded == 1 and (unpacked / FILE_NAME).read_bytes() == CONTENT
+                  and (unpacked / "inner" / "empty.txt").read_bytes() == b"")
+
+
 def _check_every_algorithm(checks: _Checks, gpg: str, source: Path, scratch: Path) -> None:
     """Each one is separate code in GnuPG, so one could go missing without affecting the others."""
     for cipher in core.CIPHERS:
@@ -182,6 +207,19 @@ def _check_key_round_trip(checks: _Checks, gpg: str, source: Path, scratch: Path
     checks.record("Restores with the key", _is_restored(restored))
 
 
+def _check_generator(checks: _Checks) -> None:
+    """The word list is a separate file, which the download has to bring along unchanged."""
+    try:
+        phrase = generator.word_passphrase()
+        listed = set(generator.words())
+        detail = ""
+    except (OSError, RuntimeError) as exc:
+        phrase, listed, detail = "", set(), str(exc)
+    # Each word has at least three letters, so a whole passphrase has at least this many characters.
+    checks.record("Generates passphrases from the word list",
+                  len(listed) == generator.WORD_COUNT and len(phrase) >= generator.DEFAULT_WORDS * 4 - 1, detail)
+
+
 def _check_vault(checks: _Checks, gpg: str, scratch: Path) -> None:
     """This also covers Python's random numbers and hashing, which the download's trimming could break."""
     path = scratch / "vault" / "vault.gpg"
@@ -212,8 +250,10 @@ def _check_gnupg(checks: _Checks, report: dict, source: Path, scratch: Path) -> 
 
     _check_passphrase_round_trip(checks, gpg, source, scratch)
     _check_the_check(checks, gpg, source, scratch)
+    _check_archive_round_trip(checks, gpg, scratch)
     _check_every_algorithm(checks, gpg, source, scratch)
     _check_key_round_trip(checks, gpg, source, scratch)
+    _check_generator(checks)
     _check_vault(checks, gpg, scratch)
 
 
