@@ -36,10 +36,13 @@ MIN_GPG_VERSION = (2, 2, 8)
 #: Applied to every gpg call. --no-symkey-cache stops gpg-agent keeping a
 #: passphrase after use: without it, a restore right after encrypting succeeds
 #: with no prompt at all. The two --no-auto-key options keep a "local only"
-#: promise even if the user's gpg.conf enables keyserver lookups.
+#: promise even if the user's gpg.conf enables keyserver lookups. --no-textmode
+#: undoes "textmode" in gpg.conf, which changes line endings in what gets
+#: encrypted, so that the file restored later isn't the original. Only the check
+#: after encrypting would notice, and it can't run for keys or archives for keys.
 _BASE_ARGS = (
     "--batch", "--no-tty", "--status-fd", "2", "--no-symkey-cache",
-    "--no-auto-key-retrieve", "--no-auto-key-locate",
+    "--no-auto-key-retrieve", "--no-auto-key-locate", "--no-textmode",
 )
 
 

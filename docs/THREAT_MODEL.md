@@ -110,8 +110,10 @@ hash of the original, which is read last. Otherwise the file is deleted, that ro
 reason, and the rest of the batch carries on. If the original changed while this was happening, the
 app says so, rather than calling anything damaged.
 
-During review this caught a real case. With `textmode` in `gpg.conf`, GnuPG encrypts and decrypts
-without complaint, but the file that comes back has different line endings.
+During review this caught a real case. With `textmode` in `gpg.conf`, GnuPG encrypted and decrypted
+without complaint, but the file that came back had different line endings. Every GnuPG call now
+passes `--no-textmode`, so that setting can't change any file, including the ones this check can't
+cover.
 
 What a passed check shows: at that moment, on this computer, with this GnuPG and the passphrase the
 app was given, the file decrypts to exactly the bytes of the original. What it can't show:
