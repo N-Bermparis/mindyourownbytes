@@ -1,0 +1,527 @@
+/* The project's website: one page, in the style of an old terminal and a classic desktop window.
+   Only fonts already on the visitor's computer are used, so nothing is fetched from elsewhere. */
+
+:root {
+  color-scheme: dark;
+  --black: #0a0a0a;
+  --pane: #0d0d0d;
+  --rule: #1e1e1e;
+  --cream: #d4c9a8;
+  --dust: #8c7f5e;
+  --amber: #f59e0b;
+  --platinum: #c8c4bc;
+  --platinum-hover: #d6d2ca;
+  --bevel-light: #f0ede8;
+  --bevel-dark: #504840;
+  --button-light: #e8e4dc;
+  --button-dark: #706860;
+  --stripe: #9d968c;
+  --ink: #1a1614;
+  --serif: "Playfair Display", "Bodoni MT", Didot, "Palatino Linotype", Georgia, serif;
+  --mono: "Lucida Sans Typewriter", "Lucida Console", Consolas, "Courier New", monospace;
+  --ui: "IBM Plex Mono", Consolas, "Lucida Console", "Courier New", monospace;
+  --column: 760px;
+  --gutter: 21px;
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html {
+  background: var(--black);
+  scroll-padding-top: 76px;
+  -webkit-text-size-adjust: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--black);
+  color: var(--cream);
+  font: 14px/1.75 var(--mono);
+}
+
+::selection {
+  background: var(--amber);
+  color: var(--black);
+}
+
+a {
+  color: var(--amber);
+  text-decoration: underline;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 3px;
+}
+
+a:hover {
+  color: var(--cream);
+}
+
+:focus-visible {
+  outline: 2px solid var(--amber);
+  outline-offset: 3px;
+}
+
+.skip {
+  position: absolute;
+  left: -9999px;
+  top: 12px;
+  z-index: 20;
+  padding: 6px 12px;
+  background: var(--amber);
+  color: var(--black);
+  font: 13px var(--ui);
+}
+
+.skip:focus {
+  left: 16px;
+}
+
+/* The bar along the top. */
+
+.site-nav {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  background: rgba(10, 10, 10, 0.96);
+  border-bottom: 1px solid var(--rule);
+}
+
+.nav-inner {
+  display: flex;
+  align-items: stretch;
+  max-width: var(--column);
+  height: 55px;
+  margin: 0 auto;
+  padding: 0 var(--gutter);
+}
+
+.brand {
+  margin-right: 24px;
+  color: var(--amber);
+  font: 700 17px/55px var(--serif);
+  letter-spacing: 0.03em;
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+.brand:hover {
+  color: var(--amber);
+}
+
+.nav-links {
+  display: flex;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.nav-links::-webkit-scrollbar {
+  display: none;
+}
+
+.nav-links a {
+  display: flex;
+  align-items: center;
+  padding: 0 12px;
+  border-bottom: 2px solid transparent;
+  color: var(--dust);
+  font: 12px var(--ui);
+  letter-spacing: 0.06em;
+  text-decoration: none;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.nav-links a:hover {
+  color: var(--cream);
+}
+
+.nav-links a[aria-current="true"] {
+  border-bottom-color: var(--amber);
+  color: var(--amber);
+}
+
+/* The page. */
+
+main {
+  max-width: var(--column);
+  margin: 0 auto;
+  padding: 49px var(--gutter) 70px;
+}
+
+section + section {
+  margin-top: 70px;
+}
+
+h2 {
+  margin: 0 0 14px;
+  color: var(--amber);
+  font: 700 30px/1.2 var(--serif);
+  letter-spacing: 0.01em;
+}
+
+h3 {
+  margin: 28px 0 6px;
+  color: var(--amber);
+  font: 700 17px/1.35 var(--serif);
+  letter-spacing: 0.01em;
+}
+
+p,
+li {
+  max-width: 68ch;
+}
+
+p {
+  margin: 0 0 14px;
+}
+
+strong {
+  color: #e8dfc4;
+  font-weight: 700;
+}
+
+em {
+  font-style: normal;
+  color: #e8dfc4;
+}
+
+code {
+  padding: 1px 5px;
+  border: 1px solid var(--rule);
+  background: var(--pane);
+  font: 0.95em var(--mono);
+}
+
+blockquote {
+  margin: 28px 0;
+  padding: 2px 0 2px 20px;
+  border-left: 2px solid var(--amber);
+}
+
+blockquote p {
+  margin: 0 0 8px;
+  color: #e8dfc4;
+  font: italic 400 20px/1.5 var(--serif);
+}
+
+blockquote cite {
+  color: var(--dust);
+  font: 12px/1.6 var(--ui);
+  font-style: normal;
+}
+
+/* Lists marked with the window's close box. */
+
+ul.marked {
+  margin: 0 0 14px;
+  padding: 0;
+  list-style: none;
+}
+
+ul.marked li {
+  position: relative;
+  margin: 0 0 10px;
+  padding-left: 22px;
+}
+
+ul.marked li::before {
+  content: "";
+  position: absolute;
+  top: 0.62em;
+  left: 2px;
+  width: 7px;
+  height: 7px;
+  background: var(--amber);
+}
+
+/* The steps really are a sequence: the app numbers them too. */
+
+.steps {
+  margin: 21px 0 35px;
+  padding: 0;
+  list-style: none;
+  counter-reset: step;
+}
+
+.steps li {
+  position: relative;
+  margin: 0 0 21px;
+  padding-left: 52px;
+  counter-increment: step;
+}
+
+.steps li::before {
+  content: counter(step);
+  position: absolute;
+  top: -1px;
+  left: 4px;
+  color: var(--amber);
+  font: 700 30px/1 var(--serif);
+}
+
+.steps h3 {
+  margin: 0 0 2px;
+}
+
+.steps p {
+  margin: 0;
+}
+
+.aside-title {
+  margin-top: 42px;
+}
+
+.columns {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px 35px;
+  margin-bottom: 14px;
+}
+
+.columns h3 {
+  margin-top: 14px;
+}
+
+.actions {
+  margin: 21px 0 28px;
+}
+
+/* A window from an old desktop: bevelled platinum, a striped title bar, a dark pane. */
+
+.window {
+  margin: 0 0 28px;
+  border: 2px solid;
+  border-color: var(--bevel-light) var(--bevel-dark) var(--bevel-dark) var(--bevel-light);
+  background: var(--platinum);
+}
+
+.titlebar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 8px;
+  border-bottom: 2px solid #a09890;
+  background: var(--platinum);
+}
+
+.titlebar .close {
+  flex: none;
+  width: 15px;
+  height: 15px;
+  border: 1px solid;
+  border-color: var(--button-light) var(--button-dark) var(--button-dark) var(--button-light);
+  background: var(--platinum);
+}
+
+.titlebar .title {
+  flex: none;
+  color: var(--ink);
+  font: 700 12px/1.5 var(--mono);
+  letter-spacing: 0.03em;
+}
+
+.titlebar .stripes {
+  flex: 1;
+  min-width: 16px;
+  height: 11px;
+  background: repeating-linear-gradient(to bottom, var(--stripe) 0 1px, transparent 1px 3px);
+}
+
+.titlebar .byline {
+  flex: none;
+  color: var(--bevel-dark);
+  font: 10px/1.5 var(--mono);
+  letter-spacing: 0.04em;
+}
+
+.pane {
+  margin: 0;
+  padding: 21px 28px;
+  background: var(--pane);
+  color: var(--cream);
+  font: 13px/1.75 var(--mono);
+}
+
+pre.pane {
+  overflow-x: auto;
+  white-space: pre;
+}
+
+.prompt {
+  color: var(--amber);
+}
+
+.shot img {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+
+/* The note that types itself out. The real text keeps its place, and is what screen readers get. */
+
+.hero .window {
+  margin-bottom: 0;
+}
+
+.motive h1 {
+  margin: 0 0 14px;
+  color: var(--amber);
+  font: 700 15px/1.6 var(--mono);
+  letter-spacing: 0.02em;
+}
+
+.motive p:last-child {
+  margin-bottom: 0;
+}
+
+.typing-area {
+  position: relative;
+}
+
+.typing-area.is-typing > .motive:not(.typed),
+.typing-area.is-typing > .motive:not(.typed) h1 {
+  color: transparent;
+}
+
+.typed {
+  position: absolute;
+  top: 0;
+  right: 0;
+  left: 0;
+  padding: inherit;
+}
+
+.cursor {
+  display: inline-block;
+  width: 0.6em;
+  height: 1.15em;
+  margin-left: 1px;
+  vertical-align: text-bottom;
+  background: var(--amber);
+  animation: blink 1s steps(1) infinite;
+}
+
+@keyframes blink {
+  50% {
+    opacity: 0;
+  }
+}
+
+.controls {
+  margin-top: 6px;
+  text-align: center;
+}
+
+.controls[hidden] {
+  display: none;
+}
+
+/* Rounded, bevelled buttons, as on the same old desktop. */
+
+.pill {
+  display: inline-block;
+  margin: 8px 6px 0 0;
+  padding: 5px 20px;
+  border: 2px solid;
+  border-color: var(--button-light) var(--button-dark) var(--button-dark) var(--button-light);
+  border-radius: 50px;
+  background: var(--platinum);
+  color: #1a1a1a;
+  font: 13px/1.6 var(--ui);
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.pill:hover {
+  background: var(--platinum-hover);
+  color: #1a1a1a;
+}
+
+.pill:active {
+  border-color: var(--button-dark) var(--button-light) var(--button-light) var(--button-dark);
+}
+
+.controls .pill {
+  margin: 8px 6px;
+}
+
+/* The line along the bottom. */
+
+.site-footer {
+  padding: 18px var(--gutter) 32px;
+  border-top: 1px solid var(--rule);
+  color: var(--dust);
+  font: 11px/2 var(--ui);
+  letter-spacing: 0.1em;
+  text-align: center;
+  text-transform: uppercase;
+}
+
+.site-footer p {
+  max-width: none;
+  margin: 0;
+}
+
+@media (max-width: 640px) {
+  :root {
+    --gutter: 16px;
+  }
+
+  html {
+    scroll-padding-top: 104px;
+  }
+
+  .nav-inner {
+    flex-wrap: wrap;
+    height: auto;
+  }
+
+  .brand {
+    line-height: 46px;
+  }
+
+  .nav-links {
+    width: 100%;
+    margin: 0 -12px;
+  }
+
+  .nav-links a {
+    height: 40px;
+  }
+
+  main {
+    padding-top: 32px;
+    padding-bottom: 56px;
+  }
+
+  section + section {
+    margin-top: 56px;
+  }
+
+  h2 {
+    font-size: 26px;
+  }
+
+  .pane {
+    padding: 16px 18px;
+  }
+
+  .columns {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 420px) {
+  .titlebar .byline {
+    display: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .cursor {
+    animation: none;
+  }
+}
