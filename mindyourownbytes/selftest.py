@@ -224,6 +224,29 @@ def _check_key_round_trip(checks: _Checks, gpg: str, source: Path, scratch: Path
     checks.record("Restores with the key", _is_restored(restored))
 
 
+def _check_post_quantum(checks: _Checks, gpg: str, source: Path, scratch: Path) -> None:
+    """The download's own GnuPG is new enough for post-quantum keys, so there they have to work."""
+    name = "Post-quantum keys work, where this GnuPG has them"
+    if not core.supports_post_quantum(gpg):
+        required = bool(getattr(sys, "frozen", False))
+        checks.record(name, not required, "this GnuPG can't make them")
+        return
+    uid = "Post-quantum self test <post-quantum@example.invalid>"
+    created = subprocess.run(
+        [gpg, "--batch", "--no-tty", "--passphrase", "", "--pinentry-mode", "loopback",
+         "--quick-generate-key", uid, "pqc", "default", "1d"],
+        capture_output=True, timeout=120, check=False, creationflags=core.windows_flags(),
+    )
+    key = next((key for key in core.list_public_keys(gpg) if key.uid == uid), None)
+    if key is None or not core.is_post_quantum(key):
+        checks.record(name, False, created.stderr[-300:].decode(errors="replace"))
+        return
+    encrypted = _job(gpg, source, scratch / "post-quantum-encrypted", "encrypt", "public-key", key.fingerprint)
+    restored = _job(gpg, encrypted.outputs[0], scratch / "post-quantum-restored", "restore", "public-key") \
+        if encrypted.succeeded else encrypted
+    checks.record(name, _is_restored(restored), key.algorithm)
+
+
 def _check_generator(checks: _Checks) -> None:
     """The word list is a separate file, which the download has to bring along unchanged."""
     try:
@@ -271,6 +294,7 @@ def _check_gnupg(checks: _Checks, report: dict, source: Path, scratch: Path) -> 
     _check_archive_round_trip(checks, gpg, scratch)
     _check_every_algorithm(checks, gpg, source, scratch)
     _check_key_round_trip(checks, gpg, source, scratch)
+    _check_post_quantum(checks, gpg, source, scratch)
     _check_generator(checks)
     _check_vault(checks, gpg, scratch)
 

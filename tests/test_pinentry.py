@@ -11,11 +11,22 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 import unittest
 from pathlib import Path
 
 from mindyourownbytes import recovery
-from mindyourownbytes.core import SourceItem, encrypt_archive, process_items
+from mindyourownbytes.core import (
+    GpgFailure,
+    SourceItem,
+    add_post_quantum_subkey,
+    create_post_quantum_key,
+    encrypt_archive,
+    is_post_quantum,
+    list_public_keys,
+    process_items,
+    supports_post_quantum,
+)
 from tests.support import GpgTestCase
 
 PASSPHRASE = "correct horse battery staple"
@@ -190,6 +201,44 @@ class PinentryTests(GpgTestCase):
         restored = self.job([item], "restored", "restore")
         self.assertEqual(restored.succeeded, 1, self.progress)
         self.assertEqual(self.dialogs(), 1, "restoring must still ask for the passphrase")
+
+    def require_post_quantum(self) -> None:
+        if not supports_post_quantum(self.gpg):
+            self.skipTest("this GnuPG can't make post-quantum keys")
+
+    def test_a_post_quantum_key_is_made_with_gnupgs_own_prompt_and_works(self):
+        self.require_post_quantum()
+        fingerprint = create_post_quantum_key(self.gpg, "Alex Example <alex@example.invalid>")
+        self.assertEqual(self.dialogs(), 1, "GnuPG asked for the new key's passphrase itself")
+        key = next(key for key in list_public_keys(self.gpg) if key.fingerprint == fingerprint)
+        self.assertTrue(key.has_secret)
+        self.assertTrue(is_post_quantum(key), key.algorithm)
+        self.assertEqual(key.uid, "Alex Example <alex@example.invalid>")
+        encrypted = process_items(self.gpg, [self.write("a.txt", b"quantum safe")], self.root / "exports",
+                                  "encrypt", "public-key", fingerprint, threading.Event(), lambda *args: None)
+        self.assertRegex(self.packets(encrypted.outputs[0]), r"pubkey enc packet: version \d+, algo 8\b")
+        self._stop_agent()  # So that restoring has to ask for the key's passphrase again.
+        restored = self.job([SourceItem(encrypted.outputs[0], Path("a.txt.gpg"), 1)], "restored", "restore")
+        self.assertEqual(restored.outputs[0].read_bytes(), b"quantum safe")
+
+    def test_an_older_key_can_get_a_post_quantum_part(self):
+        self.require_post_quantum()
+        fingerprint = self.generate_key("Classic <classic@example.invalid>", passphrase=PASSPHRASE)
+        before = next(key for key in list_public_keys(self.gpg) if key.fingerprint == fingerprint)
+        self.assertFalse(is_post_quantum(before))
+        time.sleep(1.1)  # Timestamps are in seconds, and a tie would keep the older subkey.
+        part = add_post_quantum_subkey(self.gpg, fingerprint)
+        self.assertRegex(part, r"^[0-9A-F]{40,64}$")
+        after = next(key for key in list_public_keys(self.gpg) if key.fingerprint == fingerprint)
+        self.assertTrue(is_post_quantum(after), after.algorithm)
+        self.assertEqual(self.dialogs(), 1, "GnuPG asked for the key's passphrase itself")
+
+    def test_cancelling_gnupgs_prompt_makes_no_key(self):
+        self.require_post_quantum()
+        self.answer_with(None)
+        with self.assertRaisesRegex(GpgFailure, "cancelled, so no key was made"):
+            create_post_quantum_key(self.gpg, "Nobody <nobody@example.invalid>")
+        self.assertEqual(list_public_keys(self.gpg), [])
 
     def test_the_recovery_guides_commands_really_restore_everything(self):
         # Exactly as the guide prints them, with GnuPG asking for the passphrase as it would for a person.

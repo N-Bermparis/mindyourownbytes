@@ -46,7 +46,8 @@ class SelfTestTests(unittest.TestCase):
                     "The check refuses a copy of something else, keeping nothing",
                     "Generates passphrases from the word list", "Recognizes a download as the file made here",
                     "Notices a file under another name", "Packs a folder into one checked archive",
-                    "The archive hides the names inside", "Restores an archive into the same folder"}
+                    "The archive hides the names inside", "Restores an archive into the same folder",
+                    "Post-quantum keys work, where this GnuPG has them"}
         self.assertLessEqual(expected, names)
 
     def test_fails_without_gnupg(self):

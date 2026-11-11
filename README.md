@@ -59,7 +59,8 @@ can't read. This app makes that a drag and drop.
 - **Organize into collections** such as Taxes or Medical, then browse, search, and move files
   in the Library. Collections are plain folders, so they work in Explorer and on any cloud too.
 - **Or use OpenPGP keys** you already manage in Kleopatra, with each key's type shown, including
-  post-quantum Kyber keys with GnuPG 2.5 or later.
+  post-quantum Kyber keys with GnuPG 2.5 or later. **Tools > Post-quantum keys** checks what your
+  GnuPG can do, explains who can open such files, and can create one or upgrade a key of yours.
 - **Restore safely.** Forged, tampered, and truncated files are rejected, with nothing written.
   Each download is also compared with a checksum saved on your computer when it was made, so an
   older or swapped copy is flagged. Checksums can be saved as a list and checked on another computer.
@@ -224,7 +225,8 @@ Restoring never asks, because each file records its own algorithm. Older ciphers
 
 With an **OpenPGP key**, the key decides, so the key list shows each key's type. Classical keys such as
 RSA and Curve25519 aren't safe against a future quantum computer, while Kyber keys are designed to be
-([more on this](docs/THREAT_MODEL.md#other-limits)).
+([more on this](docs/THREAT_MODEL.md#other-limits)). **Tools > Post-quantum keys** walks you through it.
+Before using one, know that files encrypted to it only open with GnuPG 2.5 or later.
 
 ## No lock-in
 

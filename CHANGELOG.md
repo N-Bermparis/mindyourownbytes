@@ -21,6 +21,9 @@ First public version. Not independently audited.
 - Passphrase encryption with a choice of AES-256 (the default), Twofish, or Camellia-256, and
   public-key encryption with Kleopatra/GnuPG keys, with each key's type shown in the list.
 - Type one passphrase for a whole batch, instead of one prompt per file.
+- A post-quantum assistant, under Tools, which checks whether GnuPG can make post-quantum keys,
+  explains who can open files encrypted to them, and can create one or add a post-quantum part to
+  a key of yours. GnuPG asks for any passphrase itself.
 - Generate a passphrase wherever you choose one: seven random words from EFF's Long Wordlist, or 30
   random letters and digits, with its exact strength stated in plain words.
 - Each file encrypted with a typed or saved passphrase is decrypted again and compared with its

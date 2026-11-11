@@ -68,6 +68,7 @@ from mindyourownbytes.core import (
 from mindyourownbytes.gui import handover, icons, provider_view, theme
 from mindyourownbytes.gui.dialogs import PassphraseDialog, ProtectionDialog
 from mindyourownbytes.gui.library_page import LibraryPage
+from mindyourownbytes.gui.post_quantum import PostQuantumDialog
 from mindyourownbytes.gui.recovery_guide import RecoveryGuide
 from mindyourownbytes.gui.vault_page import VaultPage
 from mindyourownbytes.gui.widgets import (
@@ -839,6 +840,7 @@ class MainWindow(QMainWindow):
         self._add_action(tools_menu, "&Import checksums…", self.import_checksums)
         self._add_action(tools_menu, "&Forget saved checksums…", self.forget_checksums)
         tools_menu.addSeparator()
+        self.post_quantum_action = self._add_action(tools_menu, "&Post-quantum keys…", self.show_post_quantum)
         self._add_action(tools_menu, "&Locate GnuPG…", self.select_gpg)
         kleopatra = self._add_action(tools_menu, "Open &Kleopatra", self.open_kleopatra)
         kleopatra.setEnabled(find_kleopatra() is not None)
@@ -951,6 +953,13 @@ class MainWindow(QMainWindow):
             "<p>No accounts, no telemetry, and no network connections.</p>",
         )
 
+    def show_post_quantum(self):
+        if self.running:
+            return
+        dialog = PostQuantumDialog(self, self.gpg)
+        dialog.keys_changed.connect(self.refresh_keys)
+        dialog.exec()
+
     def import_checksums(self):
         """Add checksums saved on another computer, so that restoring here checks downloads against them."""
         if self.running:
@@ -1054,7 +1063,7 @@ class MainWindow(QMainWindow):
 
     def _apply_mode(self):
         advanced = self.advanced()
-        for action in (self.check_action, self.pinentry_action, self.records_action):
+        for action in (self.check_action, self.pinentry_action, self.records_action, self.post_quantum_action):
             action.setVisible(advanced)
         if not advanced and self.operation == "encrypt" and self.key_radio.isChecked():
             self.passphrase_radio.setChecked(True)

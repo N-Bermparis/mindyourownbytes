@@ -533,6 +533,122 @@ class TransferFlowTests(GuiCase):
         self.assertIn("locked", self.message_boxes["warning"].call_args.args[2])
 
 
+class PostQuantumAssistantTests(GuiCase):
+    def keys(self):
+        from mindyourownbytes.core import PublicKey
+        return [PublicKey("A" * 40, "Classic <c@example.invalid>", True, "Curve25519"),
+                PublicKey("B" * 40, "Quantum <q@example.invalid>", True, "Kyber-768 (post-quantum)"),
+                PublicKey("C" * 40, "Someone else <s@example.invalid>", False, "RSA-3072")]
+
+    def dialog(self, supported=True):
+        from mindyourownbytes.gui import post_quantum
+        patches = (patch.object(post_quantum, "supports_post_quantum", return_value=supported),
+                   patch.object(post_quantum, "list_public_keys", return_value=self.keys()))
+        for patcher in patches:
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        dialog = post_quantum.PostQuantumDialog(self.window, self.gpg)
+        self.addCleanup(dialog.close)
+        return post_quantum, dialog
+
+    def test_says_what_this_gnupg_can_do_and_lists_only_your_own_keys(self):
+        _, dialog = self.dialog()
+        self.assertIn("can make post-quantum keys", dialog.status.text())
+        self.assertEqual(dialog.table.rowCount(), 2)
+        self.assertEqual([dialog.table.item(row, 2).text() for row in range(2)], ["No", "Yes"])
+        text = " ".join(child.text() for child in dialog.findChildren(QLabel))
+        for phrase in ("GnuPG 2.5 or later", "Back it up", "AES-256", "other OpenPGP apps"):
+            self.assertIn(phrase, text)
+
+    def test_without_support_it_explains_and_offers_nothing_to_click(self):
+        _, dialog = self.dialog(supported=False)
+        self.assertIn("can't make post-quantum keys", dialog.status.text())
+        dialog.table.selectRow(0)
+        self.assertFalse(dialog.create_button.isEnabled())
+        self.assertFalse(dialog.add_button.isEnabled())
+
+    def test_only_a_key_without_a_post_quantum_part_can_get_one(self):
+        _, dialog = self.dialog()
+        self.assertFalse(dialog.add_button.isEnabled())
+        dialog.table.selectRow(1)
+        self.assertFalse(dialog.add_button.isEnabled())
+        dialog.table.selectRow(0)
+        self.assertTrue(dialog.add_button.isEnabled())
+
+    def finish(self, dialog):
+        self.wait_until(lambda: dialog._job is None, timeout=20)
+
+    def test_adding_a_part_warns_first_then_asks_gnupg(self):
+        module, dialog = self.dialog()
+        dialog.table.selectRow(0)
+        changed = []
+        dialog.keys_changed.connect(lambda: changed.append(True))
+        with patch.object(QMessageBox, "question", return_value=QMessageBox.StandardButton.No), patch.object(
+            module, "add_post_quantum_subkey"
+        ) as add:
+            dialog.add_to_selected()
+        add.assert_not_called()
+        with patch.object(QMessageBox, "question", return_value=QMessageBox.StandardButton.Yes) as question, \
+                patch.object(module, "add_post_quantum_subkey", return_value="D" * 64) as add:
+            dialog.add_to_selected()
+            self.finish(dialog)
+        self.assertIn("only open with GnuPG 2.5 or later", question.call_args.args[2])
+        add.assert_called_once_with(self.gpg, "A" * 40)
+        self.assertEqual(changed, [True])
+        self.assertIn("Back up the key again", self.message_boxes["information"].call_args.args[2])
+
+    def test_creating_a_key_asks_for_a_name_and_says_to_back_it_up(self):
+        module, dialog = self.dialog()
+        form = MagicMock()
+        form.exec.return_value = True
+        form.uid.return_value = "Alex Example <alex@example.invalid>"
+        with patch.object(module, "NewKeyDialog", return_value=form), patch.object(
+            module, "create_post_quantum_key", return_value="E" * 40
+        ) as create:
+            dialog.create_key()
+            self.finish(dialog)
+        create.assert_called_once_with(self.gpg, "Alex Example <alex@example.invalid>")
+        self.assertIn("Back it up in Kleopatra", self.message_boxes["information"].call_args.args[2])
+
+    def test_a_failure_is_shown_and_changes_nothing(self):
+        module, dialog = self.dialog()
+        form = MagicMock()
+        form.exec.return_value = True
+        form.uid.return_value = "Alex"
+        changed = []
+        dialog.keys_changed.connect(lambda: changed.append(True))
+        with patch.object(module, "NewKeyDialog", return_value=form), patch.object(
+            module, "create_post_quantum_key", side_effect=module.GpgFailure("The passphrase prompt was cancelled.")
+        ):
+            dialog.create_key()
+            self.finish(dialog)
+        self.assertEqual(changed, [])
+        self.assertIn("cancelled", self.message_boxes["warning"].call_args.args[2])
+
+    def test_the_new_key_form_checks_what_is_typed(self):
+        from PySide6.QtWidgets import QDialogButtonBox
+
+        from mindyourownbytes.gui.post_quantum import NewKeyDialog
+        form = NewKeyDialog(None)
+        ok = form.buttons.button(QDialogButtonBox.StandardButton.Ok)
+        self.assertFalse(ok.isEnabled())
+        form.name.setText("Alex Example")
+        self.assertTrue(ok.isEnabled())
+        form.email.setText("not an email")
+        self.assertFalse(ok.isEnabled())
+        self.assertIn("email", form.problem.text())
+        form.email.setText("alex@example.invalid")
+        self.assertEqual(form.uid(), "Alex Example <alex@example.invalid>")
+
+    def test_the_tools_menu_opens_it_and_new_keys_reach_the_key_list(self):
+        titles = [action.text().replace("&", "") for action in self.window.findChildren(QAction)]
+        self.assertIn("Post-quantum keys…", titles)
+        with patch.object(main_window, "PostQuantumDialog") as dialog, patch.object(self.window, "refresh_keys"):
+            self.window.show_post_quantum()
+            dialog.return_value.keys_changed.connect.assert_called_once_with(self.window.refresh_keys)
+            dialog.return_value.exec.assert_called_once()
+
+
 @unittest.skipUnless(HAS_QT, "PySide6 is not installed")
 class RecoveryGuideTests(unittest.TestCase):
     def setUp(self):
@@ -1452,6 +1568,12 @@ class SimpleAndAdvancedModeTests(GuiCase):
         self.wait_until(lambda: window._thread is None)
         self.assertRegex(self.packets(self.root / "exports" / "a.txt.gpg", PASSPHRASE), r"cipher 9\b")
         self.assertIn("with AES-256 and checked", window.result_bar.title_label.text())
+
+    def test_the_post_quantum_assistant_is_an_advanced_option(self):
+        window, _ = self.fresh()
+        self.assertFalse(window.post_quantum_action.isVisible())
+        window.advanced_action.setChecked(True)
+        self.assertTrue(window.post_quantum_action.isVisible())
 
     def test_simple_mode_always_keeps_checksums_and_hides_the_switch(self):
         window, _ = self.fresh(advanced="false", keep_records="false")
