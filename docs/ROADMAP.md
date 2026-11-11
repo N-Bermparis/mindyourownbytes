@@ -49,6 +49,7 @@ specific provider. Those are not missing features; they are the point.
 - [ ] Move folder scanning off the UI thread for very large trees
 - [x] Show, with your own files, what a cloud provider can and can't see
 - [ ] Better detection of cloud-synced folders
+- [x] Restore a whole collection, or a mix of passphrase and key files, in one go
 - [x] A step-by-step guide to restoring on another computer
 - [ ] Periodic restore-test reminders
 - [ ] Input fuzzing

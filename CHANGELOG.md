@@ -32,6 +32,8 @@ First public version. Not independently audited.
 - "What your provider sees", which shows the same files as you see them and as your cloud provider
   does, with lists of what it can and can't see.
 - Restore that selects how to unlock files, can try every saved passphrase, and retries only what failed.
+  One batch can mix passphrase files and files for your key, and the Library restores everything shown,
+  such as a whole collection, keeping its folders.
 - A step-by-step guide to restoring on another computer, under Help, for Windows, macOS, or Linux,
   with or without this app. It can be saved as a text file to keep beside your backups.
 - Warnings before restoring into a synced folder, when originals already appear to be in

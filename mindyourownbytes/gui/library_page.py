@@ -209,8 +209,14 @@ class LibraryPage(QWidget):
     def _update_actions(self) -> None:
         count = len(self._selected_entries())
         self.move_button.setEnabled(bool(count))
-        self.restore_button.setEnabled(bool(count))
-        self.restore_button.setText(f"Restore {plural(count)}" if count else "Restore")
+        # With nothing selected, everything shown: a whole collection, say, in one go.
+        shown = len(self.visible)
+        self.restore_button.setEnabled(bool(count or shown))
+        self.restore_button.setText(f"Restore {plural(count)}" if count
+                                    else f"Restore all {plural(shown)}" if shown > 1
+                                    else "Restore 1 file" if shown else "Restore")
+        self.restore_button.setToolTip("" if count else "Restores every file shown, keeping their folders. "
+                                       "Select some to restore only those.")
 
     def _selected_entries(self) -> list[LibraryEntry]:
         rows = sorted({index.row() for index in self.table.selectedIndexes()})
@@ -260,9 +266,10 @@ class LibraryPage(QWidget):
         QDesktopServices.openUrl(QUrl.fromLocalFile(str(root)))
 
     def restore_selected(self) -> None:
-        selected = self._selected_entries()
+        """Restore the selected files, or every file shown when none are selected."""
+        selected = self._selected_entries() or list(self.visible)
         if not selected:
-            QMessageBox.information(self, "Nothing selected", "Select one or more files first.")
+            QMessageBox.information(self, "Nothing to restore", "There are no encrypted files here yet.")
             return
         self.restore_requested.emit(
             [SourceItem(entry.path, entry.relative, entry.size) for entry in selected]

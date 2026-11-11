@@ -33,6 +33,8 @@ release pull request. Passing this list is not a security certification.
       Help > Restore on another computer, once with the app and once with its plain GnuPG commands.
 - [ ] Open a file and the vault using plain `gpg`, without this app.
 - [ ] Try a wrong passphrase, a missing key, a corrupt file, and Cancel.
+- [ ] Restore one batch that mixes passphrase files with files for a key that has its own passphrase,
+      and restore a whole collection from the Library with nothing selected.
 - [ ] Test spaces, Unicode, very long names, and name collisions.
 - [ ] Generate a passphrase of each kind when encrypting, in the vault, and for the master passphrase,
       and check that encrypting waits until "I've saved this passphrase" is ticked.

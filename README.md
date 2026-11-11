@@ -162,9 +162,11 @@ been tested on macOS. Reports are very welcome.
 
 **Restore**
 
-1. Download your `.gpg` files and drop them on the **Restore** screen, or select them in the
-   **Library**.
-2. The app selects how to unlock them based on how they were encrypted, and you can change it.
+1. Download your `.gpg` files and drop them on the **Restore** screen, or a whole folder of them. In
+   the **Library**, select files, or select none to restore everything shown, such as a collection.
+   Folders are kept either way.
+2. The app selects how to unlock them based on how they were encrypted, and you can change it. A
+   batch can mix both kinds: type the passphrase once, and files for your key are opened with it.
 3. Choose a folder that no cloud service syncs, then click **Restore**.
 
 ### Which method should I choose?

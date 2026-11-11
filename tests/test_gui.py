@@ -374,6 +374,29 @@ class TransferFlowTests(GuiCase):
         self.assertTrue(self.window.key_radio.isChecked())
         self.assertEqual(self.window.method(), "pinentry")
 
+    def test_a_mix_of_passphrase_and_key_files_preselects_the_passphrase_and_says_what_happens(self):
+        encrypted = self.encrypted_file("typed.txt", b"typed")
+        fingerprint = self.generate_key("Me <me@example.invalid>")
+        self.window.refresh_keys()
+        self.window.add_paths([str(self.write("k.txt", b"for the key"))])
+        self.window.set_method("public-key")
+        self.window.key_combo.setCurrentIndex(self.window.key_combo.findData(fingerprint))
+        self.window.start()
+        self.wait_until(lambda: not self.window.running)
+        self.wait_until(lambda: self.window._thread is None)
+        self.window.clear_files()
+        self.window.set_operation("restore")
+        self.window.add_paths([str(encrypted), str(self.root / "exports" / "k.txt.gpg")])
+        self.assertEqual(self.window.method(), "once", "the passphrase opens the rest")
+        self.assertIn("One of them is for your key", self.window.passphrase_help.text())
+        self.run_with_typed_passphrase()
+        self.assertEqual((self.root / "restored" / "typed.txt").read_bytes(), b"typed")
+        self.assertEqual((self.root / "restored" / "k.txt").read_bytes(), b"for the key")
+        self.window.clear_files()
+        self.window.add_paths([str(self.root / "exports" / "k.txt.gpg")])
+        self.assertTrue(self.window.key_radio.isChecked(), "only files for a key need the key")
+        self.assertNotIn("for your key", self.window.passphrase_help.text())
+
     def test_preselection_never_overrides_the_users_own_choice(self):
         encrypted = self.encrypted_file()
         self.window.set_operation("restore")
@@ -1666,16 +1689,37 @@ class LibraryFlowTests(GuiCase):
         page.refresh()
         self.assertIs(page.stack.currentWidget(), page.content)
 
-    def test_actions_are_only_available_with_a_selection(self):
+    def test_move_needs_a_selection_and_restore_takes_everything_shown_without_one(self):
         self.export("a.txt.gpg")
         self.export("b.txt.gpg")
         self.window.show_library()
         page = self.window.library_page
-        self.assertFalse(page.restore_button.isEnabled())
         self.assertFalse(page.move_button.isEnabled())
-        page.table.selectRow(0)
         self.assertTrue(page.restore_button.isEnabled())
+        self.assertEqual(page.restore_button.text(), "Restore all 2 files")
+        page.table.selectRow(0)
+        self.assertTrue(page.move_button.isEnabled())
         self.assertEqual(page.restore_button.text(), "Restore 1 file")
+
+    def test_restoring_everything_in_a_collection_keeps_its_folders(self):
+        self.export("Taxes/2026/return.pdf.gpg")
+        self.export("Taxes/receipts.pdf.gpg")
+        self.export("Medical/scan.png.gpg")
+        self.window.show_library()
+        page = self.window.library_page
+        page.select_collection("Taxes")
+        self.assertEqual(page.restore_button.text(), "Restore all 2 files")
+        page.restore_selected()
+        self.assertEqual(self.window.operation, "restore")
+        self.assertEqual(sorted(item.relative.as_posix() for item in self.window.items),
+                         ["Taxes/2026/return.pdf.gpg", "Taxes/receipts.pdf.gpg"])
+
+    def test_an_empty_library_has_nothing_to_restore(self):
+        self.window.show_library()
+        page = self.window.library_page
+        page.refresh()
+        self.assertFalse(page.restore_button.isEnabled())
+        self.assertEqual(page.restore_button.text(), "Restore")
 
     def test_new_collection_appears_in_both_screens(self):
         self.window.show_library()
