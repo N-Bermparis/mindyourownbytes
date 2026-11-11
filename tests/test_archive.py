@@ -3,6 +3,8 @@
 import hashlib
 import io
 import os
+import random
+import shutil
 import tempfile
 import time
 import unittest
@@ -74,8 +76,35 @@ class NameTests(unittest.TestCase):
 
     def test_names_inside_never_repeat_even_when_only_their_case_differs(self):
         names = archive.member_names(["Docs/a.txt", "Docs/a.txt", "docs/A.TXT", "Docs/b", "Docs/b", "c.tar.gz"])
-        self.assertEqual(names, ["Docs/a.txt", "Docs/a (2).txt", "docs/A (3).TXT", "Docs/b", "Docs/b (2)",
+        self.assertEqual(names, ["Docs/a.txt", "Docs/a (2).txt", "Docs/A (3).TXT", "Docs/b", "Docs/b (2)",
                                  "c.tar.gz"])
+
+    def test_a_file_and_a_folder_with_the_same_name_both_fit(self):
+        # Regression: a file called "docs" and a folder called "docs" went in under clashing names, so
+        # the archive couldn't be unpacked. Everything in a renamed folder moves with it.
+        self.assertEqual(archive.member_names(["docs", "docs/inside.txt", "Docs/sub/deeper.txt", "docs (2)"]),
+                         ["docs", "docs (2)/inside.txt", "docs (2)/sub/deeper.txt", "docs (2) (2)"])
+        self.assertEqual(archive.member_names(["docs/inside.txt", "DOCS", "a/b", "a/b/c.txt"]),
+                         ["docs/inside.txt", "DOCS (2)", "a/b", "a/b (2)/c.txt"])
+
+    def test_names_that_windows_cant_use_are_made_usable(self):
+        # Linux and macOS allow them, but no archive holding them could be unpacked.
+        names = archive.member_names(["a:b?.txt", "CON.txt", "ends with a dot.", "x/nul", "tab\there", "a_b_.txt"])
+        self.assertEqual(names, ["a_b_.txt", "_CON.txt", "ends with a dot._", "x/_nul", "tab_here", "a_b_ (2).txt"])
+
+    def test_any_list_of_names_can_be_unpacked_side_by_side(self):
+        pick = random.Random(5)
+        pieces = ["a", "A", "b", "a.txt", "A.TXT", "a (2)", "a (2).txt", "b?"]
+        for _ in range(500):
+            relatives = ["/".join(pick.choice(pieces) for _ in range(pick.randint(1, 3)))
+                         for _ in range(pick.randint(1, 8))]
+            names = archive.member_names(relatives)
+            keys = [tuple(part.casefold() for part in name.split("/")) for name in names]
+            folders = {key[:depth] for key in keys for depth in range(1, len(key))}
+            self.assertEqual(len(set(keys)), len(keys), relatives)
+            self.assertFalse(set(keys) & folders, relatives)
+            self.assertEqual([len(key) for key in keys], [relative.count("/") + 1 for relative in relatives])
+            self.assertTrue(all(archive.is_safe_name_part(part) for name in names for part in name.split("/")))
 
 
 class PackTests(ArchiveCase):
@@ -191,13 +220,21 @@ class UnpackTests(ArchiveCase):
                 self.assertFalse((self.root.parent / "escaped.txt").exists())
                 self.assertFalse((self.root / "escaped.txt").exists())
 
-    def test_the_same_name_twice_unpacks_nothing(self):
-        for entries in ([("a.txt", b"1"), ("A.TXT", b"2")], [("a", b"file"), ("a/b.txt", b"inside")],
-                        [("a/b.txt", b"inside"), ("a", b"file")], [("a/", b""), ("a", b"file")]):
+    def test_names_that_clash_are_numbered_so_that_everything_comes_out(self):
+        # Archives made before names were kept apart can hold the same name twice, or a file and a folder
+        # with the same name. Refusing them would keep everything in them out of reach.
+        for entries, expected in (
+            ([("a.txt", b"1"), ("A.TXT", b"2")], {"a.txt": b"1", "A (2).TXT": b"2"}),
+            ([("a", b"file"), ("a/b.txt", b"inside")], {"a": b"file", "a (2)/b.txt": b"inside"}),
+            ([("a/b.txt", b"inside"), ("a", b"file")], {"a/b.txt": b"inside", "a (2)": b"file"}),
+            ([("a/", b""), ("a", b"file")], {"a (2)": b"file"}),
+        ):
             with self.subTest(entries):
-                with self.assertRaisesRegex(archive.ArchiveError, "nothing was unpacked"):
-                    self.unpack(self.zip_of(entries, name="same.zip"))
-                self.assert_nothing_unpacked()
+                count, folder, _ = self.unpack(self.zip_of(entries, name="clashing.zip"))
+                self.assertEqual(count, len(expected))
+                self.assertEqual({p.relative_to(folder).as_posix(): p.read_bytes() for p in folder.rglob("*")
+                                  if p.is_file()}, expected)
+                shutil.rmtree(self.root / "restored")
 
     def test_folders_listed_on_their_own_are_made(self):
         count, folder, _ = self.unpack(self.zip_of([("empty folder/", b""), ("a/b.txt", b"x")]))

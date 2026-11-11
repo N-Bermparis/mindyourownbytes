@@ -698,6 +698,24 @@ class ArchiveTests(IntegrationCase):
         left = list((self.root / out).rglob("*")) if (self.root / out).exists() else []
         self.assertEqual(left, [], "a failed archive must leave nothing behind")
 
+    def test_a_file_and_a_folder_with_the_same_name_both_come_back(self):
+        # Regression: a file called "docs" and a folder called "docs", from different places, went in
+        # under clashing names. Both were reported as packed and checked, but restoring the archive failed,
+        # because one name in it was both a file and a folder.
+        file = self.write("one place/docs", b"a file called docs")
+        self.write("another place/docs/inside.txt", b"inside the folder")
+        folder = self.root / "another place" / "docs"
+        for number, (sources, expected) in enumerate((
+            ([file, folder], {"docs": b"a file called docs", "docs (2)/inside.txt": b"inside the folder"}),
+            ([folder, file], {"docs/inside.txt": b"inside the folder", "docs (2)": b"a file called docs"}),
+        )):
+            with self.subTest(list(expected)):
+                made = self.pack(sources, out=f"exports {number}")
+                self.assertEqual((made.succeeded, made.failed, made.checked), (2, 0, 2), self.progress)
+                restored = self.restore(made.outputs[0], out=f"restored {number}")
+                self.assertEqual(restored.succeeded, 1, self.progress)
+                self.assertEqual(self.contents(restored.outputs[0]), expected)
+
     def test_textmode_in_gpg_conf_leaves_an_archive_for_a_key_whole(self):
         # Regression: GnuPG stored the zip as text. Wherever the zip held a CR LF pair, which random
         # data does by chance, the archive came back damaged, and one for a key is never checked.
