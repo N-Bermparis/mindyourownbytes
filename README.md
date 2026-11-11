@@ -171,7 +171,8 @@ been tested on macOS. Reports are very welcome.
 2. The app selects how to unlock them based on how they were encrypted, and you can change it. A
    batch can mix both kinds: type the passphrase once, and files for your key are opened with it.
 3. Choose a folder that no cloud service syncs, then click **Restore**. Each row says whether the
-   download **matches your record**, or warns if it's an older or swapped copy.
+   download **matches your record**, or warns if it's an older or swapped copy. If one isn't the
+   copy you made, the app asks before decrypting it, and leaves it out unless you say otherwise.
 
 On another computer, the app has no record of what you made. In the Library on the computer that
 made them, **Save checksums** writes a list, and on the other computer **Tools > Import checksums**

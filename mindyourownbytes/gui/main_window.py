@@ -176,8 +176,29 @@ RECORD_WORDS = {
     "older": "but it's an older copy",
     "renamed": "but it was renamed or swapped",
     "changed": "but not the copy you made",
+    "match_where": "matches {where}",
     "all_match": "Each one matches the checksum saved when it was made.",
 }
+#: What restoring says about downloads that aren't the files made here, before any is decrypted.
+DOUBTFUL_COPY = {
+    "starting": "Comparing with your saved checksums…",
+    "working": "Comparing {done} of {total} with your saved checksums…",
+    "one_title": "Restore a file that isn't the copy you made?",
+    "many_title": "Restore {count} files that aren't the copies you made?",
+    "one": "{name}: {reason}\n\nIt hasn't been decrypted. Restore it anyway?",
+    "many": "None of these has been decrypted:\n\n{listed}\n\nRestore them anyway?",
+    "rest_one": " If not, it's left out, and the other files are still restored.",
+    "rest_many": " If not, they're left out, and the other files are still restored.",
+    "rest_none": " If not, nothing is restored.",
+    "row": "Not restored, {reason}",
+    "result_title": "{files} restored, {count} left out",
+    "result_none": "Nothing was restored",
+    "result_one": "The file left out isn't the copy you made, so it wasn't decrypted. The Status column says why.",
+    "result_many": "The files left out aren't the copies you made, so they weren't decrypted. The Status "
+                   "column says why.",
+}
+#: How the worker reports a download that was left out, because it isn't the file made here.
+LEFT_OUT = "Left out"
 #: What the screen says when every file goes into one archive.
 ARCHIVE_COPY = {
     "help": "Hides the names of the files and folders inside. Your provider sees one file and its size. "
@@ -263,6 +284,11 @@ class BackupWorker(QObject):
     found = Signal(int, object)
     #: Something worth saying that doesn't change the result, such as a record that couldn't be saved.
     note = Signal(str)
+    #: The download at this position is being compared with the record. -1 means that's done for all of
+    #: them, and decrypting starts.
+    comparing = Signal(int)
+    #: These downloads, by position, aren't the files made here. Nothing is decrypted until ``decide``.
+    doubtful = Signal(object)
     #: The file at this position is going into the archive.
     packing = Signal(int)
     completed = Signal(object)
@@ -290,15 +316,49 @@ class BackupWorker(QObject):
         self.keep_records = keep_records
         self.records_root = records_root or output
         self.cancel_event = threading.Event()
+        #: Set by ``decide``, once someone has said what to do with downloads that aren't the files made here.
+        self._decided = threading.Event()
+        self._restore_doubtful = False
 
-    def _check_record(self, index: int) -> None:
-        """Before a download is decrypted, see whether it's the file this computer made."""
-        source = self.files[index].source
+    def decide(self, restore_them: bool) -> None:
+        """The answer to ``doubtful``: restore those downloads too, or leave them out."""
+        self._restore_doubtful = restore_them
+        self._decided.set()
+
+    def _compare_with_records(self) -> list[int]:
+        """Which downloads to restore, by position. Every one is compared with the record before any is
+        decrypted, so that one that isn't the file made here is only decrypted if someone says so."""
+        everything = list(range(len(self.files)))
+        if self.ledger is None:
+            return everything
         try:
-            digest = records.sha256_of(source, self._stop_if_cancelled)
+            self.ledger.load()
         except OSError:
-            return  # GnuPG will say what's wrong with it.
-        self.found.emit(index, self.ledger.check(source, digest))
+            return everything
+        if not self.ledger.records:
+            return everything
+        doubtful = []
+        for index, item in enumerate(self.files):
+            self._stop_if_cancelled()
+            self.comparing.emit(index)
+            try:
+                digest = records.sha256_of(item.source, self._stop_if_cancelled)
+            except OSError:
+                continue  # GnuPG will say what's wrong with it.
+            finding = self.ledger.check(item.source, digest)
+            self.found.emit(index, finding)
+            if finding.is_warning:
+                doubtful.append(index)
+        if not doubtful:
+            return everything
+        self.doubtful.emit(doubtful)
+        while not self._decided.wait(0.1):
+            self._stop_if_cancelled()
+        if self._restore_doubtful:
+            return everything
+        for index in doubtful:
+            self.progress.emit(index, False, LEFT_OUT, None)
+        return [index for index in everything if index not in doubtful]
 
     def _stop_if_cancelled(self) -> None:
         if self.cancel_event.is_set():
@@ -314,13 +374,17 @@ class BackupWorker(QObject):
     @Slot()
     def run(self):
         try:
-            restoring = self.operation == "restore" and self.ledger is not None
-            if restoring:
+            keep = list(range(len(self.files)))
+            if self.operation == "restore":
                 try:
-                    self.ledger.load()
-                except OSError:
-                    restoring = False
-            report = lambda index, ok, message, output: self.progress.emit(index, ok, message, output)  # noqa: E731
+                    keep = self._compare_with_records()
+                except Cancelled:
+                    self.completed.emit(JobResult(0, 0, True, (), ()))
+                    return
+                self.comparing.emit(-1)
+            # Positions in the list that's processed, mapped back to rows.
+            report = lambda position, ok, message, output: self.progress.emit(  # noqa: E731
+                keep[position], ok, message, output)
             if self.archive_name:
                 result = encrypt_archive(
                     self.gpg, self.files, self.output, self.archive_name, self.method, self.fingerprint,
@@ -329,10 +393,9 @@ class BackupWorker(QObject):
                 )
             else:
                 result = process_items(
-                    self.gpg, self.files, self.output, self.operation, self.method, self.fingerprint,
-                    self.cancel_event, report, passphrases=self.passphrases, cipher=self.cipher,
-                    verify=self.verify, on_checking=self.checking.emit,
-                    on_start=self._check_record if restoring else None,
+                    self.gpg, [self.files[index] for index in keep], self.output, self.operation, self.method,
+                    self.fingerprint, self.cancel_event, report, passphrases=self.passphrases, cipher=self.cipher,
+                    verify=self.verify, on_checking=lambda position: self.checking.emit(keep[position]),
                 )
             if self.operation == "encrypt" and self.ledger is not None and self.keep_records and result.outputs:
                 self._keep_records(result)
@@ -378,6 +441,8 @@ class MainWindow(QMainWindow):
         self._findings: dict[int, Finding] = {}
         #: Problems that didn't change the job's result, to mention once it's done.
         self._notes: list[str] = []
+        #: Rows of downloads that weren't restored, because they aren't the files made here.
+        self._left_out: set[int] = set()
 
         self.setWindowTitle("mindyourownbytes")
         self.setWindowIcon(icons.app_icon())
@@ -1584,11 +1649,16 @@ class MainWindow(QMainWindow):
         self._succeeded_rows: set[int] = set()
         self._findings = {}
         self._notes = []
+        self._left_out = set()
         self._set_busy(True)
         self.progress_bar.setRange(0, len(self.items))
         self.progress_bar.setValue(0)
-        self._mark_working(0)
-        self._show_progress(0)
+        if self.operation == "restore":
+            # Every download is compared with the saved checksums before anything is decrypted.
+            self.status_text.setText(DOUBTFUL_COPY["starting"])
+        else:
+            self._mark_working(0)
+            self._show_progress(0)
 
         self._thread = QThread(self)
         self.worker = BackupWorker(self.gpg, list(self.items), output, self.operation, method,
@@ -1601,6 +1671,8 @@ class MainWindow(QMainWindow):
         self.worker.checking.connect(self._checking)
         self.worker.found.connect(self._found)
         self.worker.note.connect(self._note)
+        self.worker.comparing.connect(self._comparing)
+        self.worker.doubtful.connect(self._ask_about_doubtful)
         self.worker.packing.connect(self._packing)
         self.worker.completed.connect(self._completed)
         self.worker.error.connect(self._error)
@@ -1675,6 +1747,40 @@ class MainWindow(QMainWindow):
     def _note(self, message: str):
         self._notes.append(message)
 
+    @Slot(int)
+    def _comparing(self, index: int):
+        if self.worker is None or self.worker.cancel_event.is_set():
+            return
+        if index >= 0:
+            self.status_text.setText(DOUBTFUL_COPY["working"].format(done=index + 1, total=len(self.items)))
+            return
+        # Compared and decided: decrypting starts with the first download that wasn't left out.
+        first = next((row for row in range(len(self.items)) if row not in self._left_out), None)
+        if first is not None:
+            self._mark_working(first)
+            self._show_progress(first)
+
+    @Slot(object)
+    def _ask_about_doubtful(self, rows: list[int]):
+        """Before any of them is decrypted, ask whether to restore downloads that aren't the files made here."""
+        def reason(row: int) -> str:
+            return RECORD_WORDS[self._findings[row].verdict].removeprefix("but ")
+
+        if len(rows) == 1:
+            title = DOUBTFUL_COPY["one_title"]
+            text = DOUBTFUL_COPY["one"].format(name=self.items[rows[0]].source.name,
+                                               reason=self._findings[rows[0]].message)
+        else:
+            listed = [f"• {self.items[row].source.name}: {reason(row)}" for row in rows[:8]]
+            if len(rows) > 8:
+                listed.append(f"• and {len(rows) - 8} more")
+            title = DOUBTFUL_COPY["many_title"].format(count=len(rows))
+            text = DOUBTFUL_COPY["many"].format(listed="\n".join(listed))
+        rest = ("rest_none" if len(rows) == len(self.items) else "rest_one" if len(rows) == 1 else "rest_many")
+        restore_them = self._confirm(title, text + DOUBTFUL_COPY[rest])
+        if self.worker is not None:
+            self.worker.decide(restore_them)
+
     def _show_row_done(self, row: int, checked: bool, output):
         """Only a file the job really checked may say so."""
         if self._job_archive:
@@ -1700,11 +1806,20 @@ class MainWindow(QMainWindow):
                                  f"{output}\n{finding.message}")
             return
         if finding is not None and finding.verdict == "match":
-            text, note = f"{text}, {RECORD_WORDS['match']}", finding.message
+            words = (RECORD_WORDS["match_where"].format(where=finding.where) if finding.where
+                     else RECORD_WORDS["match"])
+            text, note = f"{text}, {words}", finding.message
         self._set_row_status(row, text, "check", "ok", f"{output}\n{note}" if note else str(output))
 
     @Slot(int, bool, str, object)
     def _progress(self, index: int, ok: bool, message: str, output):
+        if not ok and message == LEFT_OUT:
+            # Not decrypted at all, so this is neither a failure nor progress.
+            self._left_out.add(index)
+            finding = self._findings[index]
+            self._set_row_status(index, DOUBTFUL_COPY["row"].format(
+                reason=RECORD_WORDS[finding.verdict].removeprefix("but ")), "alert", "warn", finding.message)
+            return
         cancelled = not ok and message == "Cancelled"
         if index < self.table.rowCount():
             if ok and message == UNPACKED:
@@ -1721,9 +1836,10 @@ class MainWindow(QMainWindow):
         self.progress_bar.setValue(index + 1)
         if not ok and not cancelled:
             self._failures.append(message)
-        if not cancelled and index + 1 < len(self.items):
-            self._mark_working(index + 1)
-            self._show_progress(index + 1)
+        upcoming = next((row for row in range(index + 1, len(self.items)) if row not in self._left_out), None)
+        if not cancelled and upcoming is not None:
+            self._mark_working(upcoming)
+            self._show_progress(upcoming)
 
     @Slot(object)
     def _completed(self, result: JobResult):
@@ -1731,7 +1847,9 @@ class MainWindow(QMainWindow):
         self._set_busy(False)
         self._refresh_collections()
         self.status_text.setText(
-            f"{result.succeeded} finished · {result.failed} failed" + (" · cancelled" if result.cancelled else "")
+            f"{result.succeeded} finished · {result.failed} failed"
+            + (f" · {len(self._left_out)} left out" if self._left_out else "")
+            + (" · cancelled" if result.cancelled else "")
         )
         self._unfinished_items = [item for row, item in enumerate(self.items) if row not in self._succeeded_rows]
         self._job_state = "incomplete" if self._unfinished_items else "done"
@@ -1766,6 +1884,12 @@ class MainWindow(QMainWindow):
                      else "The archive wasn't made" if self._job_archive
                      else f"{'That file' if total == 1 else f'All {total} files'} failed")
             self.result_bar.show_message("error", title, detail, actions=[open_folder] if result.succeeded else [])
+        elif self._left_out:
+            left = len(self._left_out)
+            title = (DOUBTFUL_COPY["result_title"].format(files=plural(result.succeeded), count=left)
+                     if result.succeeded else DOUBTFUL_COPY["result_none"])
+            detail = DOUBTFUL_COPY["result_one" if left == 1 else "result_many"]
+            self.result_bar.show_message("warning", title, detail, actions=[open_folder] if result.succeeded else [])
         elif result.succeeded:
             if self._job_archive:
                 title = ARCHIVE_COPY["result_title"].format(files=plural(result.succeeded))

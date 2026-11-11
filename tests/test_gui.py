@@ -781,6 +781,84 @@ class DownloadCheckTests(GuiCase):
         self.assertEqual(self.window.result_bar.property("kind"), "warning")
         self.assertIn("1 is not the copy you made", self.window.result_bar.text())
         self.assertTrue(taxes.exists())
+        self.assertEqual(self.questions()[0][0], "Restore a file that isn't the copy you made?")
+
+    def questions(self) -> list[tuple[str, str]]:
+        """What restoring asked about downloads that aren't the copies made here, as (title, text)."""
+        return [(call.args[1], call.args[2]) for call in self.message_boxes["warning"].call_args_list
+                if "the copy you made" in call.args[1] or "the copies you made" in call.args[1]]
+
+    def answer_no_to_doubtful_downloads(self) -> list[list[str]]:
+        """Leave doubtful downloads out. Returns what had been restored each time the question came."""
+        restored_then = []
+
+        def answer(_parent, title, *_rest):
+            if "the copy you made" not in title and "the copies you made" not in title:
+                return QMessageBox.StandardButton.Yes
+            folder = self.root / "restored"
+            restored_then.append(sorted(p.name for p in folder.rglob("*")) if folder.exists() else [])
+            return QMessageBox.StandardButton.No
+
+        self.message_boxes["warning"].side_effect = answer
+        return restored_then
+
+    def test_a_doubtful_download_is_left_out_unless_you_say_so(self):
+        # Regression: a download that isn't the copy made here was decrypted anyway, with only a warning
+        # afterwards. Now nothing is decrypted until someone says to, and leaving it out is the default.
+        self.encrypt("taxes.txt", b"taxes")
+        medical = self.encrypt("medical.txt", b"medical")
+        notes = self.encrypt("notes.txt", b"notes")
+        restored_then = self.answer_no_to_doubtful_downloads()
+        self.restore(self.download(medical, "taxes.txt.gpg"), self.download(notes))
+        (title, text), = self.questions()
+        self.assertEqual(title, "Restore a file that isn't the copy you made?")
+        self.assertIn("taxes.txt.gpg: This is the file that was saved as medical.txt.gpg", text)
+        self.assertIn("If not, it's left out, and the other files are still restored.", text)
+        self.assertEqual(restored_then, [[]], "nothing may be decrypted before the answer")
+        self.assertEqual(self.window.table.item(0, 3).text(), "Not restored, it was renamed or swapped")
+        self.assertIn("saved as medical.txt.gpg", self.window.table.item(0, 3).toolTip())
+        self.assertEqual(self.window.table.item(1, 3).text(), "Restored, matches your record")
+        self.assertEqual(sorted(p.name for p in (self.root / "restored").rglob("*")), ["notes.txt"])
+        self.assertEqual(self.window.result_bar.property("kind"), "warning")
+        self.assertEqual(self.window.result_bar.title_label.text(), "1 file restored, 1 left out")
+        self.assertIn("1 left out", self.window.status_text.text())
+        self.assertEqual([item.source.name for item in self.window._unfinished_items], ["taxes.txt.gpg"])
+
+    def test_when_every_download_is_doubtful_nothing_is_restored_without_a_yes(self):
+        first = self.encrypt("a.txt", b"first")
+        second = self.encrypt("b.txt", b"second")
+        self.answer_no_to_doubtful_downloads()
+        self.restore(self.download(second, "a.txt.gpg"), self.download(first, "b.txt.gpg"))
+        (title, text), = self.questions()
+        self.assertEqual(title, "Restore 2 files that aren't the copies you made?")
+        self.assertIn("• a.txt.gpg: it was renamed or swapped\n• b.txt.gpg: it was renamed or swapped", text)
+        self.assertIn("If not, nothing is restored.", text)
+        self.assertEqual([self.window.table.item(row, 3).text() for row in range(2)],
+                         ["Not restored, it was renamed or swapped"] * 2)
+        self.assertEqual(self.window.result_bar.title_label.text(), "Nothing was restored")
+        restored = self.root / "restored"
+        self.assertEqual([p for p in restored.rglob("*") if p.is_file()] if restored.exists() else [], [])
+
+    def test_a_file_from_another_collection_is_flagged_and_a_match_says_which_it_is(self):
+        # Regression: Taxes and Medical each had a report.txt.gpg. The Medical one, handed back in the
+        # Taxes folder, was called a match, because its name and checksum were both known.
+        made = {}
+        for collection, content in (("Taxes", b"taxes"), ("Medical", b"medical")):
+            self.window.set_operation("encrypt")
+            self.window.add_paths([str(self.write(f"{collection}/report.txt", content))])
+            self.window.collection_combo.setCurrentText(collection)
+            self.select_method("once")
+            self.run_with_typed_passphrase()
+            self.window.clear_files()
+            made[collection] = self.root / "exports" / collection / "report.txt.gpg"
+        (self.root / "Downloads" / "Taxes").mkdir(parents=True)
+        self.restore(self.download(made["Medical"], "Taxes/report.txt.gpg"))
+        self.assertEqual(self.window.table.item(0, 3).text(), "Restored, but it was renamed or swapped")
+        self.assertIn("saved as Medical/report.txt.gpg", self.window.table.item(0, 3).toolTip())
+        self.window.clear_files()
+        self.restore(self.download(made["Medical"]))
+        self.assertEqual(self.window.table.item(0, 3).text(), "Restored, matches Medical/report.txt.gpg")
+        self.assertIn("Taxes/report.txt.gpg is a different file", self.window.table.item(0, 3).toolTip())
 
     def test_an_older_version_is_restored_but_flagged(self):
         first = self.encrypt("report.txt", b"version one")

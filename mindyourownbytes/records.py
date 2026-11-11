@@ -54,6 +54,9 @@ class Finding:
     #: Plain words for the person restoring. Empty when there's nothing to say.
     message: str
     record: Record | None = None
+    #: The file a download matched, as "Medical/report.pdf.gpg", when other files made here share its name.
+    #: Empty when the name alone says which file it is.
+    where: str = ""
 
     @property
     def is_warning(self) -> bool:
@@ -87,6 +90,16 @@ def _when(record: Record) -> str:
     except ValueError:
         return ""
     return f" on {made:%Y-%m-%d %H:%M}"
+
+
+def _folders(record: Record) -> tuple[str, ...]:
+    """The folders a record was saved in, below where encrypted files go, compared as names are."""
+    return tuple(_plain_name(part) for part in PurePosixPath(record.path).parts[:-1])
+
+
+def _shown(record: Record) -> str:
+    """Where a file was saved, as people would write it: "Taxes/report.pdf.gpg"."""
+    return record.path or record.name
 
 
 class Ledger:
@@ -142,32 +155,47 @@ class Ledger:
         self.unreadable = 0
 
     def check(self, path: Path, sha256: str) -> Finding:
-        """Say whether a downloaded file is the one this computer made, and if not, how it differs."""
+        """Say whether a downloaded file is the one this computer made, and if not, how it differs.
+
+        A name alone can't tell apart two files called "report.pdf.gpg" in different collections. So a
+        download in a folder named like a collection that has a file of its name has to be that file.
+        Anywhere else, a match says which file it matched whenever more than one has that name.
+        """
         if not self._loaded:
             self.load()
         name = _plain_name(path.name)
+        around = tuple(_plain_name(part) for part in path.parent.parts)
+        named = [record for record in self.records if _plain_name(record.name) == name]
+        # Files of this name from the collection whose folder the download is in, if it's in one.
+        placed = [record for record in named if (folders := _folders(record)) and around[-len(folders):] == folders]
         same_content = [record for record in self.records if record.sha256 == sha256]
-        here = [record for record in same_content if _plain_name(record.name) == name]
+        here = [record for record in same_content if record in (placed or named)]
         if here:
             record = here[-1]
-            # Exactly the same name: "report (2).pdf.gpg" is a different file that this app named so.
-            newer = [other for other in self.records if other.name == record.name and other.sha256 != sha256
-                     and other.made and record.made and other.made > record.made]
+            # The same place only: "report (2).pdf.gpg" is a different file that this app named so, and a
+            # file of the same name in another collection is a different file too.
+            newer = [other for other in self.records if other.path.casefold() == record.path.casefold()
+                     and other.sha256 != sha256 and other.made and record.made and other.made > record.made]
             if newer:
-                return Finding("older", f"This is an older copy. A newer {record.name} was made{_when(newer[-1])}, "
+                return Finding("older", f"This is an older copy. A newer {_shown(record)} was made{_when(newer[-1])}, "
                                         "so your provider may have handed back an old version.", newer[-1])
+            others = [other for other in named if other.sha256 != sha256 and _folders(other) != _folders(record)]
+            if others and not placed:
+                made = f"from {record.source}" if record.source else f"made here{_when(record)}"
+                return Finding("match", f"Matches {_shown(record)}, {made}. {_shown(others[-1])} is a different file "
+                                        "with the same name, so make sure this is the one you meant.",
+                               record, _shown(record))
             words = (f"Matches the checksum from {record.source}." if record.source
                      else f"Matches the copy made here{_when(record)}.")
             return Finding("match", words, record)
         if same_content:
             other = same_content[-1]
-            return Finding("renamed", f"This is the file that was saved as {other.name}{_when(other)}. "
+            return Finding("renamed", f"This is the file that was saved as {_shown(other)}{_when(other)}. "
                                       "It may have been renamed, or swapped with another file.", other)
-        same_name = [record for record in self.records if _plain_name(record.name) == name]
-        if same_name:
-            newest = same_name[-1]
+        if named:
+            newest = (placed or named)[-1]
             where = f"from {newest.source}" if newest.source else f"made here{_when(newest)}"
-            return Finding("changed", f"This isn't the {newest.name} {where}. It may be an older version, "
+            return Finding("changed", f"This isn't the {_shown(newest)} {where}. It may be an older version, "
                                       "or a different file with the same name.", newest)
         return Finding("unknown", "")
 
