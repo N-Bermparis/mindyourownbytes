@@ -15,7 +15,8 @@ First public version. Not independently audited.
   algorithm, and GnuPG's own prompt. Anyone already using those starts in advanced mode.
 - Drag-and-drop encryption of files and folders to standard OpenPGP `.gpg` files.
 - Encrypt everything into one archive, an ordinary zip inside one `.zip.gpg` file, which hides the
-  names, folders, and number of the files inside. Restoring it gives the folder back.
+  names, folders, and number of the files inside. Restoring it gives the folder back. Names that
+  would clash inside it, such as a file and a folder both called `docs`, are numbered instead.
 - **Encrypt with mindyourownbytes** in File Explorer's right-click menu, added by the installer for
   your account only. It adds the files to the list in the open window, and encrypts nothing by itself.
 - Passphrase encryption with a choice of AES-256 (the default), Twofish, or Camellia-256, and

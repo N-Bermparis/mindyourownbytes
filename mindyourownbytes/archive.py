@@ -83,22 +83,71 @@ def check_name(name: str) -> str:
 
 
 def member_names(relatives: Sequence[str]) -> list[str]:
-    """Names inside the archive: each file's folders as listed, and never the same name twice.
+    """Names inside the archive: each file's folders as listed, changed only where they couldn't all
+    be unpacked side by side.
 
-    Two folders with the same name, from different places, can both be in one list. Windows can't
-    tell names apart by case, so that counts as the same name too.
+    A list can hold the same name twice, such as two folders called "docs" from different places, or
+    a file called "docs" and a folder called "docs". Windows can't tell names apart by case, so names
+    that differ only in case clash too. Characters that Windows can't use in a name become "_".
     """
-    used: set[str] = set()
+    entries = [(tuple(_usable(part) for part in PurePosixPath(relative).parts), False) for relative in relatives]
+    return ["/".join(parts) for parts in _side_by_side(entries)]
+
+
+def _usable(part: str) -> str:
+    """A file or folder name that every system this app runs on can create."""
+    if is_safe_name_part(part):
+        return part
+    usable = "".join("_" if character in INVALID_NAME_CHARACTERS or ord(character) < 32 else character
+                     for character in part)[:255] or "_"
+    if usable.endswith((".", " ")):
+        usable = usable[:254] + "_"
+    if usable.split(".")[0].strip().upper() in RESERVED_NAMES:
+        usable = "_" + usable[:254]
+    return usable if is_safe_name_part(usable) else "_"
+
+
+def _key(parts: tuple[str, ...]) -> tuple[str, ...]:
+    return tuple(part.casefold() for part in parts)
+
+
+def _numbered(folder: tuple[str, ...], part: str, taken: Callable[[tuple[str, ...]], bool],
+              is_folder: bool) -> tuple[str, ...]:
+    """``part`` inside ``folder``, numbered as "report (2).pdf" or "docs (2)" until ``taken`` says it's free."""
+    candidate, number = (*folder, part), 2
+    while taken(_key(candidate)):
+        name = PurePosixPath(part)
+        numbered = f"{part} ({number})" if is_folder else f"{name.stem} ({number}){name.suffix}"
+        candidate, number = (*folder, numbered), number + 1
+    return candidate
+
+
+def _side_by_side(entries: Sequence[tuple[tuple[str, ...], bool]]) -> list[tuple[str, ...]]:
+    """Names for (parts, is a folder) entries that can all be created at once, in the order given.
+
+    A file whose name is taken, by a file or a folder, gets a number. So does a folder whose name a
+    file took, and everything listed inside that folder moves with it. Folders with the same name
+    are one folder, as they would be on disk.
+    """
+    files: set[tuple[str, ...]] = set()
+    folders: set[tuple[str, ...]] = set()
+    #: Each folder as listed, compared without case, and the name it really gets.
+    placed: dict[tuple[str, ...], tuple[str, ...]] = {}
     names = []
-    for relative in relatives:
-        name = PurePosixPath(relative).as_posix()
-        candidate, number = name, 2
-        while candidate.casefold() in used:
-            path = PurePosixPath(name)
-            candidate = str(path.with_name(f"{path.stem} ({number}){path.suffix}"))
-            number += 1
-        used.add(candidate.casefold())
-        names.append(candidate)
+    for parts, is_folder in entries:
+        folder: tuple[str, ...] = ()
+        for depth in range(1, len(parts) + 1 if is_folder else len(parts)):
+            listed = _key(parts[:depth])
+            if listed not in placed:
+                placed[listed] = _numbered(folder, parts[depth - 1], files.__contains__, is_folder=True)
+            folder = placed[listed]
+            folders.add(_key(folder))
+        if is_folder:
+            names.append(folder)
+            continue
+        name = _numbered(folder, parts[-1], lambda key: key in files or key in folders, is_folder=False)
+        files.add(_key(name))
+        names.append(name)
     return names
 
 
@@ -203,26 +252,18 @@ def _member_parts(name: str) -> tuple[str, ...]:
 
 
 def _plan(infos: Sequence[zipfile.ZipInfo]) -> list[tuple[zipfile.ZipInfo, tuple[str, ...]]]:
-    """Check every entry before anything is written, so that a bad one means nothing at all."""
-    seen: set[tuple[str, ...]] = set()
-    files: set[tuple[str, ...]] = set()
-    folders: set[tuple[str, ...]] = set()
-    plan = []
+    """Check every entry before anything is written, so that a bad one means nothing at all.
+
+    Names that clash, which archives made before ``member_names`` prevented it can hold, are numbered
+    the same way, so that everything comes out rather than nothing.
+    """
+    entries = []
     for info in infos:
         if info.flag_bits & 0x1 or info.compress_type not in (zipfile.ZIP_STORED, zipfile.ZIP_DEFLATED):
             raise ArchiveError("This archive uses a feature this app never writes, so nothing was unpacked. "
                                "Decrypt it with GnuPG and open it with another program.")
-        parts = _member_parts(info.filename)
-        key = tuple(part.casefold() for part in parts)
-        if key in seen:
-            raise ArchiveError(f"This archive holds the same name twice, so nothing was unpacked: {info.filename!r}")
-        seen.add(key)
-        folders.update(key[:depth] for depth in range(1, len(key)))
-        (folders if info.is_dir() else files).add(key)
-        plan.append((info, parts))
-    if files & folders:
-        raise ArchiveError("This archive holds a file and a folder with the same name, so nothing was unpacked.")
-    return plan
+        entries.append((_member_parts(info.filename), info.is_dir()))
+    return list(zip(infos, _side_by_side(entries), strict=True))
 
 
 def _keep_time(path: Path, date_time: tuple[int, ...]) -> None:

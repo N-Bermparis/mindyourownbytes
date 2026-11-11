@@ -194,6 +194,7 @@ ARCHIVE_COPY = {
     "result_title": "{files} encrypted into one archive",
     "result_checked": "It was decrypted again and matched what was packed.",
     "result_detail": "Upload only {name}. Your provider can't see the names of the files inside.",
+    "renamed": "In the archive it's {name}, because another file or folder there already had that name.",
 }
 #: What a restored archive's row says, since it became a folder rather than one file.
 UNPACKED_ROW = "Restored and unpacked"
@@ -364,6 +365,8 @@ class MainWindow(QMainWindow):
         self._job_not_checked = ""
         #: Whether the current job puts every file into one archive.
         self._job_archive = False
+        #: Each file's name inside that archive, which differs from its own only where names clashed.
+        self._archive_names: list[str] = []
         #: None before a job, then "done" or "incomplete" until the list changes.
         self._job_state: str | None = None
         self._unfinished_items: list[SourceItem] = []
@@ -1581,6 +1584,8 @@ class MainWindow(QMainWindow):
         verify = self.operation == "encrypt" and (self.check_action.isChecked() or not self.advanced())
         self._job_not_checked = NOT_CHECKED.get(selection, "") if verify else ""
         self._job_archive = archive_name is not None
+        self._archive_names = (archive.member_names([item.relative.as_posix() for item in self.items])
+                               if self._job_archive else [])
         self._succeeded_rows: set[int] = set()
         self._findings = {}
         self._notes = []
@@ -1689,6 +1694,10 @@ class MainWindow(QMainWindow):
             text, note = words["row_skipped"], self._job_not_checked
         else:
             text, note = done, ""
+        if self._job_archive and row < len(self._archive_names):
+            inside = self._archive_names[row]
+            if inside != self.items[row].relative.as_posix():
+                note = " ".join(filter(None, (note, ARCHIVE_COPY["renamed"].format(name=inside))))
         self._show_finished_row(row, text, note, output)
 
     def _show_finished_row(self, row: int, text: str, note: str, output):

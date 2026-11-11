@@ -939,6 +939,18 @@ class ArchiveModeTests(GuiCase):
         self.assertEqual((unpacked / "return.pdf").read_bytes(), b"return")
         self.assertEqual((unpacked / "receipts" / "scan.jpg").read_bytes(), b"scan")
 
+    def test_a_name_that_clashes_is_numbered_and_its_row_says_so(self):
+        self.write("one/docs", b"a file called docs")
+        self.write("two/docs/inside.txt", b"inside the folder")
+        self.window.add_paths([str(self.root / "input" / "one" / "docs"), str(self.root / "input" / "two" / "docs")])
+        self.select_method("once")
+        self.choose_archive("Clash")
+        self.run_with_typed_passphrase()
+        self.assertEqual([self.window.table.item(row, 3).text() for row in range(2)],
+                         ["In the archive, checked"] * 2)
+        self.assertNotIn("In the archive it's", self.window.table.item(0, 3).toolTip())
+        self.assertIn("In the archive it's docs (2)/inside.txt", self.window.table.item(1, 3).toolTip())
+
     def test_the_suggested_name_is_used_when_none_is_typed(self):
         self.window.add_paths([str(self.write("a.txt"))])
         self.select_method("once")
