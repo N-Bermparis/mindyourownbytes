@@ -207,14 +207,39 @@ still on the [roadmap](ROADMAP.md). [Cryptomator](https://cryptomator.org/) and
 | Corrupting or altering a file | **Detected**: integrity check fails, nothing restored |
 | Replacing a file with unencrypted data | **Detected**: rejected on restore |
 | Deleting files | **Not preventable**: keep other copies |
-| Serving an older version (rollback) | **Not detected** |
-| Swapping two files encrypted with the same secret | **Not detected**: names aren't bound to contents |
-| **Public-key mode only:** replacing a file with new content encrypted to your public key | **Not detected** |
+| Serving an older version (rollback) | **Flagged, with a record**: see below. Otherwise not detected |
+| Swapping two files encrypted with the same secret | **Flagged, with a record**: see below. Names aren't bound to contents |
+| **Public-key mode only:** replacing a file with new content encrypted to your public key | **Flagged, with a record**. Otherwise not detected |
 
 The last row deserves emphasis. Public keys are public and files are not signed, so
 anyone who has your public key can create a file that decrypts perfectly. Passphrase
 mode is not affected, because creating a valid file requires the passphrase. Sign-and-encrypt
 is on the roadmap.
+
+**Checksums kept on your computer.** Each file the app encrypts gets its SHA-256 written to
+`records.jsonl`, beside the vault, which your provider can't reach. Before restoring a file, the
+app hashes the download and looks it up. Its row then says whether it **matches your record**, or
+is **an older copy** (a newer file of that name was made later), was **renamed or swapped** (its
+contents were saved under another name), or is **not the copy you made** (its name is known, and
+its contents aren't). A doubtful file is still restored, because it decrypted correctly, but the
+row and the result say so in a warning. Numbers that browsers and this app add to a taken name,
+such as "report (1).pdf.gpg", are ignored when names are compared.
+
+The Library's **Save checksums** writes a plain `SHA256SUMS` file, which `sha256sum --check`
+reads without this app, and **Tools > Import checksums** adds one on another computer. Its
+protection is only as good as where you keep it: a list stored beside the files in the cloud can be
+changed along with them.
+
+Its limits:
+
+- **No record, no verdict.** Files made before this feature, on another computer, or with the record
+  turned off restore without a verdict, as before.
+- **The record can be lost or changed** by anything that can write to your user profile, which
+  could already do far more. Losing it means losing the verdicts, not your files.
+- **It only knows what it was told.** A rollback is flagged when a newer file of the same name was
+  recorded later. A file replaced under a new name, of content never recorded, is just unknown.
+- **The names are kept here too.** They're visible to your provider anyway, but the record keeps
+  them on your computer. Tools can turn the record off, and forget it.
 
 ### Your recipient key ID is visible in public-key mode
 

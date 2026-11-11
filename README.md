@@ -61,6 +61,8 @@ can't read. This app makes that a drag and drop.
 - **Or use OpenPGP keys** you already manage in Kleopatra, with each key's type shown, including
   post-quantum Kyber keys with GnuPG 2.5 or later.
 - **Restore safely.** Forged, tampered, and truncated files are rejected, with nothing written.
+  Each download is also compared with a checksum saved on your computer when it was made, so an
+  older or swapped copy is flagged. Checksums can be saved as a list and checked on another computer.
 - **Works with any storage**, because it never talks to any: Google Drive, OneDrive, Dropbox,
   iCloud, a NAS, or a USB stick. You upload the files yourself.
 - **Clear, guided steps** in plain language, using your system's own controls and its light or
@@ -167,7 +169,12 @@ been tested on macOS. Reports are very welcome.
    Folders are kept either way.
 2. The app selects how to unlock them based on how they were encrypted, and you can change it. A
    batch can mix both kinds: type the passphrase once, and files for your key are opened with it.
-3. Choose a folder that no cloud service syncs, then click **Restore**.
+3. Choose a folder that no cloud service syncs, then click **Restore**. Each row says whether the
+   download **matches your record**, or warns if it's an older or swapped copy.
+
+On another computer, the app has no record of what you made. In the Library on the computer that
+made them, **Save checksums** writes a list, and on the other computer **Tools > Import checksums**
+reads it. Keep that list somewhere your provider can't change, such as a USB stick.
 
 ### Which method should I choose?
 
@@ -268,8 +275,9 @@ a copy of your cloud data, as long as your passphrase is strong.
   own name and total size still show, and changing one file means uploading the whole archive again.
 - **Files already in a synced folder.** If your originals live in OneDrive or Dropbox, the provider
   likely has them already. The app warns when it recognizes such a folder.
-- **Rollback and swaps.** A provider could serve an old version of a file, or swap two files that
-  share a passphrase. Neither is detected.
+- **Rollback and swaps, without a record.** A provider could serve an old version of a file, or swap
+  two files that share a passphrase. The app flags both when restoring files it made on this
+  computer, or whose checksums you imported, but can't tell for any other file.
 - **A compromised computer.** Malware can read whatever you can.
 - **A weak passphrase.** Use five or more random words, or let the app generate one. It can't
   measure a passphrase you make up, so it only states the strength of ones it generates.

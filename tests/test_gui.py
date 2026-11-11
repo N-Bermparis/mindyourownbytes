@@ -3,6 +3,7 @@
 import importlib.util
 import os
 import runpy
+import shutil
 import sys
 import tempfile
 import threading
@@ -11,6 +12,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+from mindyourownbytes import records
 from mindyourownbytes.core import (
     CIPHERS,
     READY,
@@ -611,6 +613,135 @@ class RecoveryGuideTests(unittest.TestCase):
         self.assertIn("Restore on another computer…", titles)
 
 
+class DownloadCheckTests(GuiCase):
+    """Restoring checks each download against the checksums saved here when it was made."""
+
+    def finish(self):
+        self.wait_until(lambda: not self.window.running)
+        self.wait_until(lambda: self.window._thread is None)
+
+    def encrypt(self, name: str, content: bytes) -> Path:
+        self.window.set_operation("encrypt")
+        self.window.add_paths([str(self.write(name, content))])
+        self.select_method("once")
+        self.run_with_typed_passphrase()
+        self.window.clear_files()
+        return self.root / "exports" / f"{name}.gpg"
+
+    def download(self, encrypted: Path, name: str | None = None) -> Path:
+        downloaded = self.root / "Downloads" / (name or encrypted.name)
+        downloaded.parent.mkdir(exist_ok=True)
+        shutil.copyfile(encrypted, downloaded)
+        return downloaded
+
+    def restore(self, *paths: Path):
+        self.window.set_operation("restore")
+        self.window.add_paths([str(path) for path in paths])
+        self.select_method("once")
+        self.run_with_typed_passphrase()
+
+    def test_encrypting_saves_a_checksum_of_each_new_file(self):
+        encrypted = self.encrypt("a.txt", b"first")
+        saved = records.Ledger(self.root / "app" / "records.jsonl").load().records
+        self.assertEqual([(r.name, r.path, r.sha256) for r in saved],
+                         [("a.txt.gpg", "a.txt.gpg", records.sha256_of(encrypted))])
+
+    def test_a_download_of_the_file_made_here_says_it_matches(self):
+        downloaded = self.download(self.encrypt("a.txt", b"first"), "a (1).txt.gpg")
+        self.restore(downloaded)
+        self.assertEqual(self.window.table.item(0, 3).text(), "Restored, matches your record")
+        self.assertIn("Matches the copy made here", self.window.table.item(0, 3).toolTip())
+        self.assertEqual(self.window.result_bar.property("kind"), "success")
+        self.assertIn("Each one matches the checksum", self.window.result_bar.text())
+
+    def test_a_swapped_file_is_restored_but_flagged(self):
+        taxes = self.encrypt("taxes.txt", b"taxes")
+        medical = self.encrypt("medical.txt", b"medical")
+        # The provider hands back each file under the other's name.
+        swapped_taxes = self.download(medical, "taxes.txt.gpg")
+        self.restore(swapped_taxes)
+        self.assertEqual(self.window.table.item(0, 3).text(), "Restored, but it was renamed or swapped")
+        self.assertIn("saved as medical.txt.gpg", self.window.table.item(0, 3).toolTip())
+        self.assertEqual(self.window.result_bar.property("kind"), "warning")
+        self.assertIn("1 is not the copy you made", self.window.result_bar.text())
+        self.assertTrue(taxes.exists())
+
+    def test_an_older_version_is_restored_but_flagged(self):
+        first = self.encrypt("report.txt", b"version one")
+        old_copy = self.download(first)
+        first.unlink()
+        time.sleep(1.1)  # Records are kept to the second.
+        self.encrypt("report.txt", b"version two")
+        self.restore(old_copy)
+        self.assertEqual(self.window.table.item(0, 3).text(), "Restored, but it's an older copy")
+        self.assertEqual((self.root / "restored" / "report.txt").read_bytes(), b"version one")
+
+    def test_with_the_record_turned_off_nothing_is_saved(self):
+        self.window.records_action.setChecked(False)
+        self.encrypt("a.txt", b"first")
+        self.assertFalse((self.root / "app" / "records.jsonl").exists())
+        again = MainWindow(self.settings, self.root / "app" / "vault.gpg")
+        self.addCleanup(again.close)
+        self.assertFalse(again.records_action.isChecked())
+
+    def test_files_from_elsewhere_restore_without_a_verdict(self):
+        stranger = self.encrypt("a.txt", b"first")
+        (self.root / "app" / "records.jsonl").unlink()
+        self.restore(self.download(stranger))
+        self.assertEqual(self.window.table.item(0, 3).text(), "Restored")
+
+    def test_checksums_saved_in_the_library_can_be_imported_on_another_computer(self):
+        made = self.encrypt("a.txt", b"first")
+        self.window.show_library()
+        target = self.root / "SHA256SUMS.txt"
+        with patch.object(library_page.QFileDialog, "getSaveFileName", return_value=(str(target), "")):
+            self.window.library_page.save_checksums()
+        self.assertEqual(target.read_text(encoding="utf-8"), f"{records.sha256_of(made)}  a.txt.gpg\n")
+        self.assertIn("password manager", self.message_boxes["information"].call_args.args[2])
+
+        (self.root / "app" / "records.jsonl").unlink()  # As on a computer that never made it.
+        with patch.object(main_window.QFileDialog, "getOpenFileName", return_value=(str(target), "")):
+            self.window.import_checksums()
+        self.assertIn("Imported 1 checksum.", self.message_boxes["information"].call_args.args[2])
+        self.restore(self.download(made))
+        self.assertEqual(self.window.table.item(0, 3).text(), "Restored, matches your record")
+        self.assertIn("checksum from SHA256SUMS.txt", self.window.table.item(0, 3).toolTip())
+
+    def test_forgetting_the_checksums_asks_first(self):
+        self.encrypt("a.txt", b"first")
+        self.message_boxes["warning"].return_value = QMessageBox.StandardButton.No
+        self.window.forget_checksums()
+        self.assertTrue((self.root / "app" / "records.jsonl").exists())
+        self.message_boxes["warning"].return_value = QMessageBox.StandardButton.Yes
+        self.window.forget_checksums()
+        self.assertFalse((self.root / "app" / "records.jsonl").exists())
+
+    def test_a_checksum_that_cant_be_saved_is_mentioned_and_the_file_is_still_made(self):
+        with patch.object(records.Ledger, "add", side_effect=PermissionError(13, "denied")):
+            self.encrypt("a.txt", b"first")
+        self.assertTrue((self.root / "exports" / "a.txt.gpg").exists())
+        self.assertIn("couldn't be saved", self.message_boxes["warning"].call_args.args[2])
+
+    def test_a_swapped_archive_is_unpacked_but_flagged(self):
+        made = {}
+        for name in ("Taxes", "Medical"):
+            self.window.set_operation("encrypt")
+            self.window.add_paths([str(self.write(f"{name}/notes.txt", name.encode()))])
+            self.select_method("once")
+            self.window.archive_radio.click()
+            self.window.archive_name_edit.setText(name)
+            self.run_with_typed_passphrase()
+            self.window.clear_files()
+            made[name] = self.root / "exports" / f"{name}.zip.gpg"
+        saved = records.Ledger(self.root / "app" / "records.jsonl").load().records
+        self.assertEqual([r.name for r in saved], ["Taxes.zip.gpg", "Medical.zip.gpg"])
+        # The provider hands back one archive under the other's name.
+        self.restore(self.download(made["Medical"], "Taxes.zip.gpg"))
+        self.assertEqual(self.window.table.item(0, 3).text(), "Restored and unpacked, but it was renamed or swapped")
+        self.assertIn("saved as Medical.zip.gpg", self.window.table.item(0, 3).toolTip())
+        self.assertEqual(self.window.result_bar.property("kind"), "warning")
+
+
 class ArchiveModeTests(GuiCase):
     """Step 3 can put every file into one archive, which hides the names inside."""
 
@@ -687,7 +818,7 @@ class ArchiveModeTests(GuiCase):
         self.window.add_paths([str(self.root / "exports" / "Paperwork.zip.gpg")])
         self.select_method("once")
         self.run_with_typed_passphrase()
-        self.assertEqual(self.window.table.item(0, 3).text(), "Restored and unpacked")
+        self.assertEqual(self.window.table.item(0, 3).text(), "Restored and unpacked, matches your record")
         unpacked = self.root / "restored" / "Paperwork" / "Taxes"
         self.assertEqual((unpacked / "return.pdf").read_bytes(), b"return")
         self.assertEqual((unpacked / "receipts" / "scan.jpg").read_bytes(), b"scan")
@@ -1194,8 +1325,10 @@ class CheckAfterEncryptingTests(GuiCase):
         with patch.object(main_window, "process_items", wraps=main_window.process_items) as process:
             self.run_with_typed_passphrase()
         self.assertFalse(process.call_args.kwargs["verify"])
-        self.assertEqual(self.window.table.item(0, 3).text(), "Restored")
-        self.assertNotIn("check", self.window.result_bar.text().lower())
+        # It does say that the download matches its saved checksum, which is a different thing.
+        self.assertEqual(self.window.table.item(0, 3).text(), "Restored, matches your record")
+        self.assertNotIn("and checked", self.window.result_bar.text())
+        self.assertNotIn("decrypted again", self.window.result_bar.text())
 
     def test_an_original_that_changes_meanwhile_fails_plainly_and_can_be_tried_again(self):
         changing = self.write("changing.txt", b"first version")
@@ -1287,7 +1420,8 @@ class SimpleAndAdvancedModeTests(GuiCase):
         self.assertEqual(window.method(), "once")
 
     def test_anyone_relying_on_an_advanced_option_starts_advanced(self):
-        for saved in ({"cipher": "TWOFISH"}, {"use_pinentry": "true"}, {"check_after_encrypting": "false"}):
+        for saved in ({"cipher": "TWOFISH"}, {"use_pinentry": "true"}, {"check_after_encrypting": "false"},
+                      {"keep_records": "false"}):
             with self.subTest(saved):
                 window, settings = self.fresh(**saved)
                 self.assertTrue(window.advanced())
@@ -1318,6 +1452,21 @@ class SimpleAndAdvancedModeTests(GuiCase):
         self.wait_until(lambda: window._thread is None)
         self.assertRegex(self.packets(self.root / "exports" / "a.txt.gpg", PASSPHRASE), r"cipher 9\b")
         self.assertIn("with AES-256 and checked", window.result_bar.title_label.text())
+
+    def test_simple_mode_always_keeps_checksums_and_hides_the_switch(self):
+        window, _ = self.fresh(advanced="false", keep_records="false")
+        self.assertFalse(window.records_action.isVisible())
+        titles = [action.text().replace("&", "") for action in window.findChildren(QAction) if action.isVisible()]
+        self.assertIn("Import checksums…", titles, "importing is needed on any computer, in either mode")
+        window.add_paths([str(self.write("a.txt", b"kept"))])
+        dialog = MagicMock()
+        dialog.exec.return_value = True
+        dialog.passphrase.return_value = PASSPHRASE
+        with patch.object(main_window, "PassphraseDialog", return_value=dialog):
+            window.start()
+        self.wait_until(lambda: not window.running)
+        self.wait_until(lambda: window._thread is None)
+        self.assertEqual([record.name for record in window.ledger.load().records], ["a.txt.gpg"])
 
     def test_more_options_turns_on_advanced_and_keeps_earlier_choices(self):
         window, settings = self.fresh(advanced="false", cipher="TWOFISH")

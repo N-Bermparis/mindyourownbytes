@@ -23,6 +23,7 @@ specific provider. Those are not missing features; they are the point.
 
 - [x] **Hide file and folder names** in one encrypted archive
 - [ ] Hide names while keeping files separate (name mapping)
+- [x] Flag older and swapped files on restore, with checksums saved when they were made
 - [ ] Sign-and-encrypt, so public-key restores can detect forged files
 - [ ] Optional `--throw-keyids`, to hide the recipient in public-key mode
 - [x] Verify each file after encrypting it, wherever the app has the passphrase
