@@ -74,6 +74,20 @@ UNWANTED_FILES = [
     "PySide6/Qt/plugins/networkinformation/*",
     "PySide6/Qt/plugins/tls/*",
     "PySide6/Qt/translations/*",
+    "PySide6/Qt/plugins/platforms/libqvnc.so",  # Shows the window to VNC viewers, over the network.
+    # Qt's network library still comes along with the plugins above that need it, so it goes too.
+    # PyInstaller also links it from the top of the folder, and on a Mac it's a framework.
+    "PySide6/Qt/lib/libQt6Network.so*",
+    "libQt6Network.so*",
+    "PySide6/Qt/lib/QtNetwork.framework/*",
+    "QtNetwork",
+    # Kerberos, from the Linux build system, for Qt's network library. Nothing else uses it.
+    "libgssapi_krb5.so*",
+    "libkrb5.so*",
+    "libk5crypto.so*",
+    "libkrb5support.so*",
+    "libcom_err.so*",
+    "libkeyutils.so*",
 ]
 
 

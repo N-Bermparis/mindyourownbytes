@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ast
 import hashlib
 import importlib.util
 import os
@@ -11,6 +12,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from fnmatch import fnmatchcase
 from pathlib import Path
 from unittest.mock import patch
 
@@ -36,6 +38,7 @@ def _load(name: str):
 # build_unix uses build_windows, which is loaded above under the name it imports.
 unix = _load("build_unix")
 collect = _load("collect_release")
+check_unix = _load("check_unix_download")
 
 
 class PinTests(unittest.TestCase):
@@ -208,6 +211,132 @@ class AddToMenuTests(unittest.TestCase):
             entry = (data / "applications" / "mindyourownbytes.desktop").read_text(encoding="utf-8")
             self.assertIn(f'Exec="{folder}/mindyourownbytes" %F', entry)
             self.assertTrue((data / "icons" / "hicolor" / "256x256" / "apps" / "mindyourownbytes.png").is_file())
+
+
+class UnixNetworkCodeTests(unittest.TestCase):
+    """The Linux and macOS downloads leave Qt's network code out, and CI would notice it coming back."""
+
+    #: Where PyInstaller writes Qt's network library and the plugins that need it, as the recipe sees them.
+    NETWORK_CODE = (
+        "PySide6/Qt/lib/libQt6Network.so.6",
+        "libQt6Network.so.6",  # PyInstaller's link to it, from the top of the folder.
+        "PySide6/Qt/plugins/platforms/libqvnc.so",
+        "PySide6/Qt/plugins/generic/libqtuiotouchplugin.so",
+        "PySide6/Qt/plugins/tls/libqopensslbackend.so",
+        "PySide6/Qt/plugins/networkinformation/libqnetworkmanager.so",
+        "PySide6/Qt/lib/QtNetwork.framework/Versions/A/QtNetwork",
+        "PySide6/Qt/lib/QtNetwork.framework/Versions/A/Resources/Info.plist",
+        "PySide6/Qt/lib/QtNetwork.framework/Versions/Current",
+        "PySide6/Qt/lib/QtNetwork.framework/QtNetwork",
+        "PySide6/Qt/lib/QtNetwork.framework/Resources",
+        "QtNetwork",
+        "PySide6/Qt/plugins/tls/libqsecuretransportbackend.dylib",
+        # Kerberos, which PyInstaller copies from the Linux build system for Qt's network library.
+        "libgssapi_krb5.so.2",
+        "libkrb5.so.3",
+        "libk5crypto.so.3",
+        "libkrb5support.so.0",
+        "libcom_err.so.2",
+        "libkeyutils.so.1",
+    )
+    #: What the app runs on, which no pattern may catch by accident.
+    APP_CODE = (
+        "PySide6/Qt/lib/libQt6Core.so.6",
+        "libQt6Core.so.6",
+        "PySide6/Qt/lib/libQt6Widgets.so.6",
+        "PySide6/Qt/lib/libQt6XcbQpa.so.6",
+        "PySide6/Qt/plugins/platforms/libqxcb.so",
+        "PySide6/Qt/plugins/platforms/libqoffscreen.so",
+        "PySide6/Qt/lib/QtCore.framework/Versions/A/QtCore",
+        "QtCore",
+        "PySide6/Qt/plugins/platforms/libqcocoa.dylib",
+        # Qt's network library needs these too, but so do Qt itself and the font library.
+        "libbrotlidec.so.1",
+        "libbrotlicommon.so.1",
+        "libzstd.so.1",
+    )
+    LINUX_APP = {
+        "mindyourownbytes": b"\x7fELF",
+        "_internal/libpython3.14.so.1.0": b"\x7fELF PyInit__struct PyInit_select",
+        "_internal/PySide6/Qt/lib/libQt6Core.so.6": b"\x7fELF",
+        "_internal/PySide6/Qt/lib/libQt6Widgets.so.6": b"\x7fELF",
+        "_internal/PySide6/Qt/plugins/platforms/libqxcb.so": b"\x7fELF",
+    }
+
+    @classmethod
+    def setUpClass(cls):
+        recipe = ast.parse((PACKAGING / "mindyourownbytes.spec").read_text(encoding="utf-8"))
+        cls.unwanted = next(ast.literal_eval(node.value) for node in recipe.body if isinstance(node, ast.Assign)
+                            and getattr(node.targets[0], "id", "") == "UNWANTED_FILES")
+
+    def left_out(self, name: str) -> bool:
+        # Matched as on Linux and macOS, where names are case-sensitive.
+        return any(fnmatchcase(name, pattern) for pattern in self.unwanted)
+
+    def app(self, files: dict[str, bytes]) -> Path:
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        app = Path(temporary.name) / "mindyourownbytes"
+        for name, content in files.items():
+            (app / name).parent.mkdir(parents=True, exist_ok=True)
+            (app / name).write_bytes(content)
+        return app
+
+    def test_the_recipe_leaves_qt_network_code_out(self):
+        for name in self.NETWORK_CODE:
+            with self.subTest(name=name):
+                self.assertTrue(self.left_out(name))
+
+    def test_the_recipe_keeps_what_the_app_runs_on(self):
+        for name in self.APP_CODE:
+            with self.subTest(name=name):
+                self.assertFalse(self.left_out(name))
+
+    def test_the_check_passes_the_app_without_network_code(self):
+        self.assertEqual(check_unix.problems(self.app(self.LINUX_APP)), [])
+
+    def test_the_check_finds_qt_network_code_on_linux(self):
+        app = self.app({**self.LINUX_APP, "_internal/PySide6/Qt/lib/libQt6Network.so.6": b"\x7fELF",
+                        "_internal/PySide6/Qt/plugins/platforms/libqvnc.so": b"\x7fELF"})
+        self.assertEqual(check_unix.problems(app), ["_internal/PySide6/Qt/lib/libQt6Network.so.6 is included",
+                                                    "_internal/PySide6/Qt/plugins/platforms/libqvnc.so is included"])
+
+    @unittest.skipIf(os.name == "nt", "PyInstaller makes these links only on Linux and macOS")
+    def test_the_check_finds_a_link_even_to_nothing(self):
+        app = self.app(self.LINUX_APP)
+        (app / "_internal" / "libQt6Network.so.6").symlink_to("PySide6/Qt/lib/libQt6Network.so.6")
+        self.assertEqual(check_unix.problems(app), ["_internal/libQt6Network.so.6 is included"])
+
+    def test_the_check_finds_qt_network_code_in_a_mac_app(self):
+        frameworks = "Contents/Frameworks/PySide6/Qt/lib"
+        app = self.app({
+            "Contents/MacOS/mindyourownbytes": b"program",
+            f"{frameworks}/QtCore.framework/Versions/A/QtCore": b"Qt",
+            f"{frameworks}/QtWidgets.framework/Versions/A/QtWidgets": b"Qt",
+            f"{frameworks}/QtNetwork.framework/Versions/A/QtNetwork": b"Qt",
+            f"{frameworks}/QtNetwork.framework/Versions/A/Resources/Info.plist": b"plist",
+        })
+        self.assertEqual(check_unix.problems(app), [f"{frameworks}/QtNetwork.framework is included"])
+
+    def test_the_check_finds_python_network_modules_inside_libpython(self):
+        app = self.app({**self.LINUX_APP, "_internal/libpython3.14.so.1.0": b"\x7fELF PyInit__socket PyInit__ssl"})
+        self.assertEqual(check_unix.problems(app), ["_internal/libpython3.14.so.1.0 contains PyInit__socket",
+                                                    "_internal/libpython3.14.so.1.0 contains PyInit__ssl"])
+
+    def test_the_check_refuses_a_folder_that_isnt_the_app(self):
+        found = check_unix.problems(self.app({"README.txt": b"Nothing to see here."}))
+        self.assertEqual(len(found), 1)
+        self.assertIn("doesn't look like the app", found[0])
+
+    def test_the_check_fails_ci_only_when_something_is_found(self):
+        script = str(PACKAGING / "check_unix_download.py")
+        clean = self.app(self.LINUX_APP)
+        passed = subprocess.run([sys.executable, script, str(clean)], capture_output=True, text=True, check=False)
+        self.assertEqual(passed.returncode, 0, passed.stdout + passed.stderr)
+        (clean / "_internal" / "_ssl.cpython-314-x86_64-linux-gnu.so").write_bytes(b"\x7fELF")
+        failed = subprocess.run([sys.executable, script, str(clean)], capture_output=True, text=True, check=False)
+        self.assertNotEqual(failed.returncode, 0)
+        self.assertIn("_internal/_ssl.cpython-314-x86_64-linux-gnu.so is included", failed.stdout)
 
 
 class CollectReleaseTests(unittest.TestCase):

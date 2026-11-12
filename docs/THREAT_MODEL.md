@@ -372,13 +372,23 @@ That still trusts GitHub, and builds aren't reproducible yet, so nobody can yet 
 file by building it themselves. Code signing and reproducible builds are on the
 [roadmap](ROADMAP.md).
 
+**No network code of their own.** The app opens no connections, so the downloads leave out the
+code for them: Qt's network library and the Qt plugins that need it, Python's `socket`, `ssl`,
+`http`, `urllib.request`, `ftplib`, `xmlrpc`, and `asyncio` modules, and OpenSSL. The Linux
+download also leaves out the Kerberos libraries that Qt's network library would bring. CI fails if
+Qt's network library, Python's socket and SSL modules, or OpenSSL turn up in any download, and on
+Linux and macOS it also looks for socket and SSL code built into Python itself, as some builds of
+Python have. The Linux download does carry GTK and GLib, which PyInstaller copies from the build
+system for Qt's GTK theme. GLib can open network connections, though nothing in the app asks it to.
+On Linux and macOS, the app uses the computer's own GnuPG, which includes its network tools, and
+turns off GnuPG's keyserver lookups on every call.
+
 **The GnuPG in the Windows download.** These are the official Windows files, unmodified, and each one
 carries g10 Code's signature, which you can see under its Properties. Files that reach
 the network (`dirmngr`, `gpg-wks-client`, `libntbtls`) are left out, as are translations,
-and CI fails if any of them, or Qt's or Python's network code, reappear. A GnuPG you
-installed yourself takes priority, unless it's broken or too old to use. When the app
-closes, it stops the included GnuPG's background helpers, which also clears any private
-key passphrase that gpg-agent had remembered.
+and CI fails if any of them reappear. A GnuPG you installed yourself takes priority, unless
+it's broken or too old to use. When the app closes, it stops the included GnuPG's background
+helpers, which also clears any private key passphrase that gpg-agent had remembered.
 
 **Updates are manual.** The app never connects to anything, so it can't tell you when
 there's a new version, and the included GnuPG only updates when the app does. A security
