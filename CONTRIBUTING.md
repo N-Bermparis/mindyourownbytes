@@ -57,7 +57,10 @@ On Linux or macOS, `python packaging/build_unix.py`, after the same `pip install
 system's download into the same folder. On Linux, first install the X11 libraries listed in
 `.github/workflows/release.yml`, because the download carries a copy of each one the build finds.
 A Mac builds with `iconutil` and `hdiutil`, which every Mac has. Neither includes GnuPG, so the app
-uses the computer's own.
+uses the computer's own. `python packaging/check_unix_download.py dist/mindyourownbytes` (on a Mac,
+`dist/mindyourownbytes.app`) then checks it for network code, as CI does. Build with a Python that
+keeps its socket and SSL modules in separate files, as CPython does by default. The standalone
+Pythons that uv installs, and Ubuntu's own, build them into Python itself, so the check fails.
 
 ## Where things live
 
@@ -74,7 +77,7 @@ uses the computer's own.
 | `mindyourownbytes/gui/` | The PySide6 interface. No cryptography goes here |
 | `mindyourownbytes/styles.qss` | Only what native controls can't do. Colors live in `gui/theme.py` |
 | `mindyourownbytes/selftest.py` | The check that the built app runs on itself |
-| `packaging/` | The downloads for Windows, Linux, and macOS: their recipes, and the script that tests Windows' |
+| `packaging/` | The downloads for Windows, Linux, and macOS: their recipes, and the scripts that check them |
 | `tests/` | One test file per module, plus real-GnuPG integration tests |
 | `docs/THREAT_MODEL.md` | What is and isn't protected. Keep this accurate |
 | `docs/index.html` | The project's website, with `site.css` and `site.js`. It loads nothing from anywhere else |

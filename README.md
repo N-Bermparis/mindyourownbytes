@@ -75,8 +75,8 @@ can't read. This app makes that a drag and drop.
 | --- | --- |
 | ![The library, showing files grouped in collections](docs/assets/screenshot-library.png) | ![The vault, listing saved passphrases by name](docs/assets/screenshot-vault.png) |
 
-No telemetry, no accounts, and no network calls. The Windows download doesn't even contain
-the network code from its libraries. All cryptography is done by [GnuPG](https://gnupg.org/):
+No telemetry, no accounts, and no network calls. The downloads don't even contain Qt's network
+library or Python's socket and SSL modules. All cryptography is done by [GnuPG](https://gnupg.org/):
 this project does not implement any of its own.
 
 ## Getting started
