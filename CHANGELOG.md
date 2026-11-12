@@ -49,6 +49,9 @@ First public version. Not independently audited.
 - A Windows installer and portable download with GnuPG included, so there's nothing else to
   install. Both are built by CI, with published checksums, and tested by installing, upgrading,
   and uninstalling for real.
+- Downloads for macOS, for Apple silicon, and for Linux, for 64-bit Intel and AMD processors, built
+  and tested by CI like the Windows one. They use the computer's own GnuPG, from GPG Suite,
+  Homebrew, or the package manager, and the app says how to get it when it can't find it.
 
 ### Security
 
@@ -81,8 +84,8 @@ These issues were found and fixed during the pre-release review, before any publ
 - Files encrypted to an OpenPGP key, or through GnuPG's own passphrase prompt, aren't checked after
   encrypting. Nothing checks that an upload reached your provider intact.
 - Hands-on testing with real Pinentry dialogs on a wider range of systems is still needed.
-- The Windows download isn't code-signed yet, so Windows warns about it, and Smart App Control
-  blocks it. Its builds aren't reproducible yet either.
+- The downloads aren't code-signed yet, so Windows and macOS warn about them, and Smart App
+  Control blocks the Windows one. Their builds aren't reproducible yet either.
 - The GnuPG included in the Windows download only updates when the app does.
 
 See the [threat model](docs/THREAT_MODEL.md) for the full list.

@@ -39,7 +39,7 @@ The tests use a temporary GnuPG home and never touch your real keyring. Without 
 the cryptography tests are skipped, so if that happens please say so in your pull request.
 CI always runs them.
 
-## Building the Windows download
+## Building the downloads
 
 You rarely need to: every pull request that could affect the download builds and tests it, and keeps
 the result as a workflow artifact. To do it yourself, you need [7-Zip](https://www.7-zip.org/):
@@ -52,6 +52,12 @@ python packaging/check_windows_download.py
 
 The last command really installs, upgrades, and uninstalls the app, so read the top of that file
 first. `build_windows_exe.bat` does the first two steps for you.
+
+On Linux or macOS, `python packaging/build_unix.py`, after the same `pip install`, builds that
+system's download into the same folder. On Linux, first install the X11 libraries listed in
+`.github/workflows/release.yml`, because the download carries a copy of each one the build finds.
+A Mac builds with `iconutil` and `hdiutil`, which every Mac has. Neither includes GnuPG, so the app
+uses the computer's own.
 
 ## Where things live
 
@@ -68,7 +74,7 @@ first. `build_windows_exe.bat` does the first two steps for you.
 | `mindyourownbytes/gui/` | The PySide6 interface. No cryptography goes here |
 | `mindyourownbytes/styles.qss` | Only what native controls can't do. Colors live in `gui/theme.py` |
 | `mindyourownbytes/selftest.py` | The check that the built app runs on itself |
-| `packaging/` | The Windows download: its recipes, and the script that tests the result |
+| `packaging/` | The downloads for Windows, Linux, and macOS: their recipes, and the script that tests Windows' |
 | `tests/` | One test file per module, plus real-GnuPG integration tests |
 | `docs/THREAT_MODEL.md` | What is and isn't protected. Keep this accurate |
 | `docs/index.html` | The project's website, with `site.css` and `site.js`. It loads nothing from anywhere else |

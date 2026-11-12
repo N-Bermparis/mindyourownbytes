@@ -25,6 +25,13 @@ class GuideTests(unittest.TestCase):
         self.assertIn("brew install gnupg", recovery.as_text("macos"))
         self.assertIn("sudo apt install gnupg", recovery.as_text("linux"))
 
+    def test_a_mac_and_linux_are_pointed_at_their_own_downloads(self):
+        self.assertIn("the .dmg file, for a Mac with Apple silicon", recovery.as_text("macos"))
+        self.assertIn("the .tar.gz file for Linux", recovery.as_text("linux"))
+        for platform in recovery.PLATFORMS:
+            self.assertIn("/releases", recovery.as_text(platform))
+            self.assertNotIn("run from source", recovery.as_text(platform))
+
     def test_says_where_the_vault_goes_on_each_system(self):
         self.assertIn(r"%APPDATA%\mindyourownbytes\vault.gpg", recovery.as_text("windows"))
         self.assertIn("~/Library/Application Support/mindyourownbytes/vault.gpg", recovery.as_text("macos"))

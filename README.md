@@ -6,7 +6,7 @@ Encrypt your files on your own computer, then put them on any cloud you like. No
 account, no API keys, no new file format: just standard OpenPGP files that open with
 plain GnuPG, with or without this app.
 
-**[Download for Windows](https://github.com/N-Bermparis/mindyourownbytes/releases)** · [Linux and macOS](#run-from-source)
+**[Download for Windows, macOS, and Linux](https://github.com/N-Bermparis/mindyourownbytes/releases)** · [or run it from source](#run-from-source)
 
 [![CI](https://github.com/N-Bermparis/mindyourownbytes/actions/workflows/ci.yml/badge.svg)](https://github.com/N-Bermparis/mindyourownbytes/actions/workflows/ci.yml)
 [![License: GPL v3+](https://img.shields.io/badge/license-GPL--3.0--or--later-blue)](LICENSE)
@@ -97,6 +97,30 @@ If you already have [Gpg4win](https://gpg4win.org/), the app uses that instead o
 your keys and Kleopatra keep working as they are. Keys are optional: you only need Gpg4win to create
 one, and most people can use a passphrase.
 
+**On a Mac with Apple silicon:**
+
+1. [Download the disk image](https://github.com/N-Bermparis/mindyourownbytes/releases), the file ending in
+   `-macos-arm64.dmg`.
+2. Open it, and drag **mindyourownbytes** into **Applications**.
+3. Install GnuPG, which does all the encryption, from [GPG Suite](https://gpgtools.org/), or with
+   [Homebrew](https://brew.sh/): `brew install gnupg`. The app tells you if it can't find it.
+
+The app isn't signed by Apple yet, so the first time, macOS won't open it. After
+[checking your download](#check-your-download), open **System Settings > Privacy & Security** and click
+**Open Anyway** beside its name. An Intel Mac can [run it from source](#run-from-source).
+
+**On Linux, with a 64-bit Intel or AMD processor:**
+
+1. [Download the archive](https://github.com/N-Bermparis/mindyourownbytes/releases), the file ending in
+   `-linux-x86_64.tar.gz`.
+2. Unpack it anywhere, and run `mindyourownbytes` in the folder it makes. `./add-to-menu.sh`, in the
+   same folder, adds it to your applications menu, for your account only.
+3. Most Linux systems already have GnuPG. If yours doesn't, install it with your package manager,
+   such as `sudo apt install gnupg`.
+
+Unlike the Windows download, these two don't include GnuPG. They use the copy that comes from your
+system's usual source, which your keys already work with.
+
 ### Windows will warn you
 
 The downloads aren't code-signed yet, so Windows doesn't recognize who published them.
@@ -108,20 +132,26 @@ The downloads aren't code-signed yet, so Windows doesn't recognize who published
 
 ### Check your download
 
-Each [release](https://github.com/N-Bermparis/mindyourownbytes/releases) lists the SHA-256 checksum of every file. In PowerShell, run this on the
-file you downloaded, and compare the result:
+Each [release](https://github.com/N-Bermparis/mindyourownbytes/releases) lists the SHA-256 checksum of every file. Run the line for your
+system on the file you downloaded, and compare the result:
 
 ```powershell
-Get-FileHash .\mindyourownbytes-*-setup.exe
+Get-FileHash .\mindyourownbytes-*-setup.exe          # Windows, in PowerShell
+```
+
+```bash
+shasum -a 256 mindyourownbytes-*-macos-arm64.dmg     # macOS, in Terminal
+sha256sum mindyourownbytes-*-linux-x86_64.tar.gz     # Linux
 ```
 
 A match shows that you have the file published there, which is what matters if it reached you some
 other way or was damaged on the way. It can't help if the GitHub account itself were compromised:
-the [threat model](docs/THREAT_MODEL.md#the-windows-download) explains what you're trusting.
+the [threat model](docs/THREAT_MODEL.md#the-downloads) explains what you're trusting.
 
 ### Run from source
 
-For Linux and macOS, or if you'd rather not run a download. You need
+For an Intel Mac, a Linux computer with another kind of processor, or if you'd rather not run a
+download. You need
 [Python 3.12+](https://www.python.org/downloads/) and GnuPG.
 
 **Windows**
@@ -132,7 +162,7 @@ For Linux and macOS, or if you'd rather not run a download. You need
    every package checked against a hash in `requirements.txt`.
 4. Run `start_windows.bat`.
 
-**Linux and macOS (experimental)**
+**Linux and macOS**
 
 ```bash
 git clone https://github.com/N-Bermparis/mindyourownbytes.git
@@ -142,8 +172,8 @@ pip install --require-hashes -r requirements.txt
 python -m mindyourownbytes
 ```
 
-CI runs the tests on Linux, but the app is mainly developed and used on Windows, and it hasn't
-been tested on macOS. Reports are very welcome.
+CI runs the tests on Linux, and tests each download by running it, on Windows, Linux, and macOS.
+The app is mainly developed and used on Windows, so reports from Linux and Mac users are very welcome.
 
 ## How to use it
 

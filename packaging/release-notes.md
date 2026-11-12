@@ -22,12 +22,34 @@ These downloads aren't code-signed yet, so Windows doesn't recognize who publish
 - **Smart App Control** blocks unsigned apps with no way to continue. If it's on, wait for
   signed builds, or [run from source]({repository}#run-from-source).
 
-### Check your download
+## Download for macOS
 
-In PowerShell, run this and compare the result with the list below:
+**[`{macos}`]({downloads}/{macos})** is for Macs with Apple silicon. Open it, and drag
+mindyourownbytes into Applications. It needs GnuPG, from [GPG Suite](https://gpgtools.org/) or
+`brew install gnupg`, and the app says how to get it if it's missing.
+
+The app isn't signed by Apple yet, so the first time, macOS won't open it. After checking the file
+as described below, open **System Settings > Privacy & Security** and click **Open Anyway** beside
+its name. An Intel Mac can [run it from source]({repository}#run-from-source).
+
+## Download for Linux
+
+**[`{linux}`]({downloads}/{linux})** is for 64-bit Intel and AMD processors. Unpack it anywhere
+and run `mindyourownbytes` in the folder it makes. `add-to-menu.sh`, in the same folder, adds it to
+your applications menu. It needs GnuPG, which most Linux systems already have, or which your package
+manager installs as `gnupg`.
+
+## Check your download
+
+Run the line for your system, and compare the result with the list below.
 
 ```powershell
-Get-FileHash .\{setup}
+Get-FileHash .\{setup}   # Windows, in PowerShell
+```
+
+```bash
+shasum -a 256 {macos}    # macOS, in Terminal
+sha256sum {linux}        # Linux
 ```
 
 ```text
@@ -37,7 +59,8 @@ Get-FileHash .\{setup}
 A matching checksum shows that your file is the one published here. It can't protect you if
 this GitHub account itself were compromised, which is what signing and independent builds are for.
 
-`{gnupg_source}` is the source code of the included GnuPG. You don't need it to use the app.
+`{gnupg_source}` is the source code of the GnuPG included in the Windows download. You don't need
+it to use the app.
 
 ## What's in this release
 

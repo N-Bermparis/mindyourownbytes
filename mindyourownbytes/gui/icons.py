@@ -76,6 +76,11 @@ def icon(name: str, color: QColor | str | None = None) -> QIcon:
     return result
 
 
+def app_pixmap(size: int) -> QPixmap:
+    """The app's icon at any size, drawn rather than scaled, for the icons of the Mac and Linux downloads."""
+    return _render(_APP_ICON, size)
+
+
 def app_icon() -> QIcon:
     result = QIcon()
     for size in (16, 24, 32, 48, 64, 128, 256):

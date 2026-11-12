@@ -65,7 +65,7 @@ from mindyourownbytes.core import (
     process_items,
     stop_bundled_gnupg,
 )
-from mindyourownbytes.gui import handover, icons, provider_view, theme
+from mindyourownbytes.gui import gnupg_help, handover, icons, provider_view, theme
 from mindyourownbytes.gui.dialogs import PassphraseDialog, ProtectionDialog
 from mindyourownbytes.gui.library_page import LibraryPage
 from mindyourownbytes.gui.post_quantum import PostQuantumDialog
@@ -93,7 +93,6 @@ from mindyourownbytes.vault import Vault, default_vault_path
 
 DEFAULT_ROOT = Path.home() / "mindyourownbytes"
 REPOSITORY_URL = "https://github.com/N-Bermparis/mindyourownbytes"
-GPG4WIN_URL = "https://gpg4win.org/download.html"
 TRY_ALL_SAVED = "\0all"
 
 CIPHER_LABELS = {cipher.name: cipher.label for cipher in CIPHERS}
@@ -1281,11 +1280,11 @@ class MainWindow(QMainWindow):
             return
         minimum = ".".join(map(str, MIN_GPG_VERSION))
         self.gpg_status.setText("GnuPG not found")
+        get = gnupg_help.for_this_system()
         self.gpg_bar.show_message(
             "warning", "This app needs GnuPG to encrypt and restore files",
-            f"It's free and does all the encryption here. Install Gpg4win (GnuPG {minimum} or newer), "
-            "then restart this app, or locate gpg.exe yourself.",
-            actions=[("Get Gpg4win", lambda: self._open_url(GPG4WIN_URL)), ("Locate GnuPG…", self.select_gpg)],
+            f"It's free and does all the encryption here. {get.banner.format(minimum=minimum)}",
+            actions=[(get.button, lambda: self._open_url(get.url)), ("Locate GnuPG…", self.select_gpg)],
             dismissable=False,
         )
 
@@ -1318,7 +1317,7 @@ class MainWindow(QMainWindow):
         except Exception:
             keys = []
         if not keys:
-            self.key_combo.addItem("No keys found. Create one in Kleopatra, part of Gpg4win.", "")
+            self.key_combo.addItem(gnupg_help.for_this_system().no_keys, "")
             return
         for key in keys:
             owner = "your key" if key.has_secret else "someone else's key"
@@ -1591,11 +1590,7 @@ class MainWindow(QMainWindow):
             return
         if not self.gpg or not is_valid_gpg(self.gpg):
             self.update_gpg_status()
-            QMessageBox.warning(
-                self, "GnuPG is required",
-                "Install Gpg4win (https://gpg4win.org/) and restart this application, "
-                "or use Tools > Locate GnuPG to select gpg.exe.",
-            )
+            QMessageBox.warning(self, "GnuPG is required", gnupg_help.for_this_system().required)
             return
         selection = self.method()
         method = "public-key" if selection == "public-key" else "password"
@@ -1603,8 +1598,7 @@ class MainWindow(QMainWindow):
         if selection == "public-key" and not fingerprint:
             QMessageBox.warning(
                 self, "No encryption key",
-                "Create an OpenPGP key in Kleopatra, then refresh the list. Kleopatra comes with Gpg4win "
-                "(https://gpg4win.org/). If you don't use keys, choose Passphrase instead.",
+                f"{gnupg_help.for_this_system().make_key} If you don't use keys, choose Passphrase instead.",
             )
             return
         output = self._job_directory()

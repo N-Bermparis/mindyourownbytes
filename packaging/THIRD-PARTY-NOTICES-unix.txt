@@ -1,0 +1,38 @@
+What's inside this download of mindyourownbytes {version}
+
+mindyourownbytes is free software under the GNU General Public License, version 3 or
+later (see LICENSE.txt). It comes with no warranty. Its source code is at
+https://github.com/N-Bermparis/mindyourownbytes/tree/v{version}
+
+GnuPG, which does all of the encryption, isn't included here. The app uses the copy
+installed on your computer, from your Linux distribution, Homebrew, or GPG Suite.
+
+This download contains the software below, each under its own license.
+
+
+Qt and PySide6 {qt}, in "{libraries}/PySide6" and "{libraries}/shiboken6"
+  Draw the interface.
+  License: used here under the GNU General Public License, version 3 (see LICENSE.txt).
+  Source code: https://download.qt.io/official_releases/qt/{qt_series}/{qt}/single/
+  and https://download.qt.io/official_releases/QtForPython/pyside6/PySide6-{qt}-src/
+
+Python {python}, in "{libraries}"
+  Runs the app.
+  License: the Python Software Foundation License, with the licenses of the libraries
+  it uses, in licenses/Python.txt.
+  Source code: https://www.python.org/downloads/release/python-{python}/
+
+PyInstaller {pyinstaller}, the launcher that starts the app
+  License: GPL-2.0-or-later with an exception for the programs it launches, in
+  licenses/PyInstaller.txt.
+  Source code: https://github.com/pyinstaller/pyinstaller
+
+EFF's Long Wordlist, in "{libraries}/mindyourownbytes/eff_large_wordlist.txt"
+  The words that generated passphrases are made from, unmodified. By the Electronic
+  Frontier Foundation, from https://www.eff.org/dice
+  License: Creative Commons Attribution (CC BY), as https://www.eff.org/copyright
+  states for original material on EFF's website.
+
+Libraries that Qt and Python need, in "{libraries}"
+  Collected by PyInstaller from the system the download was built on, each under its
+  own license, such as the LGPL. Their names say which library each one is.

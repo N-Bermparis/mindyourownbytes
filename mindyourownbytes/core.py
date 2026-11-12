@@ -211,6 +211,20 @@ def bundled_gpg() -> str | None:
     return str(candidate) if candidate.is_file() else None
 
 
+#: Where GnuPG is installed outside Windows: by Linux packages, and on a Mac by Homebrew (Apple
+#: silicon, then Intel), GPG Suite, and MacPorts. An app opened from the Finder doesn't get the
+#: PATH a terminal has, so without these a Mac would never find it.
+STANDARD_GPG = {
+    "darwin": ("/opt/homebrew/bin/gpg", "/usr/local/bin/gpg", "/usr/local/MacGPG2/bin/gpg", "/opt/local/bin/gpg"),
+    "linux": ("/usr/bin/gpg", "/usr/local/bin/gpg"),
+}
+
+
+def standard_gpg(platform: str | None = None) -> list[Path]:
+    system = platform or sys.platform
+    return [Path(path) for path in STANDARD_GPG["darwin" if system == "darwin" else "linux"]]
+
+
 def find_gpg() -> str | None:
     """Locate GnuPG without ever searching the current directory.
 
@@ -221,7 +235,8 @@ def find_gpg() -> str | None:
     someone's keys and Kleopatra already work with the GnuPG they installed.
     After those comes the copy in the Windows download, ahead of PATH, so that a
     stray PATH entry can't replace it. An installed GnuPG that is broken or too old
-    to use must not hide that working copy.
+    to use must not hide that working copy. Elsewhere, the places in STANDARD_GPG come
+    first, for the same reasons.
     """
     if os.name == "nt":
         bundled = bundled_gpg()
@@ -238,6 +253,10 @@ def find_gpg() -> str | None:
                     return str(candidate)
         if bundled:
             return bundled
+    else:
+        for candidate in standard_gpg():
+            if candidate.is_file():
+                return str(candidate)
     names = ("gpg.exe",) if os.name == "nt" else ("gpg",)
     for directory in _absolute_path_entries():
         for name in names:

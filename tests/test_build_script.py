@@ -2,9 +2,14 @@
 
 from __future__ import annotations
 
+import hashlib
 import importlib.util
+import os
 import re
+import shutil
+import subprocess
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -18,6 +23,19 @@ _spec = importlib.util.spec_from_file_location("build_windows", PACKAGING / "bui
 build = importlib.util.module_from_spec(_spec)
 sys.modules["build_windows"] = build
 _spec.loader.exec_module(build)
+
+
+def _load(name: str):
+    spec = importlib.util.spec_from_file_location(name, PACKAGING / f"{name}.py")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+# build_unix uses build_windows, which is loaded above under the name it imports.
+unix = _load("build_unix")
+collect = _load("collect_release")
 
 
 class PinTests(unittest.TestCase):
@@ -137,6 +155,101 @@ class RecipesAgreeTests(unittest.TestCase):
         self.assertNotIn("[UninstallDelete]", self.installer)
         self.assertNotIn("{userappdata}", self.installer)
         self.assertNotIn("{userdocs}", self.installer)
+
+
+class UnixDownloadTests(unittest.TestCase):
+    def test_names_say_the_system_and_the_processor_as_download_pages_do(self):
+        cases = (("linux", "x86_64", "linux-x86_64"), ("linux", "AMD64", "linux-x86_64"),
+                 ("darwin", "arm64", "macos-arm64"), ("linux", "aarch64", "linux-arm64"))
+        for platform_name, machine, expected in cases:
+            with self.subTest(system=platform_name, machine=machine):
+                self.assertEqual(unix.base_name("1.2.3", platform_name, machine), f"mindyourownbytes-1.2.3-{expected}")
+
+    def test_the_release_notes_name_the_files_each_build_makes(self):
+        # The Windows build writes the notes, so it must name the Linux and Mac downloads as build_unix does.
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / "dist").mkdir()
+            (root / "CHANGELOG.md").write_text("## [9.8.7] - Unreleased\n\nNew things.\n", encoding="utf-8")
+            checksums = root / "SHA256SUMS.txt"
+            checksums.write_text("abc  x\n", encoding="utf-8")
+            with patch.object(build, "ROOT", root):
+                notes = build.write_release_notes("9.8.7", Path("a-setup.exe"), Path("a-portable.zip"),
+                                                  checksums).read_text(encoding="utf-8")
+        self.assertIn(f"{unix.base_name('9.8.7', 'linux', 'x86_64')}.tar.gz", notes)
+        self.assertIn(f"{unix.base_name('9.8.7', 'darwin', 'arm64')}.dmg", notes)
+        self.assertEqual(notes.count("```text"), 1, "one list of checksums, for collect_release.py to replace")
+        self.assertIn("New things.", notes)
+
+    def test_the_notices_name_what_each_download_holds(self):
+        notices = (PACKAGING / "THIRD-PARTY-NOTICES-unix.txt").read_text(encoding="utf-8")
+        filled = notices.format(version="1.2.3", libraries="_internal", qt="6.12.0", qt_series="6.12",
+                                python="3.14.3", pyinstaller="6.22.3")
+        self.assertIn("isn't included here", filled)
+        self.assertIn('"_internal/PySide6"', filled)
+
+
+class AddToMenuTests(unittest.TestCase):
+    SCRIPT = PACKAGING / "linux" / "add-to-menu.sh"
+
+    def test_keeps_unix_line_endings_even_in_a_windows_checkout(self):
+        self.assertNotIn(b"\r", self.SCRIPT.read_bytes())
+
+    @unittest.skipIf(os.name == "nt" or shutil.which("sh") is None, "runs the script as Linux does")
+    def test_adds_an_entry_that_starts_the_app_where_it_was_unpacked(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            folder = Path(temporary) / "unpacked here"
+            folder.mkdir()
+            shutil.copy2(self.SCRIPT, folder / "add-to-menu.sh")
+            (folder / "mindyourownbytes.png").write_bytes(b"png")
+            data = Path(temporary) / "data"
+            subprocess.run(["sh", str(folder / "add-to-menu.sh")], check=True, capture_output=True,
+                           env={**os.environ, "XDG_DATA_HOME": str(data)})
+            entry = (data / "applications" / "mindyourownbytes.desktop").read_text(encoding="utf-8")
+            self.assertIn(f'Exec="{folder}/mindyourownbytes" %F', entry)
+            self.assertTrue((data / "icons" / "hicolor" / "256x256" / "apps" / "mindyourownbytes.png").is_file())
+
+
+class CollectReleaseTests(unittest.TestCase):
+    def setUp(self):
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        self.root = Path(temp.name)
+        self.artifacts = self.root / "downloads"
+        windows = self.artifacts / "windows-download"
+        (windows / "release").mkdir(parents=True)
+        for name in ("app-setup.exe", "app-portable.zip", "gnupg-source.tar.xz", "SHA256SUMS.txt"):
+            (windows / "release" / name).write_bytes(name.encode())
+        (windows / "release-notes.md").write_text("Notes\n\n```text\nonly windows\n```\n\nEnd\n", encoding="utf-8")
+        # Uploaded as one folder, so their files sit at the top of the artifact.
+        for part, name in (("linux-download", "app-linux.tar.gz"), ("macos-download", "app-macos.dmg")):
+            (self.artifacts / part).mkdir()
+            (self.artifacts / part / name).write_bytes(name.encode())
+            (self.artifacts / part / "SHA256SUMS.txt").write_bytes(b"its own list")
+
+    def test_one_folder_with_every_download_and_one_list_of_checksums(self):
+        release = collect.collect(self.artifacts, self.root / "dist")
+        names = sorted(path.name for path in release.iterdir())
+        self.assertEqual(names, ["SHA256SUMS.txt", "app-linux.tar.gz", "app-macos.dmg", "app-portable.zip",
+                                 "app-setup.exe", "gnupg-source.tar.xz"])
+        checksums = (release / "SHA256SUMS.txt").read_text(encoding="utf-8")
+        for name in names[1:]:
+            self.assertIn(f"{hashlib.sha256(name.encode()).hexdigest()}  {name}\n", checksums)
+        notes = (self.root / "dist" / "release-notes.md").read_text(encoding="utf-8")
+        self.assertIn(checksums, notes)
+        self.assertNotIn("only windows", notes)
+        self.assertTrue(notes.endswith("End\n"))
+
+    def test_a_missing_download_stops_the_release(self):
+        shutil.rmtree(self.artifacts / "macos-download")
+        with self.assertRaises(SystemExit) as stopped:
+            collect.collect(self.artifacts, self.root / "dist")
+        self.assertIn("macos-download", str(stopped.exception))
+
+    def test_two_downloads_that_make_the_same_file_stop_the_release(self):
+        (self.artifacts / "linux-download" / "app-macos.dmg").write_bytes(b"different")
+        with self.assertRaises(SystemExit):
+            collect.collect(self.artifacts, self.root / "dist")
 
 
 if __name__ == "__main__":

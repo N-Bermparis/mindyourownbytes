@@ -244,6 +244,9 @@ def write_release_notes(version: str, setup: Path, portable: Path, checksums: Pa
             repository=REPOSITORY,
             setup=setup.name,
             portable=portable.name,
+            # Built on their own systems by build_unix.py, which names them the same way.
+            linux=f"mindyourownbytes-{version}-linux-x86_64.tar.gz",
+            macos=f"mindyourownbytes-{version}-macos-arm64.dmg",
             gnupg=GNUPG_VERSION,
             gnupg_source=GNUPG_SOURCE.name,
             checksums=checksums.read_text(encoding="utf-8").strip(),
