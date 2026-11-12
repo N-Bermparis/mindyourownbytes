@@ -37,6 +37,7 @@ from mindyourownbytes.core import (
     process_items,
     run_gpg_feeding,
     run_gpg_hashed,
+    standard_gpg,
     stop_bundled_gnupg,
     supports_post_quantum,
     unique_target,
@@ -158,7 +159,44 @@ class PassphraseEncodingTests(unittest.TestCase):
         self.assertEqual(encode_passphrase(" κωδικός ✓ "), " κωδικός ✓ ".encode())
 
 
+class StandardGpgPlacesTests(unittest.TestCase):
+    def test_the_usual_places_on_a_mac_and_on_linux(self):
+        self.assertEqual([path.as_posix() for path in standard_gpg("darwin")],
+                         ["/opt/homebrew/bin/gpg", "/usr/local/bin/gpg", "/usr/local/MacGPG2/bin/gpg",
+                          "/opt/local/bin/gpg"])
+        self.assertEqual([path.as_posix() for path in standard_gpg("linux")], ["/usr/bin/gpg", "/usr/local/bin/gpg"])
+        self.assertEqual(standard_gpg("freebsd14"), standard_gpg("linux"))
+
+
 class GpgDiscoveryTests(TempDirCase):
+    def setUp(self):
+        super().setUp()
+        # Outside Windows the usual places come first. Most of these tests are about everything else.
+        patcher = patch.dict("mindyourownbytes.core.STANDARD_GPG", {"darwin": (), "linux": ()})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    @unittest.skipIf(os.name == "nt", "Windows has its own places, tested below")
+    def test_a_mac_finds_homebrew_and_gpg_suite_without_a_terminals_path(self):
+        # An app opened from the Finder gets a PATH without Homebrew in it, so a Mac must look where
+        # GnuPG is installed, and before PATH, as on Windows.
+        homebrew = self.root / "homebrew" / "gpg"
+        suite = self.root / "MacGPG2" / "gpg"
+        elsewhere = self.root / "elsewhere"
+        for path in (suite, elsewhere / "gpg"):
+            path.parent.mkdir(parents=True)
+            path.write_bytes(b"x")
+        places = {"darwin": (str(homebrew), str(suite)), "linux": (str(elsewhere / "none"),)}
+        with patch.dict("mindyourownbytes.core.STANDARD_GPG", places), \
+                patch("mindyourownbytes.core.sys.platform", "darwin"), patch.dict(os.environ, {"PATH": str(elsewhere)}):
+            self.assertEqual(find_gpg(), str(suite))
+            homebrew.parent.mkdir()
+            homebrew.write_bytes(b"x")
+            self.assertEqual(find_gpg(), str(homebrew))
+        with patch.dict("mindyourownbytes.core.STANDARD_GPG", places), \
+                patch("mindyourownbytes.core.sys.platform", "linux"), patch.dict(os.environ, {"PATH": str(elsewhere)}):
+            self.assertEqual(find_gpg(), str(elsewhere / "gpg"), "Linux falls back to PATH")
+
     def test_never_runs_a_gpg_planted_in_the_current_directory(self):
         planted = self.root / ("gpg.exe" if os.name == "nt" else "gpg")
         planted.write_bytes(b"not really gpg")
@@ -242,7 +280,7 @@ class GpgDiscoveryTests(TempDirCase):
         with patch.dict(os.environ, environment), patch("mindyourownbytes.core.is_valid_gpg", return_value=False):
             self.assertEqual(find_gpg(), str(folder / "gnupg" / "bin" / "gpg.exe"))
 
-    @unittest.skipUnless(os.name == "nt", "the standard install locations are only searched on Windows")
+    @unittest.skipUnless(os.name == "nt", "it uses the Windows install locations under Program Files")
     def test_without_a_download_an_unusable_gnupg_is_still_found_and_reported(self):
         installed = self.root / "Program Files" / "GnuPG" / "bin"
         installed.mkdir(parents=True)

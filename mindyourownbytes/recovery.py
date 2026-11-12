@@ -35,12 +35,18 @@ def _install(platform: Platform) -> Step:
         ))
     if platform == "macos":
         return Step("Set up the other computer", (
-            "Install GnuPG. With Homebrew, type the command below in Terminal. GPG Suite, from gpgtools.org, "
-            "is another way. This app can also run from source on macOS, but it hasn't been tested there.",
+            "Install GnuPG, which does all the encryption. With Homebrew, type the command below in Terminal. "
+            "GPG Suite, from gpgtools.org, is another way.",
+            "Then, to use this app, download it from its releases page: the .dmg file, for a Mac with Apple "
+            "silicon. Without it, GnuPG alone opens every file, as the next steps show.",
+            f"Releases: {REPOSITORY_URL}/releases",
         ), ("brew install gnupg",))
     return Step("Set up the other computer", (
-        "Install GnuPG with your package manager. Many Linux systems already have it. This app can also "
-        "run from source on Linux, as its README describes.",
+        "Install GnuPG, which does all the encryption, with your package manager. Many Linux systems "
+        "already have it.",
+        "Then, to use this app, download it from its releases page: the .tar.gz file for Linux, which you "
+        "unpack anywhere. Without it, GnuPG alone opens every file, as the next steps show.",
+        f"Releases: {REPOSITORY_URL}/releases",
     ), ("sudo apt install gnupg      # Debian and Ubuntu", "sudo dnf install gnupg2     # Fedora"))
 
 

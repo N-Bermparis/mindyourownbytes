@@ -63,12 +63,17 @@ release pull request. Passing this list is not a security certification.
       git tag v1.2.3
       git push origin v1.2.3
 
-  The **Windows download** workflow builds from the tag, tests the result, and creates a **draft**
-  pre-release with the files, checksums, and warnings already in place. Nothing is public yet.
+  The **Downloads** workflow builds the Windows, Linux, and macOS downloads from the tag, tests each,
+  and creates a **draft** pre-release with all their files, checksums, and warnings already in
+  place. Nothing is public yet.
 - [ ] In the workflow's `check-results-*` artifacts, look at the pictures of the window.
 - [ ] Download the installer from the draft onto a clean Windows computer or
       [Windows Sandbox](https://learn.microsoft.com/windows/security/application-security/application-isolation/windows-sandbox/windows-sandbox-overview),
       and go through the warning, the install, an encrypt and restore, and the uninstall.
+- [ ] On a Mac with Apple silicon, download the disk image from the draft, go through macOS's warning,
+      drag the app into Applications, and encrypt and restore a file with GnuPG from GPG Suite or Homebrew.
+- [ ] On a Linux desktop, unpack the archive, run `add-to-menu.sh`, start the app from the menu, and
+      encrypt and restore a file.
 - [ ] Check the files with an antivirus scanner. Report any false alarm before publishing, because
       new unsigned downloads attract them.
 - [ ] Read the draft's notes, then publish it. Keep it marked as a pre-release until an independent

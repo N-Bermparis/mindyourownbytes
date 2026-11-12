@@ -49,7 +49,7 @@ def _check_interface(checks: _Checks, report: dict, folder: Path, scratch: Path,
     style = app.style().objectName()
     report.update(platform=app.platformName(), style=style)
     # Qt quietly falls back to its plain "windows" style if the native one failed to load.
-    checks.record("A native style loaded", style.lower() in ("windows11", "fusion"), style)
+    checks.record("A native style loaded", style.lower() in ("windows11", "fusion", "macos"), style)
 
     icon = icons.app_icon().pixmap(32, 32).toImage()
     checks.record("Icons draw", icon.pixelColor(16, 16).alpha() > 0)
@@ -225,10 +225,11 @@ def _check_key_round_trip(checks: _Checks, gpg: str, source: Path, scratch: Path
 
 
 def _check_post_quantum(checks: _Checks, gpg: str, source: Path, scratch: Path) -> None:
-    """The download's own GnuPG is new enough for post-quantum keys, so there they have to work."""
+    """The GnuPG in the Windows download is new enough for post-quantum keys, so with it they have to
+    work. The Linux and macOS downloads use the computer's own GnuPG, which may be older."""
     name = "Post-quantum keys work, where this GnuPG has them"
     if not core.supports_post_quantum(gpg):
-        required = bool(getattr(sys, "frozen", False))
+        required = gpg == core.bundled_gpg()
         checks.record(name, not required, "this GnuPG can't make them")
         return
     uid = "Post-quantum self test <post-quantum@example.invalid>"

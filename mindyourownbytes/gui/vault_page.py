@@ -17,6 +17,7 @@ from PySide6.QtWidgets import (
 )
 
 from mindyourownbytes.core import is_valid_gpg
+from mindyourownbytes.gui import gnupg_help
 from mindyourownbytes.gui.dialogs import PassphraseDialog, VaultEntryDialog
 from mindyourownbytes.gui.widgets import (
     EmptyState,
@@ -194,8 +195,7 @@ class VaultPage(QWidget):
         if self.vault.gpg and is_valid_gpg(self.vault.gpg):
             return True
         QMessageBox.warning(self, "GnuPG is required",
-                            "The vault is encrypted by GnuPG. Install Gpg4win, or use Tools > Locate GnuPG, "
-                            "then try again.")
+                            f"The vault is encrypted by GnuPG. {gnupg_help.for_this_system().vault}")
         return False
 
     def create_vault(self) -> None:

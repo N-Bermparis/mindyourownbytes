@@ -93,7 +93,8 @@ local processes. Passphrases reach GnuPG through Pinentry or a stdin pipe.
 
 **GnuPG is located safely.** The current directory is never searched, and standard
 install locations are checked first, then the copy inside the Windows download, then
-PATH. A `gpg.exe` planted in a folder such as Downloads will not be executed.
+PATH. A `gpg.exe` planted in a folder such as Downloads will not be executed. On a Mac and on
+Linux, the usual places come first too: Homebrew's, GPG Suite's, MacPorts', and the system's.
 
 **Failures stay contained.** Files are staged under a temporary name and published
 only after success, without overwriting anything. A failed file leaves nothing behind
@@ -347,16 +348,18 @@ Its costs, which you should weigh:
 - **This is not a backup system.** It has no versioning or scheduling, and it doesn't verify that
   files reached your provider. The check after encrypting ends on your own computer. It is also not a workaround for your organization's data-handling policies.
 
-## The Windows download
+## The downloads
 
 Running a download means trusting whoever built it, so here is exactly what you're trusting.
 
-**Who builds it.** GitHub Actions builds it from a tagged commit, using this repository's
-public workflow. Python packages are checked against hashes, and GnuPG and the installer
-tool against pinned SHA-256 checksums. A person checks each release and publishes it.
+**Who builds them.** GitHub Actions builds each one from a tagged commit, on its own system,
+using this repository's public workflow. Python packages are checked against hashes, and the
+Windows download's GnuPG and installer tool against pinned SHA-256 checksums. A person checks
+each release and publishes it. The Linux and macOS downloads don't include GnuPG at all: they
+use the computer's own, found as described above.
 
-**It isn't code-signed yet.** Windows therefore warns about it and can't tell you who made
-it. The published checksums show that your file matches the release page, but someone who
+**They aren't code-signed yet.** Windows and macOS therefore warn about them and can't tell
+you who made them. The published checksums show that your file matches the release page, but someone who
 took over the GitHub account could change both. Once this repository is public, each file
 also gets a [build attestation](https://docs.github.com/actions/security-for-github-actions/using-artifact-attestations),
 which ties it to the workflow and commit that produced it:
@@ -369,7 +372,7 @@ That still trusts GitHub, and builds aren't reproducible yet, so nobody can yet 
 file by building it themselves. Code signing and reproducible builds are on the
 [roadmap](ROADMAP.md).
 
-**The included GnuPG.** These are the official Windows files, unmodified, and each one
+**The GnuPG in the Windows download.** These are the official Windows files, unmodified, and each one
 carries g10 Code's signature, which you can see under its Properties. Files that reach
 the network (`dirmngr`, `gpg-wks-client`, `libntbtls`) are left out, as are translations,
 and CI fails if any of them, or Qt's or Python's network code, reappear. A GnuPG you

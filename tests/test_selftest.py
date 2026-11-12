@@ -9,10 +9,27 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
+from mindyourownbytes import selftest
 from tests.support import require_gpg
 
 ROOT = Path(__file__).resolve().parent.parent
+
+
+class PostQuantumRequirementTests(unittest.TestCase):
+    def outcome(self, gpg: str, bundled: str | None) -> bool:
+        checks = selftest._Checks()
+        with patch.object(selftest.core, "supports_post_quantum", return_value=False), \
+                patch.object(selftest.core, "bundled_gpg", return_value=bundled):
+            selftest._check_post_quantum(checks, gpg, Path("unused"), Path("unused"))
+        return checks.results[-1]["passed"]
+
+    def test_required_only_of_the_gnupg_the_windows_download_brings(self):
+        # Linux and macOS downloads use the computer's own GnuPG, which is often 2.2 or 2.4.
+        self.assertTrue(self.outcome("/usr/bin/gpg", None))
+        self.assertTrue(self.outcome(r"C:\Program Files\GnuPG\bin\gpg.exe", r"C:\app\gnupg\bin\gpg.exe"))
+        self.assertFalse(self.outcome(r"C:\app\gnupg\bin\gpg.exe", r"C:\app\gnupg\bin\gpg.exe"))
 
 
 class SelfTestTests(unittest.TestCase):
