@@ -37,6 +37,22 @@ release pull request. Passing this list is not a security certification.
       Help > Restore on another computer, once with the app and once with its plain GnuPG commands.
 - [ ] Open a file and the vault using plain `gpg`, without this app.
 - [ ] Try a wrong passphrase, a missing key, a corrupt file, and Cancel.
+- [ ] Encrypt to your own key with **Also sign them with**, answering GnuPG's own window for the key's
+      passphrase, and once cancelling it. Restore: the row says **signed by** your name, and the tooltip
+      shows your key's full fingerprint. Decrypt the same file with plain `gpg --decrypt`, and check
+      that GnuPG reports a good signature.
+- [ ] Restore a file encrypted to your key without signing: it says **not signed**. Turn on **Tools >
+      Require a signature on files for a key**, and check that the same file is refused, and that a
+      passphrase file still restores. Turn it off again.
+- [ ] Restore a file signed by someone else's key that you haven't certified: it's flagged as **signed
+      with a key you haven't verified**. Certify the key in Kleopatra, and check it then says **signed by**.
+- [ ] Choose a new passphrase such as `Password123!`, and check that it's refused with the reason, and
+      that a generated one is accepted. Do the same for a new vault master passphrase. Check that a file
+      made with a weak passphrase before still restores.
+- [ ] Start a large archive restore, and end the app from Task Manager partway through. Start the app
+      again, check that it lists the hidden folder it left, and that **Delete** removes it.
+- [ ] Restore an archive into a folder that already holds an empty folder of the archive's name, and
+      check that the empty folder is still there, and that the archive came out as `Name (2)`.
 - [ ] Restore one batch that mixes passphrase files with files for a key that has its own passphrase,
       and restore a whole collection from the Library with nothing selected.
 - [ ] Test spaces, Unicode, very long names, and name collisions.
@@ -54,6 +70,40 @@ release pull request. Passing this list is not a security certification.
 - [ ] CI is green on every platform, with no skipped GnuPG tests.
 - [ ] The included GnuPG is the newest release (see [Updating GnuPG](#updating-gnupg)).
 - [ ] Do not present unsigned binaries as verified.
+- [ ] In the build logs, each download says either **UNSIGNED** or how it was signed. The release notes,
+      `SECURITY.md`, the README, and the threat model must say the same. Their text assumes unsigned
+      downloads: update it in the release pull request before the first signed release.
+
+## Setting up signing (prerequisites, not yet done)
+
+Nothing here is configured, so every download is built unsigned, and says so. The workflow only reaches
+for any of these on a version tag. Never commit a key, a certificate, or a password, and never paste one
+into an issue or a log.
+
+**Windows (Authenticode).** Code-signing keys now have to be kept in hardware: a token, or a cloud
+signing service from a CA, which installs a key storage provider that puts the certificate in the
+Windows certificate store. Add that provider's own setup step to the **Build for Windows** job, before
+the build, as its vendor documents. Then set the repository variables `WINDOWS_SIGN_CERT_SHA1` (the
+certificate's thumbprint) and `WINDOWS_SIGN_TIMESTAMP_URL` (the RFC 3161 server your CA names).
+`packaging/signing.py` signs the app's program, then the installer, and checks both with
+`Get-AuthenticodeSignature`. Inno Setup's uninstaller isn't signed yet: that needs its `SignTool`
+setting in `packaging/installer.iss`.
+
+**macOS (Developer ID and notarization).** Set the variable `MAC_SIGN_IDENTITY` to the full
+"Developer ID Application: …" name, and the secrets `MAC_DEVELOPER_ID_P12_BASE64` and
+`MAC_DEVELOPER_ID_P12_PASSWORD`. To notarize, also create an App Store Connect API key, and set the
+variables `MAC_NOTARY_KEY_ID` and `MAC_NOTARY_ISSUER` and the secret `MAC_NOTARY_API_KEY_P8`. Test a
+signed build on a Mac before relying on it: Qt or Python may need entitlements under the hardened
+runtime, which hasn't been tried yet.
+
+**Release key (OpenPGP signature of `SHA256SUMS.txt`).** Make a dedicated signing key, kept offline
+apart from this use. Create a `release-signing` environment that requires a person's approval, with the
+secrets `RELEASE_SIGNING_KEY` (the armored private key) and `RELEASE_SIGNING_PASSPHRASE`, and set the
+variable `RELEASE_KEY_FINGERPRINT` (40 hex digits, no spaces). Publish the fingerprint in `SECURITY.md`
+and through at least one other channel you control, before the first signed release.
+
+After any of these is set up, run the **Downloads** workflow on a test tag, check every signature by
+hand on each system as the README describes, then delete the test release and tag.
 
 ## Releasing
 

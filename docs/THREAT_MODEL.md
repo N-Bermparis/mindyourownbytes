@@ -97,9 +97,36 @@ PATH. A `gpg.exe` planted in a folder such as Downloads will not be executed. On
 Linux, the usual places come first too: Homebrew's, GPG Suite's, MacPorts', and the system's.
 
 **Failures stay contained.** Files are staged under a temporary name and published
-only after success, without overwriting anything. A failed file leaves nothing behind
-and doesn't stop the rest of the batch. Links and junctions are never followed, and
-folders that can't be read are reported rather than silently left out.
+only after success. A failed file leaves nothing behind and doesn't stop the rest of the
+batch. Links and junctions are never followed, and folders that can't be read are reported
+rather than silently left out.
+
+**Nothing is replaced, and nothing appears half-made.** A finished file or folder gets its final
+name in one step, which the operating system carries out atomically, and only if nothing at all has
+that name: not a file, not a folder, even an empty one, and not a link, even one to nothing. Each
+system needs its own call for this, because Python's `os.rename` replaces an empty folder, or a file,
+on Linux and macOS without a word. During review, restoring an archive did exactly that to an empty
+folder of the same name, and a drive without hard links got a partial file under its final name
+while it was being copied. The calls now used are:
+
+| System | Call | Refuses a taken name |
+| --- | --- | --- |
+| Windows | `MoveFileExW` without `MOVEFILE_REPLACE_EXISTING` (what `os.rename` uses there), after trying a hard link | Always |
+| Linux | `renameat2(..., RENAME_NOREPLACE)`, or a hard link where that isn't supported, such as on NFS | When the file system supports either |
+| macOS | `renamex_np(..., RENAME_EXCL)`, or a hard link | When the file system supports either |
+
+A drive that supports neither, which can happen with some network and FUSE file systems, and with
+WSL's view of Windows drives, makes the file or folder fail with a message saying so. There is
+deliberately no fallback that copies into the final name, or renames in a way that could replace
+something. The name was only ever a suggestion: if another program, or another copy of this app,
+takes it between the moment it's chosen and the moment it's used, the next free name is used instead,
+such as `report (2).pdf`.
+
+Atomic isn't durable. Before a file gets its name, the app asks the system to write it to the drive
+(`fsync`, and `F_FULLFSYNC` on a Mac), and a failure there, such as a full disk, stops it being
+published. Afterwards it asks for the folder too, where the system allows. That makes a file far more
+likely to survive a power cut, but drives, virtual machines, and sync clients can still lose recent
+writes, so it isn't promised.
 
 **Each new file is checked before it counts.** People may delete an original once its copy is
 reported as encrypted, so that report has to be true. Whenever the app has the passphrase (typed
@@ -136,9 +163,8 @@ The check costs time, because each file is decrypted once more and its passphras
 more. Measured on one computer with the Windows download's own hashing: one 256 MB file took 9.3
 seconds in place of 6.5, and 200 files of 4 KB took 56 seconds in place of 34.
 
-Two smaller limits: the decrypted bytes pass through this app's memory, a megabyte at a time, on
-their way to being hashed. And on Linux and macOS, a drive that doesn't support hard links gets the
-final file as a copy of the checked one, and that copy isn't checked again.
+One smaller limit: the decrypted bytes pass through this app's memory, a megabyte at a time, on
+their way to being hashed. The checked file itself is what gets the final name, never a copy of it.
 
 **Decrypted filenames come from you.** Output paths are chosen by the app, so a name
 embedded in a malicious file cannot write outside the restore folder.
@@ -153,16 +179,104 @@ a second time, which could take as long again for a large folder. Instead, each 
 time, and identity must be what they were just before it was packed.
 
 Restoring needs the decrypted zip on disk for a while, because a zip keeps its table of contents
-at its end. It stays under a temporary name, and is deleted once it's unpacked. Only a zip that
+at its end. Holding it in memory instead would put a limit on archives, and reading it without its
+table of contents would give up the checks below, so it's written to disk, inside the restore's
+private workspace (see [below](#decrypted-data-on-its-way-to-its-name)), and deleted with it. Only a zip that
 carries this app's mark in its comment is unpacked. Any other zip you encrypted as an ordinary
 file restores as that zip. Before anything is written, every name inside is checked: none may
 leave the folder (`..`, an absolute path, or a drive), or be a name Windows can't create, and no
 name may appear twice. The total size it claims must fit on the disk, and each file is cut off at
-the size it claims. Everything is unpacked into a temporary folder that only gets its final name
-once every file is out and has passed zip's own CRC check. Anything that fails leaves nothing.
+the size it claims. Each file is created new, never through a link, and written to the drive before
+the next. Everything is unpacked inside the workspace, and the folder only gets its final name once
+every file is out and has passed zip's own CRC check, in one step that never replaces anything.
+Anything that fails leaves nothing.
 
 Someone who knows the passphrase, or anyone who has your public key, can make an archive that
 passes all of this, just as they can make a single file. It still can't write outside the folder.
+A signature, [below](#who-made-a-file-signatures), is what shows who made it.
+
+### Decrypted data on its way to its name
+
+Everything a restore decrypts goes into a **workspace**: a hidden folder named `.myob-<16 hex
+digits>.partial`, made beside the destination, so that publishing is a rename on the same drive.
+That's the decrypted file, or for an archive the decrypted zip and the folder being unpacked from it.
+Only a finished result leaves it, by getting its final name. The workspace is then deleted, whether
+the restore worked, failed, was cancelled, or met an unexpected error.
+
+- **Private.** On Linux and macOS it's made with mode 0700, so no other account can look inside,
+  whatever the destination folder allows. Windows has no such mode, so the workspace gets the
+  destination folder's own permissions, the same that the restored files get. The default restore
+  folder, in your user profile, is private to your account.
+- **Noted before use.** Before anything readable goes in, a note of where it is goes into the app's
+  own folder, beside the vault. The note goes once the workspace has. If the app is killed, crashes,
+  or loses power, the note stays, and the next start lists exactly where readable data was left,
+  wherever that was, and offers to delete it. **Tools > Clean up after an interrupted restore** does
+  the same at any time.
+- **Deleted only when provably the app's.** A workspace holds a marker with a random token, which its
+  note also holds. Only a real folder, not a link or junction, named like a workspace, holding the
+  matching token, and on Linux and macOS owned by you, is ever deleted, and never without asking.
+  Anything else is listed and left alone. Deleting never follows a link inside the workspace.
+- **Several copies of the app** each hold a lock on a session file while they run. A workspace only
+  counts as left behind once the copy that made it has stopped, so one copy never deletes another's.
+- A workspace that can't be deleted, perhaps because another program has a file in it open, is named
+  when the restore ends, and offered again at the next start.
+
+What remains: between a crash and the next start, readable data sits in that hidden folder, and an
+empty one can be left if the app stops in the moment between making a workspace and noting it.
+Encrypting stages its output as a hidden `.myob-*.partial` file too, but that holds only encrypted
+data. Deleting a file removes its name: on an SSD, a copy-on-write file system, in a backup, or in a
+sync client's history, its contents can survive, so nothing here claims secure erasure.
+
+### Who made a file: signatures
+
+Five things can be true of a restored file, and they're kept apart, in the app and here:
+
+1. **Encrypted** (confidentiality): only the passphrase or the private key opens it.
+2. **Decrypted** (integrity, as far as decrypting goes): GnuPG reported `DECRYPTION_OKAY`, and its
+   integrity check passed. With a passphrase, whoever made the file knew the passphrase. With a key,
+   **anyone who has the public key** could have made it, and the public key is meant to be public.
+3. **Matches your record**: it has the checksum this computer saved when it made the file.
+4. **Validly signed** (authenticity): it hasn't changed since the holder of one particular private key
+   signed it. GnuPG reported `VALIDSIG` with that key's fingerprint.
+5. **Signed by someone you trust**: GnuPG considers the key valid (`TRUST_ULTIMATE` for your own keys,
+   `TRUST_FULLY` for keys you certified in Kleopatra), or you named its fingerprint yourself.
+
+Only 4 and 5 say who made a file. **Sign-and-encrypt**, offered when encrypting to a key in advanced
+mode, adds an ordinary OpenPGP signature with a key of yours, made by GnuPG's own `--sign --local-user
+<fingerprint>`. GnuPG asks for that key's passphrase through Pinentry, so the app never sees it or
+any private key. The file is standard OpenPGP: plain `gpg --decrypt` opens it and checks the
+signature, and a test confirms that. A signed file must also report `SIG_CREATED`, or it isn't kept.
+
+On restore, signatures are judged from GnuPG's status lines, never from its translated text:
+
+| What GnuPG reported | What the app does |
+| --- | --- |
+| No signature, file opened with a passphrase | Restores it. Whoever made it knew the passphrase |
+| No signature, file opened with a key | Restores it, marked **not signed**, unless **Tools > Require a signature on files for a key** is on, which refuses it |
+| A valid signature by a key that's yours or certified | Restores it, **signed by** the key's name, with its fingerprint in the tooltip |
+| A valid signature by any other key | Restores it, **signed with a key you haven't verified**, as a warning. The name is never shown as the signer. Refused if a signature is required |
+| A valid signature by a revoked key | Restores it, **signed with a revoked key**, as a warning. Refused if a signature is required |
+| A valid signature by a key that has expired since | Restores it, **signed with a key that has expired**, as a warning. Refused if a signature is required |
+| An invalid signature (`BADSIG`) | **Refused**, and nothing is kept |
+| A signature that can't be checked (`ERRSIG`), such as by a key you don't have | **Refused**, with the reason |
+| A report that's incomplete or contradicts itself | **Refused** |
+
+`GOODSIG` alone is never enough: a valid signature also needs `VALIDSIG`, naming the same key. Any
+signature reported twice, any result without its own `NEWSIG`, or any second trust verdict for the same
+signature makes the whole report "incomplete", and refused. GnuPG writes its status lines and its own
+messages to the same stream here, and GnuPG 2.2.8 and later, which this app requires, escape untrusted
+text in those messages (CVE-2018-12020), so these rules are a second line of defence.
+
+Who is trusted follows GnuPG's own trust model, including any `trust-model` in your `gpg.conf`. The
+app never trusts a key by itself, and never treats a name or an email address as proof of anything.
+With `trust-model always`, GnuPG reports no trust at all, so every signer shows as unverified rather
+than trusted. Once a signing key expires, GnuPG gives no trust verdict for it either, even for your
+own key, so its signatures show as **signed with a key that has expired**, and a requirement for a
+signature refuses them. This matters for backups, because keys made by this app last three years:
+extending a key's expiry date in Kleopatra makes its signatures verify again.
+
+Files encrypted to a key before signing existed have no signature, so they say **not signed**, and
+they keep restoring unless you turn the requirement on.
 
 ## What is NOT protected
 
@@ -212,12 +326,16 @@ still on the [roadmap](ROADMAP.md). [Cryptomator](https://cryptomator.org/) and
 | Deleting files | **Not preventable**: keep other copies |
 | Serving an older version (rollback) | **Flagged, with a record**: see below. Otherwise not detected |
 | Swapping two files encrypted with the same secret | **Flagged, with a record**: see below. Names aren't bound to contents |
-| **Public-key mode only:** replacing a file with new content encrypted to your public key | **Flagged, with a record**. Otherwise not detected |
+| **Public-key mode only:** replacing a file with new content encrypted to your public key | **Flagged, with a record. Reported** as not signed, or signed by an unverified key, for files you signed. **Refused** with Tools > Require a signature on files for a key. Otherwise not detected |
+| Altering a signed file, or forging its signature | **Detected**: an invalid signature is refused, and nothing is restored |
 
-The last row deserves emphasis. Public keys are public and files are not signed, so
-anyone who has your public key can create a file that decrypts perfectly. Passphrase
-mode is not affected, because creating a valid file requires the passphrase. Sign-and-encrypt
-is on the roadmap.
+The public-key row deserves emphasis. Public keys are public, so anyone who has yours can create a
+file that decrypts perfectly. Passphrase mode is not affected, because creating a valid file requires
+the passphrase. Signing your files when you encrypt them to a key closes the gap for files made from
+then on: a forged file then either has no signature, or one by a key you haven't verified, and the
+restore says so, or refuses it if you've asked for that. See
+[Who made a file](#who-made-a-file-signatures). Files you encrypted to a key without signing can't be
+told apart from forgeries, except by their checksum record.
 
 **Checksums kept on your computer.** Each file the app encrypts gets its SHA-256 written to
 `records.jsonl`, beside the vault, which your provider can't reach. Before anything is decrypted,
@@ -275,6 +393,25 @@ one you make up. EFF's list is shipped exactly as EFF publishes it, and the app 
 before using it, so a changed or shortened list is refused rather than quietly weakening anything. No
 word is the start of another, so words run together can only be read one way.
 
+**A new passphrase you make up is checked, on this computer only.** Nothing typed is sent anywhere,
+logged, or written down. A new passphrase for files, a new vault master passphrase, and a saved
+passphrase used to encrypt new files all follow one rule. It's refused if it's shorter than the
+minimum (8 characters for files, 12 for the master), or if it's **weak**: one of the passphrases people
+use most, or one with a few characters changed or added (`P@ssw0rd2026`), one ordinary word, or a
+short word or name, with digits or symbols around it (`Rosa 1987`), two ordinary words, a run of keys
+or characters such as `qwertyuiop` or `abcd1234`, a short part repeated, only a few different
+characters, or only digits, as in a date or a phone number. Case, accents' encoding, and full-width or styled letters don't hide anything from it.
+Anything else is **better**, and is accepted with a reminder that a person chose it. Only a passphrase
+the app generated is called **strong**. No number is ever claimed for one you made up.
+
+Why refuse rather than warn: a weak passphrase is the one thing no setting can fix, guessers try exactly
+these first, and the app always offers a strong alternative in the same window. The cost is that you
+can't make new files with an old weak passphrase, even on purpose. Nothing typed to *open* something is
+ever judged, so every file and vault made before this rule existed still opens with what protects it,
+and a weak passphrase can still be saved in the vault, with a warning, to open old files. The checks
+catch common patterns, not all of them: a passphrase that passes can still be a guessable choice,
+which is why only a generated one is called strong.
+
 A generated passphrase is shown in full, and when it's for encrypting or for the vault's master
 passphrase, the app won't continue until you tick that you've saved it. Nobody can recover it.
 
@@ -314,8 +451,10 @@ Its costs, which you should weigh:
   folder, but detection is a heuristic and misses clients it doesn't know.
 - Restoring into a synced folder would upload the plaintext. The app warns about this too,
   with the same limitation.
-- A crash or power cut during a restore can leave a hidden `.myob-*.partial` file or folder
-  containing plaintext in the restore folder. For an archive, that can be the whole decrypted zip.
+- A crash or power cut during a restore can leave a hidden `.myob-*.partial` folder holding
+  plaintext beside the destination: for an archive, that can be the whole decrypted zip. It stays
+  until the app next starts, which then lists it and offers to delete it, as
+  [described above](#decrypted-data-on-its-way-to-its-name). Deleting it isn't secure erasure.
 - The operating system may keep traces such as thumbnails, search indexes, and recent-file lists.
 - Restored files do not carry Windows' Mark-of-the-Web, so SmartScreen will not warn about
   them. Be careful running anything you restored, particularly in public-key mode.
@@ -344,7 +483,11 @@ Its costs, which you should weigh:
   still changing.
 - **Signed files from other tools** will not restore until you import the signer's public
   key, because GnuPG reports the unverifiable signature as an error. The app explains this
-  rather than restoring a file whose signature it can't check.
+  rather than restoring a file whose signature it can't check. Once the key is imported, the file
+  restores, and says whether that key is one you've verified.
+- **A drive that can't refuse a taken name**, such as some network shares, FUSE file systems, and
+  WSL's view of Windows drives, can't be restored to, or written to, by this app. It says so, rather
+  than risk replacing something.
 - **This is not a backup system.** It has no versioning or scheduling, and it doesn't verify that
   files reached your provider. The check after encrypting ends on your own computer. It is also not a workaround for your organization's data-handling policies.
 
@@ -360,7 +503,17 @@ use the computer's own, found as described above.
 
 **They aren't code-signed yet.** Windows and macOS therefore warn about them and can't tell
 you who made them. The published checksums show that your file matches the release page, but someone who
-took over the GitHub account could change both. Once this repository is public, each file
+took over the GitHub account could change both.
+
+The release workflow is ready to sign, once the keys exist, and only for a version tag: Windows
+downloads with Authenticode (SHA-256, with an RFC 3161 timestamp), and the macOS app with a Developer
+ID, the hardened runtime, and Apple's notarization. Every signature is then checked with the system's
+own verifier, and the build fails if any check does. The checksum list can also carry an OpenPGP
+signature, `SHA256SUMS.txt.asc`, made in a job of its own that sees the release key and nothing else,
+and checked with only the public key before publishing. None of these keys exist yet, so no download
+is signed. The release notes and this section will say when that changes, and
+[SECURITY.md](../SECURITY.md#verifying-a-download) will then publish the release key's fingerprint, which is
+what a signature should be checked against. Once this repository is public, each file
 also gets a [build attestation](https://docs.github.com/actions/security-for-github-actions/using-artifact-attestations),
 which ties it to the workflow and commit that produced it:
 
@@ -417,5 +570,11 @@ Program Files can't be changed that way, so it's somewhat better protected.
 ## Testing
 
 The test suite runs against real GnuPG and covers forged, tampered, truncated, and
-garbage input, plus the agent cache via a scripted Pinentry. See `tests/`. **Passing tests
-are not a security audit.** An independent review is needed before a stable release.
+garbage input, plus the agent cache via a scripted Pinentry. See `tests/`. It also covers, on the
+real file system: publishing beside an existing empty folder, a populated one, a file, and a link to
+nothing; names taken by another program in between; a dozen publishers racing for one name; and
+restores that end in every way, including a process killed halfway, after which the leftover is found
+and removed. Signing is tested with real keys: your own, an uncertified and a certified one, a
+revoked and an expired one, a missing public key, an unexpected signer, and a signature broken after
+signing. CI is set up to run it on Windows, Linux, and macOS. **Passing tests are not a security
+audit.** An independent review is needed before a stable release.

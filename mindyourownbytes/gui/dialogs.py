@@ -18,12 +18,11 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from mindyourownbytes import generator
+from mindyourownbytes import generator, strength
 from mindyourownbytes.core import encode_passphrase
 
-#: Below this, a typed passphrase gets a warning. Not a hard rule, because length
-#: alone says little, but it catches the most common mistake.
-RECOMMENDED_LENGTH = 14
+#: Below this, a new passphrase that passes every check still gets a warning. See strength.
+RECOMMENDED_LENGTH = strength.RECOMMENDED_LENGTH
 
 THREAT_MODEL_URL = "https://github.com/N-Bermparis/mindyourownbytes/blob/main/docs/THREAT_MODEL.md"
 
@@ -86,7 +85,12 @@ class GeneratorRow(QWidget):
 
 
 class PassphraseDialog(QDialog):
-    """Ask for a passphrase once, optionally twice to catch typing mistakes."""
+    """Ask for a passphrase once, optionally twice to catch typing mistakes.
+
+    ``confirm`` means a new passphrase is being chosen, which is then judged by ``strength``: one that's
+    common or easily guessed isn't accepted, and the rest say how they rate. Without ``confirm``, a
+    passphrase that already protects something is being typed, and is never refused for being weak.
+    """
 
     def __init__(self, parent: QWidget | None, title: str, message: str, *,
                  confirm: bool = False, min_length: int = 1, ok_text: str = "OK") -> None:
@@ -165,7 +169,7 @@ class PassphraseDialog(QDialog):
         self.second.setEchoMode(mode)
 
     def _problem(self) -> tuple[bool, str]:
-        """Return (acceptable, message to show)."""
+        """Return (acceptable, message to show). Messages never repeat the passphrase."""
         value = self.first.text()
         if not value:
             return False, ""
@@ -173,17 +177,26 @@ class PassphraseDialog(QDialog):
             encode_passphrase(value)
         except ValueError as exc:
             return False, str(exc)
-        if len(value) < self._min_length:
+        rating = None
+        if self._confirm:
+            rating = strength.assess(value, min_length=self._min_length, generated=self._is_generated())
+            if not rating.acceptable:
+                return False, rating.message
+        elif len(value) < self._min_length:
             return False, f"Use at least {self._min_length} characters."
         if self._confirm and value != self.second.text():
-            return False, "Type the same passphrase in both boxes." if self.second.text() else ""
+            if self.second.text():
+                return False, "Type the same passphrase in both boxes."
+            # Until it's repeated, say how it rates, so there's time to choose another.
+            return False, rating.message if rating is not None and rating.level != "strong" else ""
         if self._is_generated() and not self.saved_box.isChecked():
             return False, "Save it before you continue. Nobody can recover it for you, including this app."
+        notes = []
+        if rating is not None and rating.level != "strong":
+            notes.append(rating.message)  # A generated one's strength is shown by the generator itself.
         if value != value.strip():
-            return True, "Note: this starts or ends with a space, which you will need to type every time."
-        if self._confirm and len(value) < RECOMMENDED_LENGTH:
-            return True, "This is short enough to be guessed. Five or more random words is far stronger."
-        return True, ""
+            notes.append("Note: this starts or ends with a space, which you will need to type every time.")
+        return True, " ".join(notes)
 
     def _is_generated(self) -> bool:
         return bool(self._generated) and self.first.text() == self._generated
@@ -197,6 +210,8 @@ class PassphraseDialog(QDialog):
         self.buttons.button(QDialogButtonBox.StandardButton.Ok).setEnabled(acceptable)
         self.hint.setText(message)
         self.hint.setVisible(bool(message))
+        # Read out by screen readers when the field has focus, as the hint isn't.
+        self.first.setAccessibleDescription(message)
 
     def passphrase(self) -> str:
         return self.first.text()
@@ -238,6 +253,14 @@ class VaultEntryDialog(QDialog):
         self.show_box.toggled.connect(self._toggle_echo)
         layout.addWidget(self.show_box)
 
+        # Says how a typed passphrase rates. It doesn't stop saving one: it may be an existing passphrase,
+        # kept here to open files it already protects. Encrypting new files with a weak one is refused.
+        self.hint = QLabel()
+        self.hint.setObjectName("hintLabel")
+        self.hint.setWordWrap(True)
+        self.hint.hide()
+        layout.addWidget(self.hint)
+
         self.buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel)
         self.buttons.button(QDialogButtonBox.StandardButton.Save).setProperty("variant", "primary")
         self.buttons.accepted.connect(self.accept)
@@ -257,10 +280,22 @@ class VaultEntryDialog(QDialog):
         self.show_box.setChecked(True)
 
     def _validate(self) -> None:
-        if self.passphrase_field.text() != self._generated:
+        value = self.passphrase_field.text()
+        generated = bool(self._generated) and value == self._generated
+        if not generated:
             self.generator.forget()
+        message = ""
+        if value and not generated:
+            rating = strength.assess(value)
+            message = rating.message
+            if not rating.acceptable:
+                message += (" You can still save it, to open files it already protects, but it can't protect "
+                            "new files.")
+        self.hint.setText(message)
+        self.hint.setVisible(bool(message))
+        self.passphrase_field.setAccessibleDescription(message)
         self.buttons.button(QDialogButtonBox.StandardButton.Save).setEnabled(
-            bool(self.label.text().strip()) and bool(self.passphrase_field.text())
+            bool(self.label.text().strip()) and bool(value)
         )
 
     def values(self) -> tuple[str, str, str]:
@@ -289,6 +324,8 @@ class ProtectionDialog(QDialog):
             "your provider probably has them already.</li>"
             "<li><b>Old or deleted copies.</b> A provider could delete a file, or show you an old version. "
             "Keep other backups.</li>"
+            "<li><b>Who made a file for an OpenPGP key, unless it's signed.</b> Anyone with the public key "
+            "can make one that decrypts perfectly. Signing, when you encrypt, lets a restore show it was you.</li>"
             "<li><b>A computer with malware.</b> It can read whatever you can.</li>"
             "</ul>"
             "<p style='font-weight:600'>If you lose your passphrase or key</p>"

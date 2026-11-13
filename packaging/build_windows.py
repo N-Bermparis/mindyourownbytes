@@ -281,14 +281,25 @@ def main() -> None:
     if args.tag and args.tag != f"v{version}":
         sys.exit(f"The tag {args.tag} doesn't match the app's version, {version}.")
     changelog_section(version)  # Better to find out now than after a long build.
+    import signing  # Beside this script. Only needed for a build, so the tests can load this file without it.
+    try:
+        certificate = signing.windows_signing()
+    except signing.SigningError as exc:
+        sys.exit(str(exc))
+    print(signing.describe(windows=certificate), flush=True)
 
     shutil.rmtree(APP, ignore_errors=True)
     shutil.rmtree(RELEASE, ignore_errors=True)
     RELEASE.mkdir(parents=True)
     build_app(version)
+    if certificate is not None:
+        # Before it goes into the zip and the installer, so that both hold the signed program.
+        signing.sign_windows([APP / "mindyourownbytes.exe"], certificate)
     base_name = f"mindyourownbytes-{version}-windows-x64"
     portable = make_portable(base_name)
     setup = make_installer(version, base_name)
+    if certificate is not None:
+        signing.sign_windows([setup], certificate)
     shutil.copy2(fetch(GNUPG_SOURCE), RELEASE / GNUPG_SOURCE.name)
     checksums = write_checksums()
     write_release_notes(version, setup, portable, checksums)

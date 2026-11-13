@@ -52,6 +52,22 @@ First public version. Not independently audited.
 - Downloads for macOS, for Apple silicon, and for Linux, for 64-bit Intel and AMD processors, built
   and tested by CI like the Windows one. They use the computer's own GnuPG, from GPG Suite,
   Homebrew, or the package manager, and the app says how to get it when it can't find it.
+- Sign-and-encrypt: when encrypting to a key, **Also sign them with** adds a standard OpenPGP signature
+  with a key of yours. GnuPG asks for its passphrase itself.
+- Every restored file for a key says who made it, as far as signatures can tell: signed by a key you've
+  verified, signed with a key you haven't verified, revoked, or expired, or not signed, with the full
+  fingerprint in its tooltip. The finished restore sums this up.
+- **Tools > Require a signature on files for a key**, which refuses files for a key unless a key you've
+  verified signed them. Off by default, so files encrypted before signing existed still restore.
+- New passphrases are checked on your computer: common ones, common ones dressed up, single words,
+  two words, runs of keys, repeats, and digit strings are refused for new files and new vault master
+  passphrases, with the reason. Anything typed to open something is never judged.
+- After an interrupted restore, the next start lists exactly where readable data was left, and offers
+  to delete what it can prove it made. **Tools > Clean up after an interrupted restore** does the same.
+- Optional code signing in the release workflow (Authenticode, Developer ID with notarization) and an
+  OpenPGP signature for the checksum list, ready for when the keys exist. Every signature is verified
+  before a release can be drafted. None is configured yet, so the downloads are still unsigned.
+- CI also runs the tests on macOS.
 
 ### Security
 
@@ -69,6 +85,19 @@ These issues were found and fixed during the pre-release review, before any publ
   encrypting refused such files, but files for a key, which aren't checked, came back different,
   and archives for a key came back damaged, without a warning. Every GnuPG call now turns
   `textmode` off.
+- On Linux and macOS, restoring an archive replaced an existing **empty folder** of the same name,
+  including one created by another program between the name being chosen and used, because
+  `os.rename` replaces empty folders there. Folders and files are now published with
+  `renameat2(RENAME_NOREPLACE)` on Linux, `renamex_np(RENAME_EXCL)` on macOS, and a rename without
+  replacing on Windows, which refuse anything already there. A name taken meanwhile is skipped for
+  the next free one, and a drive that can't refuse a taken name now fails with an explanation.
+- On Linux and macOS, a drive without hard links got the finished file by creating its final name and
+  copying into it, so a partial file could be seen, and kept by a crash, under the final name. That
+  copy is gone: files get their name in one atomic step, or not at all, after being written to the drive.
+- Decrypted data during a restore was written beside the destination with the default permissions,
+  and a crash could leave it with no way to find it again. It now waits in a private workspace (mode
+  0700 on Linux and macOS), noted in the app's own folder, so that leftovers are found and offered for
+  deletion at the next start. Only folders the app can prove it made are ever deleted.
 
 ### Changed
 
@@ -79,10 +108,13 @@ These issues were found and fixed during the pre-release review, before any publ
 
 - **File and folder names, and approximate sizes, are visible to your provider**, unless you
   encrypt them into one archive. An archive's own name and size still show.
-- Rollback and swapping of files are only flagged for files with a saved checksum, and public-key
-  files aren't signed.
+- Rollback and swapping of files are only flagged for files with a saved checksum. Files for a key
+  only show who made them if they were signed, and files encrypted before signing existed weren't.
 - Files encrypted to an OpenPGP key, or through GnuPG's own passphrase prompt, aren't checked after
   encrypting. Nothing checks that an upload reached your provider intact.
+- A crash during a restore leaves decrypted data in a hidden folder until the app next starts, and
+  deleting it isn't secure erasure. Drives that can't refuse a taken name, such as some network shares,
+  can't be used as a destination.
 - Hands-on testing with real Pinentry dialogs on a wider range of systems is still needed.
 - The downloads aren't code-signed yet, so Windows and macOS warn about them, and Smart App
   Control blocks the Windows one. Their builds aren't reproducible yet either.

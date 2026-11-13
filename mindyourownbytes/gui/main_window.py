@@ -16,6 +16,7 @@ from PySide6.QtGui import QBrush, QDesktopServices, QGuiApplication, QKeySequenc
 from PySide6.QtWidgets import (
     QApplication,
     QButtonGroup,
+    QCheckBox,
     QComboBox,
     QFileDialog,
     QFrame,
@@ -39,7 +40,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from mindyourownbytes import __version__, archive, records
+from mindyourownbytes import __version__, archive, records, signatures, strength, workspace
 from mindyourownbytes.core import (
     CHECKED,
     CIPHERS,
@@ -60,6 +61,7 @@ from mindyourownbytes.core import (
     gpg_version,
     is_valid_gpg,
     list_public_keys,
+    list_signing_keys,
     looks_cloud_synced,
     peek_protection,
     process_items,
@@ -198,6 +200,21 @@ DOUBTFUL_COPY = {
 }
 #: How the worker reports a download that was left out, because it isn't the file made here.
 LEFT_OUT = "Left out"
+#: Added to a row's tooltip when its file was signed as well as encrypted.
+SIGNED_NOTE = "Signed with your key {key}, so restoring it can show that you made it."
+#: How a finished restore sums up who made the files, by what their signatures showed.
+SIGNATURE_SUMMARY = {
+    "verified": "signed by a key you've verified",
+    "unverified": "signed with a key you haven't verified",
+    "revoked": "signed with a revoked key",
+    "expired": "signed with a key that has expired",
+    "unsigned": "not signed",
+}
+#: What a finished restore says when it couldn't delete where it kept decrypted data.
+LEFTOVER_COPY = (
+    "These hidden folders hold readable data from this restore, and couldn't be deleted. The app offers to delete "
+    "them again the next time it starts, or you can delete them yourself:\n\n{listed}"
+)
 #: What the screen says when every file goes into one archive.
 ARCHIVE_COPY = {
     "help": "Hides the names of the files and folders inside. Your provider sees one file and its size. "
@@ -291,6 +308,8 @@ class BackupWorker(QObject):
     doubtful = Signal(object)
     #: The file at this position is going into the archive.
     packing = Signal(int)
+    #: What the restored file at this position showed about who made it, as a signatures.Verification.
+    verified = Signal(int, object)
     completed = Signal(object)
     error = Signal(str)
     finished = Signal()
@@ -298,7 +317,8 @@ class BackupWorker(QObject):
     def __init__(self, gpg: str, files: list[SourceItem], output: Path, operation: str,
                  method: str, fingerprint: str | None, passphrases: list[str], cipher: str, verify: bool,
                  archive_name: str | None = None, ledger: Ledger | None = None, keep_records: bool = False,
-                 records_root: Path | None = None):
+                 records_root: Path | None = None, sign_with: str | None = None,
+                 journal: workspace.Journal | None = None, require_signature: bool = False):
         super().__init__()
         self.gpg = gpg
         self.files = files
@@ -309,6 +329,12 @@ class BackupWorker(QObject):
         self.passphrases = passphrases
         self.cipher = cipher
         self.verify = verify
+        #: Each file encrypted to a key is signed with this one, if given.
+        self.sign_with = sign_with
+        #: Notes where decrypted data waits during a restore, until it's gone.
+        self.journal = journal
+        #: Refuse files for a key that a key you've verified didn't sign.
+        self.require_signature = require_signature
         #: Every file goes into one archive with this name, rather than into a .gpg file of its own.
         self.archive_name = archive_name
         #: Checked against before each restore, and added to after encrypting if ``keep_records``.
@@ -390,12 +416,17 @@ class BackupWorker(QObject):
                     self.gpg, self.files, self.output, self.archive_name, self.method, self.fingerprint,
                     self.cancel_event, report, passphrases=self.passphrases, cipher=self.cipher,
                     verify=self.verify, on_packing=self.packing.emit, on_checking=lambda: self.checking.emit(-1),
+                    sign_with=self.sign_with,
                 )
             else:
+                options = {"sign_with": self.sign_with} if self.operation == "encrypt" else {
+                    "journal": self.journal, "require_signature": self.require_signature,
+                    "on_signature": lambda position, verification: self.verified.emit(keep[position], verification),
+                }
                 result = process_items(
                     self.gpg, [self.files[index] for index in keep], self.output, self.operation, self.method,
                     self.fingerprint, self.cancel_event, report, passphrases=self.passphrases, cipher=self.cipher,
-                    verify=self.verify, on_checking=lambda position: self.checking.emit(keep[position]),
+                    verify=self.verify, on_checking=lambda position: self.checking.emit(keep[position]), **options,
                 )
             if self.operation == "encrypt" and self.ledger is not None and self.keep_records and result.outputs:
                 self._keep_records(result)
@@ -439,8 +470,15 @@ class MainWindow(QMainWindow):
         self.vault = Vault(self.gpg, vault_path or default_vault_path())
         #: Checksums of what this computer encrypted, kept beside the vault.
         self.ledger = Ledger(records.default_path(self.vault.path.parent))
+        #: Where restores keep decrypted data until it has its name, noted beside the vault, so that any left
+        #: behind by a crash can be found when the app next starts.
+        self.journal = workspace.Journal(self.vault.path.parent / "unfinished")
         #: What the record said about each file being restored, by row.
         self._findings: dict[int, Finding] = {}
+        #: What each restored file's signatures showed, by row.
+        self._verifications: dict[int, signatures.Verification] = {}
+        #: The key the current job signs with, if any.
+        self._job_signer: str | None = None
         #: Problems that didn't change the job's result, to mention once it's done.
         self._notes: list[str] = []
         #: Rows of downloads that weren't restored, because they aren't the files made here.
@@ -481,6 +519,8 @@ class MainWindow(QMainWindow):
         self._show_early_version_notice()
         self.set_operation("encrypt")
         QGuiApplication.styleHints().colorSchemeChanged.connect(self._apply_theme)
+        # Once the window is up, say if an earlier restore was interrupted and left readable data behind.
+        QTimer.singleShot(0, self.offer_cleanup)
 
     @Slot()
     def _apply_theme(self):
@@ -748,6 +788,27 @@ class MainWindow(QMainWindow):
         grid.addWidget(self.key_radio, 2, 0)
         grid.addLayout(key_row, 2, 1)
 
+        # Encrypting to a key says nothing about who did it, because the key is public. Signing does.
+        sign_row = QHBoxLayout()
+        sign_row.setSpacing(6)
+        self.sign_box = QCheckBox("Also sign them with")
+        self.sign_box.setToolTip(
+            "Signing lets a restore show that you made these files, rather than anyone else who has the "
+            "recipient's public key. GnuPG asks for your key's passphrase itself, if it has one."
+        )
+        self.sign_box.setChecked(str(self.settings.value("sign_files", "")).lower() == "true")
+        self.sign_box.toggled.connect(self._remember_signing)
+        sign_row.addWidget(self.sign_box)
+        self.signer_combo = SteadyComboBox()
+        self.signer_combo.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.signer_combo.setAccessibleName("Your key to sign with")
+        self.signer_combo.activated.connect(self._remember_signing)
+        sign_row.addWidget(self.signer_combo, stretch=1)
+        self.sign_label = QLabel("Signing")
+        self.sign_label.setBuddy(self.sign_box)
+        grid.addWidget(self.sign_label, 3, 0)
+        grid.addLayout(sign_row, 3, 1)
+
         self.algorithm_label = QLabel("Algorithm")
         self.algorithm_combo = SteadyComboBox()
         self.algorithm_combo.setAccessibleName("Encryption algorithm")
@@ -762,15 +823,27 @@ class MainWindow(QMainWindow):
         algorithm_row.setSpacing(10)
         algorithm_row.addWidget(self.algorithm_combo)
         algorithm_row.addWidget(self.algorithm_help, stretch=1)
-        grid.addWidget(self.algorithm_label, 3, 0)
-        grid.addLayout(algorithm_row, 3, 1)
+        grid.addWidget(self.algorithm_label, 4, 0)
+        grid.addLayout(algorithm_row, 4, 1)
 
         self.more_options = label(
-            "<a href='#more'>More options</a>: OpenPGP keys, a choice of algorithm, and GnuPG's own passphrase "
-            "prompt.", "muted", wrap=True)
+            "<a href='#more'>More options</a>: OpenPGP keys, signing, a choice of algorithm, and GnuPG's own "
+            "passphrase prompt.", "muted", wrap=True)
         self.more_options.linkActivated.connect(lambda _link: self.advanced_action.setChecked(True))
-        grid.addWidget(self.more_options, 4, 0, 1, 2)
+        grid.addWidget(self.more_options, 5, 0, 1, 2)
         return frame
+
+    def _remember_signing(self, *_args):
+        self.settings.setValue("sign_files", "true" if self.sign_box.isChecked() else "false")
+        if self.signer_combo.currentData():
+            self.settings.setValue("sign_with", str(self.signer_combo.currentData()))
+        self._update_method()
+
+    def signer(self) -> str | None:
+        """The key to sign new files with, if signing was chosen and is possible for this job."""
+        if self.operation != "encrypt" or self.method() != "public-key" or not self.sign_box.isChecked():
+            return None
+        return str(self.signer_combo.currentData() or "") or None
 
     def _build_destination_card(self) -> QFrame:
         frame = card()
@@ -906,6 +979,18 @@ class MainWindow(QMainWindow):
             lambda on: self.settings.setValue("keep_records", "true" if on else "false"))
         self._add_action(tools_menu, "&Import checksums…", self.import_checksums)
         self._add_action(tools_menu, "&Forget saved checksums…", self.forget_checksums)
+        tools_menu.addSeparator()
+        self.signature_action = tools_menu.addAction("Require a &signature on files for a key")
+        self.signature_action.setCheckable(True)
+        self.signature_action.setChecked(str(self.settings.value("require_signature", "")).lower() == "true")
+        self.signature_action.setToolTip(
+            "Restores a file encrypted to your key only if a key you've verified signed it, because anyone with "
+            "your public key can make such a file. Files you encrypted without signing won't restore while this "
+            "is on. Passphrase files are never affected."
+        )
+        self.signature_action.toggled.connect(
+            lambda on: self.settings.setValue("require_signature", "true" if on else "false"))
+        self._add_action(tools_menu, "Clean &up after an interrupted restore…", lambda: self.offer_cleanup(True))
         tools_menu.addSeparator()
         self.post_quantum_action = self._add_action(tools_menu, "&Post-quantum keys…", self.show_post_quantum)
         self._add_action(tools_menu, "&Locate GnuPG…", self.select_gpg)
@@ -1064,6 +1149,51 @@ class MainWindow(QMainWindow):
             return
         self.status_text.setText("The saved checksums are gone.")
 
+    def offer_cleanup(self, asked: bool = False) -> None:
+        """Offer to delete readable data that an interrupted restore left behind, wherever it was.
+
+        Runs at start, and from the Tools menu (``asked``). Only folders the app can prove it made are ever
+        deleted, and only once someone agrees. Anything else is listed, never touched.
+        """
+        if self.running:
+            return
+        try:
+            leftovers = self.journal.leftovers()
+        except OSError as exc:
+            if asked:
+                QMessageBox.warning(self, "Couldn't check", f"The app couldn't read its notes in "
+                                    f"{self.journal.directory}: {exc.strerror or exc}")
+            return
+        if not leftovers:
+            if asked:
+                QMessageBox.information(self, "Nothing to clean up",
+                                        "No interrupted restore has left anything behind.")
+            return
+        listed = "\n".join(f"• {leftover.path}" for leftover in leftovers[:8])
+        if len(leftovers) > 8:
+            listed += f"\n• and {len(leftovers) - 8} more"
+        answer = QMessageBox.warning(
+            self, "An earlier restore didn't finish",
+            f"When it stopped, it left readable copies of files in hidden folders that this app made:\n\n{listed}"
+            "\n\nDelete them now? The app first checks that each one is a folder it made. Deleting removes "
+            "files the normal way, which doesn't securely erase them from an SSD, a backup, or a synced folder.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No, QMessageBox.StandardButton.Yes,
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return  # They stay noted, and are offered again next time.
+        failed, unconfirmed = self.journal.clean(leftovers)
+        problems = []
+        if failed:
+            problems.append("These couldn't be deleted, perhaps because a program has them open. Please delete "
+                            "them yourself, or try again later:\n\n" + "\n".join(f"• {path}" for path in failed))
+        if unconfirmed:
+            problems.append("These weren't touched, because the app couldn't confirm it made them. Please check "
+                            "them yourself:\n\n" + "\n".join(f"• {path}" for path in unconfirmed))
+        if problems:
+            QMessageBox.warning(self, "Some folders are still there", "\n\n".join(problems))
+        elif asked:
+            QMessageBox.information(self, "Cleaned up", "Those folders were deleted.")
+
     def open_kleopatra(self):
         path = find_kleopatra()
         if path:
@@ -1119,7 +1249,7 @@ class MainWindow(QMainWindow):
         relies = (any(key.has_secret for key in self._keys.values())
                   or self.algorithm_combo.currentData() not in (None, DEFAULT_CIPHER)
                   or self.pinentry_action.isChecked() or not self.check_action.isChecked()
-                  or not self.records_action.isChecked())
+                  or not self.records_action.isChecked() or self.signature_action.isChecked())
         self.settings.setValue("advanced", "true" if relies else "false")
         return relies
 
@@ -1130,7 +1260,9 @@ class MainWindow(QMainWindow):
 
     def _apply_mode(self):
         advanced = self.advanced()
-        for action in (self.check_action, self.pinentry_action, self.records_action, self.post_quantum_action):
+        # The signature setting still applies when hidden: simple mode never quietly weakens a restore.
+        for action in (self.check_action, self.pinentry_action, self.records_action, self.post_quantum_action,
+                       self.signature_action):
             action.setVisible(advanced)
         if not advanced and self.operation == "encrypt" and self.key_radio.isChecked():
             self.passphrase_radio.setChecked(True)
@@ -1232,6 +1364,12 @@ class MainWindow(QMainWindow):
         self.key_help.setVisible(show_key and not choosing_key)
         self.key_combo.setVisible(show_key and choosing_key)
         self.refresh_keys_button.setVisible(show_key and choosing_key)
+        signing = show_key and choosing_key
+        for widget in (self.sign_label, self.sign_box, self.signer_combo):
+            widget.setVisible(signing)
+        can_sign = self.signer_combo.count() > 0 and bool(self.signer_combo.currentData())
+        self.sign_box.setEnabled(can_sign and not self.running)
+        self.signer_combo.setEnabled(can_sign and self.sign_box.isChecked() and not self.running)
         self.more_options.setVisible(not self.advanced() and self.operation == "encrypt")
         self._update_algorithm()
 
@@ -1309,6 +1447,7 @@ class MainWindow(QMainWindow):
     def refresh_keys(self):
         self.key_combo.clear()
         self._keys = {}
+        self._refresh_signers()
         if not self.gpg or not is_valid_gpg(self.gpg):
             self.key_combo.addItem("GnuPG not found", "")
             return
@@ -1324,6 +1463,27 @@ class MainWindow(QMainWindow):
             parts = (key.uid[:48], key.algorithm, key.fingerprint[-10:], owner)
             self.key_combo.addItem(" · ".join(part for part in parts if part), key.fingerprint)
             self._keys[key.fingerprint] = key
+
+    def _refresh_signers(self):
+        """Your keys that can sign, with the full fingerprint in the tooltip, since names prove nothing."""
+        wanted = self.signer_combo.currentData() or str(self.settings.value("sign_with", "") or "")
+        self.signer_combo.clear()
+        signers = []
+        if self.gpg and is_valid_gpg(self.gpg):
+            try:
+                signers = list_signing_keys(self.gpg)
+            except Exception:
+                signers = []
+        for key in signers:
+            parts = (key.uid[:48], key.algorithm, key.fingerprint[-10:])
+            self.signer_combo.addItem(" · ".join(part for part in parts if part), key.fingerprint)
+            self.signer_combo.setItemData(self.signer_combo.count() - 1, signatures.spaced(key.fingerprint),
+                                          Qt.ItemDataRole.ToolTipRole)
+        if not signers:
+            self.signer_combo.addItem("You have no key that can sign", "")
+        self.signer_combo.setCurrentIndex(max(self.signer_combo.findData(wanted), 0))
+        if hasattr(self, "sign_label"):
+            self._update_method()
 
     # ---------------------------------------------------------------- the file list
 
@@ -1545,7 +1705,7 @@ class MainWindow(QMainWindow):
                 "Choose a passphrase" if encrypting else "Enter the passphrase",
                 f"This passphrase will protect {count}. Nobody can recover it for you, so keep it somewhere safe."
                 if encrypting else f"This passphrase will be tried on {count}.",
-                confirm=encrypting, min_length=8 if encrypting else 1,
+                confirm=encrypting, min_length=strength.MIN_LENGTH if encrypting else 1,
                 ok_text="Encrypt" if encrypting else "Restore",
             )
             return [dialog.passphrase()] if dialog.exec() else None
@@ -1567,7 +1727,18 @@ class MainWindow(QMainWindow):
         choice = self.saved_combo.currentData()
         if choice == TRY_ALL_SAVED:
             return [entry.passphrase for entry in entries]
-        return [entry.passphrase for entry in entries if entry.id == choice] or None
+        chosen = [entry for entry in entries if entry.id == choice]
+        if chosen and self.operation == "encrypt":
+            # New files get the same rule as a passphrase typed for them. Opening old files never does.
+            rating = strength.assess(chosen[0].passphrase)
+            if not rating.acceptable:
+                QMessageBox.warning(
+                    self, "Choose a stronger passphrase",
+                    f"“{chosen[0].label}” is too easy to guess to protect new files. {rating.message}\n\n"
+                    "It still opens the files it already protects. Add a new passphrase under Passphrases, "
+                    "and let your computer pick it.")
+                return None
+        return [entry.passphrase for entry in chosen] or None
 
     def _job_directory(self) -> Path | None:
         root = self.current_output()
@@ -1615,6 +1786,12 @@ class MainWindow(QMainWindow):
             return
         if fingerprint and not self._confirm_recipient(fingerprint):
             return
+        sign_with = self.signer()
+        if self.operation == "encrypt" and selection == "public-key" and self.sign_box.isChecked() and not sign_with:
+            QMessageBox.warning(self, "No key to sign with",
+                                "You have no key that can sign. Untick “Also sign them with” to encrypt without "
+                                "signing, or make a key in Kleopatra.")
+            return
         passphrases = self._passphrases_for(selection)
         if passphrases is None:
             return
@@ -1647,6 +1824,8 @@ class MainWindow(QMainWindow):
                                if self._job_archive else [])
         self._succeeded_rows: set[int] = set()
         self._findings = {}
+        self._verifications = {}
+        self._job_signer = sign_with
         self._notes = []
         self._left_out = set()
         self._set_busy(True)
@@ -1663,10 +1842,12 @@ class MainWindow(QMainWindow):
         self.worker = BackupWorker(self.gpg, list(self.items), output, self.operation, method,
                                    fingerprint, passphrases, cipher, verify, archive_name, ledger=self.ledger,
                                    keep_records=self.records_action.isChecked() or not self.advanced(),
-                                   records_root=self.current_output("encrypt"))
+                                   records_root=self.current_output("encrypt"), sign_with=sign_with,
+                                   journal=self.journal, require_signature=self.signature_action.isChecked())
         self.worker.moveToThread(self._thread)
         self._thread.started.connect(self.worker.run)
         self.worker.progress.connect(self._progress)
+        self.worker.verified.connect(self._verified)
         self.worker.checking.connect(self._checking)
         self.worker.found.connect(self._found)
         self.worker.note.connect(self._note)
@@ -1694,6 +1875,7 @@ class MainWindow(QMainWindow):
                        self.collection_combo, self.refresh_keys_button, self.vault_button, self.menuBar(),
                        self.separate_radio, self.archive_radio):
             widget.setEnabled(not is_busy)
+        self._update_method()  # Signing's controls follow the job, and whether there's a key to sign with.
         self.start_button.setVisible(not is_busy)
         self.open_button.setVisible(not is_busy)
         self.cancel_button.setEnabled(is_busy)
@@ -1741,6 +1923,10 @@ class MainWindow(QMainWindow):
     @Slot(int, object)
     def _found(self, index: int, finding: Finding):
         self._findings[index] = finding
+
+    @Slot(int, object)
+    def _verified(self, index: int, verification: signatures.Verification):
+        self._verifications[index] = verification
 
     @Slot(str)
     def _note(self, message: str):
@@ -1798,21 +1984,54 @@ class MainWindow(QMainWindow):
             inside = self._archive_names[row]
             if inside != self.items[row].relative.as_posix():
                 note = " ".join(filter(None, (note, ARCHIVE_COPY["renamed"].format(name=inside))))
+        if self._job_signer:
+            if not self._job_archive:
+                text = text.replace("Encrypted", "Signed and encrypted", 1)
+            note = " ".join(filter(None, (note, SIGNED_NOTE.format(key=signatures.spaced(self._job_signer)))))
         self._show_finished_row(row, text, note, output)
 
     def _show_finished_row(self, row: int, text: str, note: str, output):
-        """A finished row, with what the record says if it was a download being restored."""
+        """A finished row, with what the record and any signature say if it was a download being restored."""
         finding = self._findings.get(row)
+        verification = self._verifications.get(row)
+        level = ("check", "ok")
+        if verification is not None:
+            # Who made it, as far as signatures can tell, which decrypting alone never shows.
+            who = signatures.headline(verification)
+            text = f"{text}, {who}" if who else text
+            note = " ".join(filter(None, (note, signatures.explanation(verification))))
+            if verification.status in ("unverified", "revoked", "expired"):
+                level = ("alert", "warn")
         if finding is not None and finding.is_warning:
             # Restored, because it decrypted, but not the file that was made here.
             self._set_row_status(row, f"{text}, {RECORD_WORDS[finding.verdict]}", "alert", "warn",
-                                 f"{output}\n{finding.message}")
+                                 "\n".join(filter(None, (str(output), finding.message, note))))
             return
         if finding is not None and finding.verdict == "match":
             words = (RECORD_WORDS["match_where"].format(where=finding.where) if finding.where
                      else RECORD_WORDS["match"])
-            text, note = f"{text}, {words}", finding.message
-        self._set_row_status(row, text, "check", "ok", f"{output}\n{note}" if note else str(output))
+            text, note = f"{text}, {words}", " ".join(filter(None, (finding.message, note)))
+        self._set_row_status(row, text, *level, f"{output}\n{note}" if note else str(output))
+
+    def _signature_summary(self) -> tuple[str, bool]:
+        """What the restored files' signatures showed, in one sentence, and whether any deserves a warning.
+
+        Only said when it matters: when a file was opened with a key, which anyone could have made with
+        the public key, or when a file carried a signature at all.
+        """
+        found = [self._verifications[row] for row in sorted(self._succeeded_rows) if row in self._verifications]
+        relevant = [verification for verification in found if verification.encrypted_to_key or verification.signatures]
+        if not relevant:
+            return "", False
+        counts: dict[str, int] = {}
+        for verification in relevant:
+            counts[verification.status] = counts.get(verification.status, 0) + 1
+        parts = [f"{counts[status]} {words}" for status, words in SIGNATURE_SUMMARY.items() if counts.get(status)]
+        caution = bool(counts.get("unverified") or counts.get("revoked") or counts.get("expired"))
+        sentence = f"Who made them: {', '.join(parts)}."
+        if caution or counts.get("unsigned"):
+            sentence += " Only a signature from a key you've verified shows who made a file."
+        return sentence, caution
 
     @Slot(int, bool, str, object)
     def _progress(self, index: int, ok: bool, message: str, output):
@@ -1867,8 +2086,8 @@ class MainWindow(QMainWindow):
             listed = "\n".join(str(path) for path in result.leftovers[:8])
             QMessageBox.warning(
                 self, "Temporary files were left behind",
-                "These temporary files could not be removed. After a restore they contain readable data, "
-                f"so please delete them yourself:\n\n{listed}",
+                LEFTOVER_COPY.format(listed=listed) if self.operation == "restore" else
+                f"These temporary files, which hold only encrypted data, could not be removed:\n\n{listed}",
             )
 
     def _show_result(self, result: JobResult):
@@ -1904,6 +2123,9 @@ class MainWindow(QMainWindow):
                 checked_words = CHECK_COPY["result_one" if result.succeeded == 1 else "result_many"]
             if self._job_algorithm:
                 title += f" with {self._job_algorithm}"
+            if self._job_signer:
+                # Both titles say "encrypted" once.
+                title = title.replace("encrypted", "signed and encrypted", 1)
             if result.checked == result.succeeded:
                 title += " and checked"
                 detail = f"{checked_words} {detail}"
@@ -1923,7 +2145,10 @@ class MainWindow(QMainWindow):
                 return
             if restored and len(restored) == result.succeeded and all(f.verdict == "match" for f in restored):
                 detail = f"{RECORD_WORDS['all_match']} {detail}"
-            self.result_bar.show_message("success", title, detail, actions=[open_folder])
+            who, caution = self._signature_summary()
+            if who:
+                detail = f"{who} {detail}"
+            self.result_bar.show_message("warning" if caution else "success", title, detail, actions=[open_folder])
         self.open_button.setVisible(not result.succeeded)
 
     @Slot(str)
@@ -1995,6 +2220,7 @@ class MainWindow(QMainWindow):
             self._thread.wait(3000)
         self.vault_page.clipboard.clear()
         self.vault.lock()
+        self.journal.close()
         stop_bundled_gnupg(self.gpg)
         event.accept()
 

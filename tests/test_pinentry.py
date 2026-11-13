@@ -336,6 +336,39 @@ class PinentryTests(GpgTestCase):
         self.assertEqual((result.succeeded, result.failed), (0, 1))
         self.assertIn("cancelled", self.progress[-1][2])
 
+    def sign_and_encrypt(self) -> tuple[str, object]:
+        """Encrypt to a key whose private half has a passphrase, signing with it, so GnuPG must ask."""
+        fingerprint = self.generate_key("Signer <signer@example.invalid>", passphrase=PASSPHRASE)
+        self._stop_agent()  # Nothing remembered, so signing has to ask.
+        self.reset_dialog_count()
+        result = process_items(self.gpg, [self.write("a.txt", b"signed via pinentry")], self.root / "exports",
+                               "encrypt", "public-key", fingerprint, threading.Event(),
+                               lambda *args: self.progress.append(args), sign_with=fingerprint)
+        return fingerprint, result
+
+    def test_the_signing_keys_passphrase_is_asked_through_pinentry_never_this_app(self):
+        fingerprint, result = self.sign_and_encrypt()
+        self.assertEqual((result.succeeded, result.failed), (1, 0), self.progress)
+        self.assertEqual(self.dialogs(), 1, "GnuPG asked for the signing key's passphrase itself")
+        restored = self.job([SourceItem(result.outputs[0], Path("a.txt.gpg"), 1)], "restored", "restore")
+        self.assertEqual(restored.outputs[0].read_bytes(), b"signed via pinentry")
+        self.assertEqual(restored.verifications[0].status, "verified")
+        self.assertEqual(restored.verifications[0].signer.primary_fingerprint, fingerprint)
+
+    def test_cancelling_the_signing_keys_prompt_encrypts_nothing(self):
+        self.answer_with(None)
+        _, result = self.sign_and_encrypt()
+        self.assertEqual((result.succeeded, result.failed), (0, 1))
+        self.assertIn("cancelled", self.progress[-1][2])
+        self.assertEqual([p for p in (self.root / "exports").rglob("*") if p.is_file()], [])
+
+    def test_a_wrong_signing_passphrase_encrypts_nothing(self):
+        self.answer_with("not the right passphrase")
+        _, result = self.sign_and_encrypt()
+        self.assertEqual((result.succeeded, result.failed), (0, 1))
+        self.assertRegex(self.progress[-1][2], "Wrong passphrase for the signing key|cancelled")
+        self.assertEqual([p for p in (self.root / "exports").rglob("*") if p.is_file()], [])
+
     def test_wrong_passphrase_at_the_prompt(self):
         encrypted = self.job([self.write("a.txt")], "exports", "encrypt").outputs[0]
         self.answer_with("not the right passphrase")

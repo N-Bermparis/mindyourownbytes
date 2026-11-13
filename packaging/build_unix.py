@@ -173,6 +173,12 @@ def main() -> None:
     shared.changelog_section(version)  # Better to find out now than after a long build.
 
     mac = sys.platform == "darwin"
+    import signing  # Beside this script. Only needed for a build, so the tests can load this file without it.
+    try:
+        identity = signing.mac_signing() if mac else None
+    except signing.SigningError as exc:
+        sys.exit(str(exc))
+    print(signing.describe(mac=identity), flush=True)
     work = MAC_WORK if mac else LINUX_WORK
     for path in (APP, MAC_APP, RELEASE, work):
         shutil.rmtree(path, ignore_errors=True)
@@ -182,7 +188,11 @@ def main() -> None:
         make_mac_icon()
     run_pyinstaller(work)
     if mac:
-        make_mac_disk_image(version)
+        if identity is not None:
+            signing.sign_mac_app(MAC_APP, identity)
+        image = make_mac_disk_image(version)
+        if identity is not None:
+            signing.sign_mac_image(image, identity)
     else:
         make_linux_archive(version)
     shared.write_checksums()

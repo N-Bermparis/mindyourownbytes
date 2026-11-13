@@ -23,7 +23,7 @@ from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 
-from mindyourownbytes import generator
+from mindyourownbytes import generator, strength
 from mindyourownbytes.core import describe_failure, encode_passphrase, run_gpg_pipe, symmetric_args
 
 VAULT_FORMAT = "mindyourownbytes-vault"
@@ -68,10 +68,18 @@ def generate_passphrase(groups: int = generator.DEFAULT_GROUPS) -> str:
 
 
 def check_new_master(passphrase: str) -> None:
-    """Every saved passphrase is only as strong as this one, so it has a floor."""
+    """Every saved passphrase is only as strong as this one, so it has a floor, and can't be easily guessed.
+
+    The same rules as for any new passphrase (see ``strength``), with a longer minimum. Only new masters
+    are checked: an existing vault always unlocks with the master it has.
+    """
     encode_passphrase(passphrase)
     if len(passphrase) < MIN_MASTER_LENGTH:
         raise VaultError(f"The master passphrase must be at least {MIN_MASTER_LENGTH} characters.")
+    try:
+        strength.check_new(passphrase, min_length=MIN_MASTER_LENGTH)
+    except strength.WeakPassphrase as exc:
+        raise VaultError(f"Choose a different master passphrase. {exc}") from exc
 
 
 class Vault:

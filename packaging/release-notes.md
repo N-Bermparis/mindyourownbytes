@@ -59,6 +59,10 @@ sha256sum {linux}        # Linux
 A matching checksum shows that your file is the one published here. It can't protect you if
 this GitHub account itself were compromised, which is what signing and independent builds are for.
 
+If this release lists `SHA256SUMS.txt.asc`, it's an OpenPGP signature of the checksums. Check it with
+`gpg --verify SHA256SUMS.txt.asc SHA256SUMS.txt`, and compare the key's fingerprint with the one in
+[SECURITY.md]({repository}/blob/main/SECURITY.md#verifying-a-download), never with one found here.
+
 `{gnupg_source}` is the source code of the GnuPG included in the Windows download. You don't need
 it to use the app.
 

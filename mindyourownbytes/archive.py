@@ -6,8 +6,9 @@ folders, number, and sizes of the files inside are encrypted along with their co
 This module only packs and unpacks ordinary zip files. GnuPG does all the encryption, and
 ``core.encrypt_archive`` connects the two. Packing writes the zip straight into GnuPG, so no
 readable archive touches disk. Unpacking needs the decrypted zip on disk, because a zip keeps
-its table of contents at the end. That copy keeps a temporary name until it's unpacked, and is
-then deleted.
+its table of contents at the end. On restore, ``core`` keeps that copy, and the folder it's
+unpacked into, in a private workspace (see ``workspace``), and the folder only gets its final name,
+through ``safefs``, once everything is out. Nothing that already exists is ever replaced.
 
 Nothing here depends on this app to open an archive later:
 ``gpg --output Archive.zip --decrypt Archive.zip.gpg``, then open Archive.zip.
@@ -25,6 +26,8 @@ import zlib
 from collections.abc import Callable, Sequence
 from pathlib import Path, PurePosixPath
 from typing import BinaryIO
+
+from mindyourownbytes import safefs
 
 #: Archives are named "<name>.zip.gpg", so that decrypting one by hand gives a file any computer opens.
 SUFFIX = ".zip"
@@ -274,54 +277,93 @@ def _keep_time(path: Path, date_time: tuple[int, ...]) -> None:
         pass  # The file is right, and its time is only a convenience.
 
 
-def unpack(path: Path, target: Path, stop: Callable[[], None], leftovers: list[Path]) -> int:
-    """Unpack an archive into the folder ``target``, which mustn't exist yet. Returns how many files it held.
+def _create_new(path: Path) -> BinaryIO:
+    """Open a new file for writing, refusing anything already there, including a link, even one to nothing.
 
-    Everything goes into a temporary folder beside ``target`` first, which only gets the final name
-    once every file is out and has passed zip's own check. Otherwise it's removed, and anything that
-    can't be removed is added to ``leftovers``, because it holds readable data.
+    Its mode follows the umask, as a restored single file's does. While it's being written, the private
+    folder it's in keeps others out, on systems that have such permissions.
+    """
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
+    return os.fdopen(os.open(path, flags, 0o666), "wb")
+
+
+def extract(path: Path, folder: Path, stop: Callable[[], None]) -> int:
+    """Unpack the archive ``path`` into ``folder``, an empty folder the caller made. Returns how many files it held.
+
+    Every name is checked before anything is written, so that a bad one means nothing at all. Each file is
+    cut off at the size it claims, checked against zip's own CRC as it's read, and written to the drive
+    before the next one starts. Raises ArchiveError, with a message that's safe to show.
+
+    What's in ``folder`` is only complete when this returns. After a failure it's partial, and it's the
+    caller's job to remove it rather than give it a final name.
     """
     try:
         archive = zipfile.ZipFile(path)
     except (OSError, ValueError, zipfile.BadZipFile) as exc:
         raise ArchiveError(f"This archive is damaged, so nothing was unpacked: {exc}") from exc
-    staging = target.parent / f".myob-{uuid.uuid4().hex[:16]}.partial"
     with archive:
         plan = _plan(archive.infolist())
         needed = sum(info.file_size for info, _ in plan)
-        free = shutil.disk_usage(target.parent).free
+        free = shutil.disk_usage(folder).free
         if needed > free:
             raise ArchiveError(f"There isn't enough space to unpack this archive, so nothing was. It needs "
                                f"{needed / 1e9:.1f} GB, and {free / 1e9:.1f} GB is free.")
-        staging.mkdir(mode=0o700)
         try:
             for info, parts in plan:
                 stop()
-                destination = staging.joinpath(*parts)
+                destination = folder.joinpath(*parts)
                 if info.is_dir():
                     destination.mkdir(parents=True, exist_ok=True)
                     continue
                 destination.parent.mkdir(parents=True, exist_ok=True)
-                with archive.open(info) as packed, open(destination, "xb") as unpacked:
+                with archive.open(info) as packed, _create_new(destination) as unpacked:
                     while piece := packed.read(_CHUNK):
                         stop()
                         unpacked.write(piece)
+                    unpacked.flush()
+                    os.fsync(unpacked.fileno())
                 _keep_time(destination, info.date_time)
-            os.rename(staging, target)
         except (zipfile.BadZipFile, zlib.error, EOFError) as exc:
-            _remove_folder(staging, leftovers)
             raise ArchiveError(f"This archive is damaged inside, so nothing was unpacked: {exc}") from exc
         except OSError as exc:
-            _remove_folder(staging, leftovers)
             raise ArchiveError(f"This archive couldn't be unpacked here, so nothing was. "
                                f"The reason given was: {exc.strerror or exc}") from exc
-        except BaseException:
-            _remove_folder(staging, leftovers)
-            raise
     return sum(1 for info, _ in plan if not info.is_dir())
 
 
+def unpack(path: Path, target: Path, stop: Callable[[], None], leftovers: list[Path]) -> int:
+    """Unpack an archive into the folder ``target``, which mustn't exist yet. Returns how many files it held.
+
+    Everything goes into a temporary folder beside ``target`` first, which only gets the final name once
+    every file is out and has passed zip's own check, and then only if nothing has that name, not even an
+    empty folder: see ``safefs``. Otherwise it's removed, and anything that can't be removed is added to
+    ``leftovers``, because it holds readable data.
+    """
+    staging = target.parent / f".myob-{uuid.uuid4().hex[:16]}.partial"
+    staging.mkdir(mode=0o700)  # Fails rather than reuse anything already there, so this one is ours to remove.
+    try:
+        count = extract(path, staging, stop)
+        try:
+            safefs.publish_directory(staging, target)
+        except FileExistsError as exc:
+            raise ArchiveError(f"Something called {target.name} is already there, so nothing was unpacked, "
+                               "and it wasn't touched.") from exc
+        except safefs.PublishFailed as exc:
+            raise ArchiveError(str(exc)) from exc
+        except OSError as exc:
+            raise ArchiveError(f"This archive couldn't be unpacked here, so nothing was. "
+                               f"The reason given was: {exc.strerror or exc}") from exc
+    except BaseException:
+        _remove_folder(staging, leftovers)
+        raise
+    safefs.sync_directory(target.parent)
+    return count
+
+
 def _remove_folder(folder: Path, leftovers: list[Path]) -> None:
+    """Remove a folder this module made, without following any link inside it."""
+    if not os.path.lexists(folder):
+        return
     shutil.rmtree(folder, ignore_errors=True)
-    if folder.exists():
+    if os.path.lexists(folder):
         leftovers.append(folder)

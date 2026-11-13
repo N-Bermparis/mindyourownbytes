@@ -291,7 +291,8 @@ class UnpackTests(ArchiveCase):
             archive.unpack(packed, target, never, leftovers)
         self.assertEqual(leftovers, [])
         good = self.zip_of([("a.txt", b"x"), ("b.txt", b"y")], name="good.zip")
-        with patch("mindyourownbytes.archive.os.rename", side_effect=OSError(13, "denied")), \
+        # Publishing is safefs's job, through a different call on each system, so it's stood in for there.
+        with patch("mindyourownbytes.safefs.publish_directory", side_effect=OSError(13, "denied")), \
                 patch("mindyourownbytes.archive.shutil.rmtree"), self.assertRaises(archive.ArchiveError):
             archive.unpack(good, target, never, leftovers)
         self.assertEqual(len(leftovers), 1)
