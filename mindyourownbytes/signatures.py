@@ -243,6 +243,19 @@ def _finish(block: _Block) -> Signature:
                      block.missing_key or block.error_code == _NO_PUBKEY, tuple(problems))
 
 
+def same_report(first: Verification, second: Verification) -> bool:
+    """Whether two reports about a file show the same thing: the same verdict, about the same keys.
+
+    Someone who agrees to restore a file agrees to what they were shown about it. A file that shows
+    something else when it's decrypted again, such as a signature by another key, isn't covered by that.
+    """
+    def shown(verification: Verification) -> tuple[bool, str, tuple[str, ...]]:
+        keys = sorted(signature.primary_fingerprint for signature in verification.signatures)
+        return verification.encrypted_to_key, verification.status, tuple(keys)
+
+    return shown(first) == shown(second)
+
+
 def refusal(verification: Verification, *, require_verified: bool = False) -> str | None:
     """Why this file mustn't be restored, in words people can read, or None if it may be.
 

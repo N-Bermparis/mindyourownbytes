@@ -92,6 +92,25 @@ class NameTests(unittest.TestCase):
         names = archive.member_names(["a:b?.txt", "CON.txt", "ends with a dot.", "x/nul", "tab\there", "a_b_.txt"])
         self.assertEqual(names, ["a_b_.txt", "_CON.txt", "ends with a dot._", "x/_nul", "tab_here", "a_b_ (2).txt"])
 
+    def test_an_empty_name_still_gets_one(self):
+        # Found by fuzzing: an empty name stopped every name from being made. No file listed has one.
+        self.assertEqual(archive.member_names(["", ".", "a.txt"]), ["_", "_ (2)", "a.txt"])
+
+    def test_a_long_name_that_needs_a_number_stays_short_enough_to_unpack(self):
+        # Found by fuzzing: a 255-character name with " (2)" added was too long to unpack, so the app made
+        # archives it couldn't restore.
+        long_file, long_folder, long_extension = "a" * 251 + ".txt", "F" * 255, "x." + "y" * 253
+        for relatives in ([long_file, long_file.upper()], [long_folder, f"{long_folder.lower()}/inside.txt"],
+                          [long_extension, long_extension], ["a" * 250 + "..txt", "a" * 250 + "..txt"]):
+            with self.subTest(relatives[0][:12]):
+                names = archive.member_names(relatives)
+                self.assertEqual(len({name.casefold() for name in names}), len(names), names)
+                for name in names:
+                    for part in name.split("/"):
+                        self.assertTrue(archive.is_safe_name_part(part), (len(part), part[-12:]))
+                self.assertEqual(archive.member_names(relatives)[0], relatives[0], "the first keeps its name")
+        self.assertEqual(archive.member_names([long_file, long_file])[1], "a" * 247 + " (2).txt")
+
     def test_any_list_of_names_can_be_unpacked_side_by_side(self):
         pick = random.Random(5)
         pieces = ["a", "A", "b", "a.txt", "A.TXT", "a (2)", "a (2).txt", "b?"]
@@ -149,11 +168,11 @@ class PackTests(ArchiveCase):
     def test_an_original_that_fails_to_read_says_so(self):
         original = self.write("a.txt")
 
-        class Failing(io.BytesIO):
+        class Failing(io.FileIO):
             def read(self, *_args):
                 raise OSError(5, "Input/output error")
 
-        with patch("mindyourownbytes.archive.open", return_value=Failing(), create=True), \
+        with patch("mindyourownbytes.safefs.open_original", side_effect=lambda path, _chosen=None: Failing(path)), \
                 self.assertRaisesRegex(archive.ArchiveError, "a.txt couldn't be read"):
             self.pack([(original, "a.txt")])
 
@@ -207,6 +226,50 @@ class UnpackTests(ArchiveCase):
         not_a_zip.write_bytes(b"just text")
         self.assertFalse(archive.is_archive(not_a_zip))
         self.assertFalse(archive.is_archive(self.root / "missing.zip"))
+
+    def test_a_zip_newer_than_python_knows_is_restored_as_it_is_and_never_unpacked(self):
+        # Found by fuzzing: zipfile raises NotImplementedError for a version it doesn't know. Checking
+        # whether a restored .zip was one of ours then stopped the restore of someone's own zip file.
+        packed = self.zip_of([("a.txt", b"x")], comment=archive.MARKER)
+        data = bytearray(packed.read_bytes())
+        central = data.rindex(b"PK\x01\x02")
+        data[central + 6:central + 8] = (99).to_bytes(2, "little")  # Version needed to extract: 9.9.
+        packed.write_bytes(bytes(data))
+        self.assertFalse(archive.is_archive(packed))
+        with self.assertRaisesRegex(archive.ArchiveError, "damaged, so nothing was unpacked"):
+            self.unpack(packed)
+        self.assert_nothing_unpacked()
+
+    def test_flags_and_names_zipfile_cant_read_are_refused_with_a_reason(self):
+        # Found by fuzzing: these raised NotImplementedError or UnicodeDecodeError, not a reason to show.
+        def mangled(change) -> Path:
+            packed = self.zip_of([("ü.txt", b"x")], comment=archive.MARKER, name="mangled.zip")
+            data = bytearray(packed.read_bytes())
+            change(data)
+            packed.write_bytes(bytes(data))
+            return packed
+
+        def set_flag(bit: int):
+            def change(data: bytearray) -> None:
+                for signature, offset in ((b"PK\x01\x02", 8), (b"PK\x03\x04", 6)):
+                    at = data.index(signature) + offset
+                    flags = int.from_bytes(data[at:at + 2], "little") | bit
+                    data[at:at + 2] = flags.to_bytes(2, "little")
+            return change
+
+        def spoil_the_local_name(data: bytearray) -> None:
+            at = data.index(b"PK\x03\x04") + 30  # The name, in the header just before the file's data.
+            data[at] = 0xF2  # Not a valid start of UTF-8, which the name says it is.
+
+        for label, change, reason in (
+            ("patched data", set_flag(0x20), "a feature this app never writes"),
+            ("strong encryption", set_flag(0x40), "a feature this app never writes"),
+            ("a local name that isn't UTF-8", spoil_the_local_name, "damaged inside"),
+        ):
+            with self.subTest(label):
+                with self.assertRaisesRegex(archive.ArchiveError, f"{reason}.*nothing was unpacked"):
+                    self.unpack(mangled(change))
+                self.assert_nothing_unpacked()
 
     def test_names_that_could_escape_or_that_windows_refuses_unpack_nothing(self):
         for bad in ("../escaped.txt", "a/../../escaped.txt", "/absolute.txt", "C:/drive.txt", "a\\..\\b.txt",

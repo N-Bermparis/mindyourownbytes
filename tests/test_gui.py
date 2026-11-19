@@ -479,17 +479,40 @@ class TransferFlowTests(GuiCase):
         self.assertFalse(self.window.running)
         self.assertIn("already", self.message_boxes["warning"].call_args.args[1])
 
-    def test_warns_before_restoring_plaintext_into_a_synced_folder(self):
+    def restore_into_dropbox(self):
         self.settings.setValue("output_restore", str(self.root / "Dropbox" / "restored"))
         self.window.set_operation("restore")
         path = self.root / "input" / "a.txt.gpg"
-        path.parent.mkdir(parents=True)
+        path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(b"x")
         self.window.add_paths([str(path)])
-        self.message_boxes["warning"].return_value = QMessageBox.StandardButton.No
-        self.window.start()
+        self.message_boxes["warning"].reset_mock()
+        # Every question is answered yes here, so if nothing stopped it, the passphrase would be next.
+        with patch.object(self.window, "_passphrases_for", return_value=None):
+            self.window.start()
         self.assertFalse(self.window.running)
-        self.assertIn("synced", self.message_boxes["warning"].call_args.args[1])
+        self.assertFalse((self.root / "Dropbox").exists(), "not even the folder is made")
+        return self.message_boxes["warning"].call_args.args
+
+    def test_refuses_to_restore_plaintext_into_a_synced_folder(self):
+        # Every question in these tests is answered yes, so only a refusal stops this.
+        _parent, title, text = self.restore_into_dropbox()
+        self.assertEqual(title, "Choose a folder that isn't synced")
+        self.assertIn("“Dropbox”", text)
+        self.assertIn("Restored Files", text, "suggests a folder on this computer")
+
+    def test_with_the_switch_on_it_warns_and_asks_instead(self):
+        self.window.synced_restore_action.setChecked(True)
+        self.assertEqual(self.settings.value("allow_synced_restore"), "true")
+        self.message_boxes["warning"].return_value = QMessageBox.StandardButton.No
+        _parent, title, _text = self.restore_into_dropbox()[:3]
+        self.assertEqual(title, "Restoring into a synced folder?")
+
+    def test_simple_mode_refuses_even_with_the_switch_on(self):
+        self.window.synced_restore_action.setChecked(True)
+        self.window.advanced_action.setChecked(False)
+        self.assertFalse(self.window.synced_restore_action.isVisible())
+        self.assertEqual(self.restore_into_dropbox()[1], "Choose a folder that isn't synced")
 
     def test_warns_before_encrypting_to_a_key_you_cannot_decrypt_with(self):
         other = self.root / "other"
@@ -1082,7 +1105,7 @@ class ArchiveModeTests(GuiCase):
         self.window.start()
         self.finish()
         self.assertEqual(self.window.table.item(0, 3).text(), "In the archive, not checked")
-        self.assertEqual(self.window.result_bar.title_label.text(), "1 file encrypted into one archive")
+        self.assertEqual(self.window.result_bar.title_label.text(), "1 file signed and encrypted into one archive")
         self.assertIn("Not checked", self.window.result_bar.text())
 
     def test_the_provider_view_shows_the_one_archive_they_get(self):
@@ -1495,9 +1518,9 @@ class CheckAfterEncryptingTests(GuiCase):
         self.select_method("public-key")
         self.window.start()
         self.finish()
-        self.assertEqual(self.window.table.item(0, 3).text(), "Encrypted, not checked")
+        self.assertEqual(self.window.table.item(0, 3).text(), "Signed and encrypted, not checked")
         self.assertIn("private key", self.window.table.item(0, 3).toolTip())
-        self.assertEqual(self.window.result_bar.title_label.text(), "1 file encrypted")
+        self.assertEqual(self.window.result_bar.title_label.text(), "1 file signed and encrypted")
         self.assertIn("Not checked, because that takes the private key", self.window.result_bar.text())
         self.assertTrue((self.root / "exports" / "a.txt.gpg").exists())
 
@@ -1711,6 +1734,11 @@ class SimpleAndAdvancedModeTests(GuiCase):
         window.start()
         self.wait_until(lambda: not window.running)
         self.wait_until(lambda: window._thread is None)
+        self.assertFalse((self.root / "restored" / "k.txt").exists(), "unsigned, so it waits to be asked")
+        anyway = next(button for button in window.result_bar._actions if button.text() == "Restore anyway…")
+        anyway.click()
+        self.wait_until(lambda: not window.running)
+        self.wait_until(lambda: window._thread is None)
         self.assertEqual((self.root / "restored" / "k.txt").read_bytes(), b"for the key")
 
     def test_the_switch_is_first_in_the_tools_menu_and_explains_itself(self):
@@ -1810,7 +1838,7 @@ class AlgorithmChoiceTests(GuiCase):
         self.window.start()
         self.wait_until(lambda: not self.window.running)
         self.wait_until(lambda: self.window._thread is None)
-        self.assertIn("1 file encrypted", self.window.result_bar.text())
+        self.assertIn("1 file signed and encrypted", self.window.result_bar.text())
         self.assertNotIn("Twofish", self.window.result_bar.text())
 
     def test_key_list_names_each_kind_of_key(self):

@@ -12,6 +12,7 @@ import contextlib
 import hashlib
 import os
 import re
+import stat
 import subprocess
 import sys
 import threading
@@ -137,6 +138,9 @@ class SourceItem:
     source: Path
     relative: Path
     size: int
+    #: Which file had the name when it was chosen (see safefs.Identity). Encrypting reads only that file,
+    #: so that one swapped in meanwhile, or a link put in its place, is refused. None if unknown.
+    identity: tuple[int, int] | None = None
 
 
 @dataclass(frozen=True)
@@ -151,6 +155,9 @@ class JobResult:
     checked: int = 0
     #: On restore, what each output's signatures showed, in the same order as ``outputs``.
     verifications: tuple[Verification, ...] = ()
+    #: On restore, the positions of files that decrypted but weren't restored, only because no key you've
+    #: verified signed them (see ``Unauthenticated``). Restoring them again with ``accept`` can restore them.
+    held: tuple[int, ...] = ()
 
 
 class PublicKey(NamedTuple):
@@ -185,6 +192,19 @@ class GpgFailure(Exception):
     def __init__(self, message: str, wrong_secret: bool = False) -> None:
         super().__init__(message)
         self.wrong_secret = wrong_secret
+
+
+class Unauthenticated(GpgFailure):
+    """A file that decrypted with your key wasn't restored, only because no key you've verified signed it.
+
+    Anyone who has your public key could have made it, so nothing shows who did. Unlike a bad signature,
+    this can be a file that's really yours, such as one encrypted before signing was turned on, so it's a
+    choice someone can make: ``verification`` says what its signatures showed, for them to decide by.
+    """
+
+    def __init__(self, message: str, verification: Verification) -> None:
+        super().__init__(message)
+        self.verification = verification
 
 
 def windows_flags() -> int:
@@ -586,18 +606,23 @@ def add_post_quantum_subkey(binary: str, fingerprint: str) -> str:
 def looks_cloud_synced(path: str | Path) -> str | None:
     """Return the folder name that suggests ``path`` is synced, or None.
 
-    A best-effort heuristic used only for warnings. It cannot see every sync
-    client, so the UI must not imply that a clean result means a folder is safe.
+    A best-effort heuristic, by folder names and OneDrive's own variables. It cannot see every sync
+    client, so the UI must not imply that a clean result means a folder is safe. A path that leads
+    into a synced folder through a link counts as synced too.
     """
-    resolved = Path(path).expanduser().absolute()
-    for variable in ("OneDrive", "OneDriveConsumer", "OneDriveCommercial"):
-        root = os.environ.get(variable)
-        if root and Path(root) in (resolved, *resolved.parents):
-            return Path(root).name
-    for part in resolved.parts[1:]:
-        lowered = part.lower()
-        if lowered in _SYNC_FOLDER_NAMES or lowered.startswith(_SYNC_FOLDER_PREFIXES):
-            return part
+    given = Path(path).expanduser()
+    candidates = [given.absolute()]
+    with contextlib.suppress(OSError, RuntimeError):
+        candidates.append(given.resolve())
+    for candidate in candidates:
+        for variable in ("OneDrive", "OneDriveConsumer", "OneDriveCommercial"):
+            root = os.environ.get(variable)
+            if root and Path(root) in (candidate, *candidate.parents):
+                return Path(root).name
+        for part in candidate.parts[1:]:
+            lowered = part.lower()
+            if lowered in _SYNC_FOLDER_NAMES or lowered.startswith(_SYNC_FOLDER_PREFIXES):
+                return part
     return None
 
 
@@ -633,15 +658,15 @@ def collect_files(paths: Iterable[str | Path], output_directory: Path,
             return
         try:
             resolved = path.resolve()
-            size = path.stat().st_size
+            status = os.lstat(resolved)
         except OSError:
             unreadable.append(path)
             return
-        if resolved in seen:
+        if resolved in seen or not stat.S_ISREG(status.st_mode):
             skipped += 1
             return
         seen.add(resolved)
-        collected.append(SourceItem(resolved, relative, size))
+        collected.append(SourceItem(resolved, relative, status.st_size, safefs.identity(status)))
 
     def on_walk_error(error: OSError) -> None:
         # os.walk ignores these by default, which would leave a subfolder out
@@ -1007,17 +1032,23 @@ def _signing_args(sign_with: str | None) -> tuple[str, ...]:
 
 
 def _build_command(binary: str, operation: Operation, method: Method, fingerprint: str | None,
-                   staged: Path, source: Path, piped: bool, cipher: str, sign_with: str | None = None) -> list[str]:
+                   staged: Path, source: Path | None, piped: bool, cipher: str, sign_with: str | None = None,
+                   name: str | None = None) -> list[str]:
+    """GnuPG's command line. With no ``source``, GnuPG reads what to encrypt from its stdin, after any
+    passphrase line, and ``name`` is the file name recorded inside, as GnuPG records it for a file."""
     command = [binary, *_BASE_ARGS]
     command += _PIPE_ARGS if piped else ("--pinentry-mode", "ask")
     command += ["--output", str(staged)]
+    if source is None and name:
+        command += ["--set-filename", name]
     if operation == "restore":
         command.append("--decrypt")
     elif method == "password":
         command += symmetric_args(cipher)
     else:
         command += [*_signing_args(sign_with), "--encrypt", "--recipient", fingerprint or ""]
-    command += ["--", str(source)]
+    if source is not None:
+        command += ["--", str(source)]
     return command
 
 
@@ -1044,24 +1075,58 @@ def _stop_if_cancelled(cancel: threading.Event) -> None:
         raise Cancelled()
 
 
-def _hash_file(path: Path, cancel: threading.Event) -> bytes:
+def _hash_file(original: BinaryIO, cancel: threading.Event) -> bytes:
+    """The SHA-256 of an open original, read again from its start."""
+    original.seek(0)
     digest = hashlib.sha256()
-    with open(path, "rb") as file:
-        while piece := file.read(_CHECK_CHUNK):
-            if cancel.is_set():
-                raise Cancelled()
-            digest.update(piece)
+    while piece := original.read(_CHECK_CHUNK):
+        if cancel.is_set():
+            raise Cancelled()
+        digest.update(piece)
     return digest.digest()
 
 
-def _check_copy(binary: str, staged: Path, source: Path, state_before: tuple[int, ...] | None,
+def _open_state(original: BinaryIO) -> tuple[int, ...]:
+    """What ``archive.file_state`` says about a file, from the open file rather than its name."""
+    status = os.fstat(original.fileno())
+    return status.st_size, status.st_mtime_ns, status.st_ino, status.st_dev
+
+
+def run_gpg_reading(argv: list[str], cancel: threading.Event, secret: bytes | None,
+                    original: BinaryIO) -> tuple[int, str, bytes]:
+    """Run gpg on what's in ``original``, an open file, fed to it over a pipe after any passphrase line.
+
+    Returns (exit code, stderr, SHA-256 of everything fed). GnuPG never opens the original by its name, so
+    what it encrypts is what was read here, from the file that was opened, whatever has that name meanwhile.
+    """
+    digest = hashlib.sha256()
+
+    def feed(stdin: BinaryIO) -> None:
+        while True:
+            _stop_if_cancelled(cancel)
+            try:
+                piece = original.read(_CHECK_CHUNK)
+            except OSError as exc:
+                raise GpgFailure("The original couldn't be read, so no encrypted copy was kept. The reason given "
+                                 f"was: {exc.strerror or exc}") from exc
+            if not piece:
+                return
+            digest.update(piece)
+            stdin.write(piece)
+
+    code, stderr = run_gpg_feeding(argv, cancel, secret, feed)
+    return code, stderr, digest.digest()
+
+
+def _check_copy(binary: str, staged: Path, original: BinaryIO, fed: bytes, state_before: tuple[int, ...],
                 secret: bytes, cancel: threading.Event) -> None:
     """Prove that a newly encrypted file decrypts back to its original, or raise.
 
     People may delete an original once its copy is reported as encrypted, so that report has to be
     true. GnuPG decrypts the copy again, with the same passphrase over a pipe. What it writes is
-    hashed as it arrives, then compared with a hash of the original, which is read last so that the
-    answer is about the original as it is now.
+    hashed as it arrives, then compared with ``fed``, the hash of what GnuPG was given, and with a hash
+    of the original read again, last, through the same open file, so that the answer is about the
+    original as it is now.
 
     As for a restore, exit code 0 isn't enough. DECRYPTION_OKAY has to be there as well, or a copy
     that was never encrypted would pass by holding the right content.
@@ -1077,28 +1142,57 @@ def _check_copy(binary: str, staged: Path, source: Path, state_before: tuple[int
                          f"GnuPG said: {_last_diagnostic(stderr)}")
     if "DECRYPTION_OKAY" not in {line[0] for line in _status_lines(stderr) if line}:
         raise GpgFailure("Check failed: the copy GnuPG made isn't actually encrypted, so it wasn't kept.")
-    try:
-        original = _hash_file(source, cancel)
-    except OSError as exc:
-        if _file_state(source) is None:
-            raise GpgFailure("The original is gone: it was moved or deleted while it was being encrypted, "
-                             "so no encrypted copy was kept.") from exc
-        raise GpgFailure("Check failed: the original couldn't be read again to compare it, so the "
-                         f"encrypted copy wasn't kept. The reason given was: {exc}") from exc
-    if decrypted != original:
-        if _file_state(source) != state_before:
-            # Not damage: the copy holds this file as it was a moment ago, or part old and part new.
-            raise GpgFailure("The original changed: something wrote to this file while it was being "
-                             "encrypted, so no encrypted copy was kept. Try again when nothing is changing it.")
+    if decrypted != fed:
         raise GpgFailure("Check failed: decrypting the new copy didn't give back the original, so the copy "
                          "wasn't kept. Your original hasn't been touched. Try again, and if another program "
                          "has this file open, close it first.")
+    try:
+        again = _hash_file(original, cancel)
+    except OSError as exc:
+        raise GpgFailure("Check failed: the original couldn't be read again to compare it, so the "
+                         f"encrypted copy wasn't kept. The reason given was: {exc}") from exc
+    if again != fed or _open_state(original) != state_before:
+        # Not damage: the copy holds this file as it was a moment ago, or part old and part new.
+        raise _changed()
+
+
+def _changed() -> GpgFailure:
+    return GpgFailure("The original changed: something wrote to this file while it was being encrypted, so no "
+                      "encrypted copy was kept. Try again when nothing is changing it.")
+
+
+def _open_original(item: SourceItem) -> BinaryIO:
+    """The original, opened once to be read only through that, provided it's still the file that was chosen."""
+    try:
+        return safefs.open_original(item.source, item.identity)
+    except safefs.NotTheOriginal as exc:
+        raise GpgFailure(f"{exc.strerror}. Nothing was encrypted.") from exc
+    except FileNotFoundError as exc:
+        raise GpgFailure("The original is gone: it was moved or deleted after it was chosen, so nothing was "
+                         "encrypted.") from exc
+    except OSError as exc:
+        raise GpgFailure("The original couldn't be opened, so nothing was encrypted. The reason given was: "
+                         f"{exc.strerror or exc}") from exc
+
+
+def _check_still_named(item: SourceItem, original: BinaryIO) -> None:
+    """A copy is of "this file" only if its name still leads to the file that was read."""
+    if not safefs.still_named(item.source, original):
+        if safefs.identity_of(item.source) is None:
+            raise GpgFailure("The original is gone: it was moved or deleted while it was being encrypted, "
+                             "so no encrypted copy was kept.")
+        raise GpgFailure("The original changed: another file took its name while it was being encrypted, so no "
+                         "encrypted copy was kept. Try again when nothing is changing it.")
 
 
 def _encrypt_one(binary: str, item: SourceItem, output_directory: Path, method: Method, fingerprint: str | None,
                  cancel: threading.Event, secret: bytes | None, leftovers: list[Path], cipher: str, verify: bool,
                  on_checking: Callable[[], None] | None, sign_with: str | None) -> tuple[Path, bool]:
-    """Returns where the encrypted file is, and whether it was checked against its original."""
+    """Returns where the encrypted file is, and whether it was checked against its original.
+
+    The original is opened once, and GnuPG gets its contents over a pipe from that open file, never its
+    name: a file swapped in meanwhile, or a link to somewhere else put in its place, is never what's read.
+    """
     target = unique_target(output_directory / output_relative(item, "encrypt"))
     target.parent.mkdir(parents=True, exist_ok=True)
     # A short fixed-length name: embedding the original name pushed long,
@@ -1107,17 +1201,22 @@ def _encrypt_one(binary: str, item: SourceItem, output_directory: Path, method: 
     # Only with a passphrase already in hand. A key, or GnuPG's own prompt, would mean asking again.
     checking = verify and method == "password" and secret is not None
     try:
-        command = _build_command(binary, "encrypt", method, fingerprint, staged, item.source,
-                                 piped=secret is not None, cipher=cipher, sign_with=sign_with)
-        state_before = _file_state(item.source) if checking else None
-        code, stderr = run_gpg(command, cancel, secret)
-        _check_success("encrypt", code, stderr, staged, signed=sign_with is not None)
-        if checking:
-            _stop_if_cancelled(cancel)
-            if on_checking is not None:
-                on_checking()
-            # Still under its temporary name, so a copy that fails never gets its final one.
-            _check_copy(binary, staged, item.source, state_before, secret, cancel)
+        command = _build_command(binary, "encrypt", method, fingerprint, staged, None,
+                                 piped=secret is not None, cipher=cipher, sign_with=sign_with,
+                                 name=item.source.name)
+        with _open_original(item) as original:
+            state_before = _open_state(original)
+            code, stderr, fed = run_gpg_reading(command, cancel, secret, original)
+            _check_success("encrypt", code, stderr, staged, signed=sign_with is not None)
+            if _open_state(original) != state_before:
+                raise _changed()
+            if checking:
+                _stop_if_cancelled(cancel)
+                if on_checking is not None:
+                    on_checking()
+                # Still under its temporary name, so a copy that fails never gets its final one.
+                _check_copy(binary, staged, original, fed, state_before, secret, cancel)
+            _check_still_named(item, original)
         _stop_if_cancelled(cancel)
         # On the drive before it gets its name, so a power cut can't leave the name with less behind it.
         safefs.sync_file(staged)
@@ -1134,12 +1233,16 @@ def _discard(path: Path) -> None:
 
 def _restore_one(binary: str, item: SourceItem, output_directory: Path, cancel: threading.Event,
                  secrets: Sequence[bytes], leftovers: list[Path], journal: workspace.Journal | None,
-                 require_signature: bool, expected_signers: frozenset[str]) -> tuple[Path, Verification]:
+                 require_signature: bool, expected_signers: frozenset[str],
+                 accept: Callable[[Verification], bool] | None = None) -> tuple[Path, Verification]:
     """Returns where the restored file or folder is, and what its signatures showed.
 
     Everything decrypted goes into a private workspace beside the destination (see ``workspace``), and
     only a finished result leaves it, by being published under its final name. The workspace is deleted
     however this ends. One that can't be is added to ``leftovers``, and stays noted in ``journal``.
+
+    With ``require_signature``, a file that decrypted with a key but that no key you've verified signed
+    raises ``Unauthenticated``, unless ``accept`` says yes to what its signatures showed.
     """
     target = unique_target(output_directory / output_relative(item, "restore"))
     target.parent.mkdir(parents=True, exist_ok=True)
@@ -1167,9 +1270,12 @@ def _restore_one(binary: str, item: SourceItem, output_directory: Path, cancel: 
                 continue
             verification = signatures.read(stderr, expected_signers)
             # It decrypted, so this was the right secret, and trying others would change nothing.
-            problem = signatures.refusal(verification, require_verified=require_signature)
+            problem = signatures.refusal(verification)
             if problem is not None:
-                raise GpgFailure(problem)
+                raise GpgFailure(problem)  # A bad or unexpected signature: never anyone's choice.
+            unproven = signatures.refusal(verification, require_verified=require_signature)
+            if unproven is not None and not (accept is not None and accept(verification)):
+                raise Unauthenticated(unproven, verification)
             break
         else:
             other = next((failure for failure in failures if not failure.wrong_secret), None)
@@ -1200,6 +1306,7 @@ def process_items(
     on_checking: Callable[[int], None] | None = None, sign_with: str | None = None,
     journal: workspace.Journal | None = None, require_signature: bool = False,
     expected_signers: Iterable[str] = (), on_signature: Callable[[int, Verification], None] | None = None,
+    accept: Callable[[int, Verification], bool] | None = None,
 ) -> JobResult:
     """Process each item independently; failed jobs leave no partial exports.
 
@@ -1219,10 +1326,12 @@ def process_items(
     ``sign_with`` signs each file encrypted to a key with the key that has this fingerprint, so that
     restoring it can show who made it. GnuPG asks for that key's passphrase itself.
 
-    On restore, ``on_signature`` hears what each restored file's signatures showed, just before
-    ``on_progress`` reports it. A bad signature, one that can't be checked, or a signer that isn't in
-    ``expected_signers`` (when any are given) is always refused. ``require_signature`` also refuses files
-    for a key unless a key you've verified signed them. Decrypted data waits in workspaces that ``journal``
+    On restore, ``on_signature`` hears what each decrypted file's signatures showed, just before
+    ``on_progress`` reports it: for files that were restored, and for files held back as described next.
+    A bad signature, one that can't be checked, or a signer that isn't in ``expected_signers`` (when any
+    are given) is always refused. ``require_signature`` also holds back files for a key unless a key
+    you've verified signed them, and lists them in ``JobResult.held``, unless ``accept`` says yes to that
+    file, by position, and what its signatures showed. Decrypted data waits in workspaces that ``journal``
     notes, so that any left behind can be found later.
     """
     if not is_valid_gpg(binary):
@@ -1247,6 +1356,7 @@ def process_items(
     succeeded = failed = checked = 0
     outputs: list[Path] = []
     verifications: list[Verification] = []
+    held: list[int] = []
     leftovers: list[Path] = []
     was_cancelled = False
     for index, item in enumerate(items):
@@ -1262,13 +1372,21 @@ def process_items(
                 )
                 verification = None
             else:
-                target, verification = _restore_one(binary, item, output_directory, cancel, secrets, leftovers,
-                                                    journal, require_signature, expected)
+                target, verification = _restore_one(
+                    binary, item, output_directory, cancel, secrets, leftovers, journal, require_signature,
+                    expected, partial(accept, index) if accept is not None else None,
+                )
                 was_checked = False
         except Cancelled:
             was_cancelled = True
             on_progress(index, False, "Cancelled", None)
             break
+        except Unauthenticated as exc:
+            failed += 1
+            held.append(index)
+            if on_signature is not None:
+                on_signature(index, exc.verification)
+            on_progress(index, False, str(exc), None)
         except Exception as exc:  # Other files should still be processed.
             failed += 1
             on_progress(index, False, str(exc), None)
@@ -1282,7 +1400,7 @@ def process_items(
                     on_signature(index, verification)
             on_progress(index, True, CHECKED if was_checked else UNPACKED if target.is_dir() else READY, target)
     return JobResult(succeeded, failed, was_cancelled, tuple(outputs), tuple(leftovers), checked,
-                     tuple(verifications))
+                     tuple(verifications), tuple(held))
 
 
 def _check_archive(binary: str, staged: Path, packed: bytes, states: list[tuple[str, Path, tuple[int, ...] | None]],
@@ -1362,7 +1480,8 @@ def encrypt_archive(
     command = [binary, *_BASE_ARGS, *(_PIPE_ARGS if secret is not None else ("--pinentry-mode", "ask")),
                "--output", str(staged), *encryption, "--compress-algo", "none"]
     files = list(zip((item.source for item in items),
-                     archive.member_names([item.relative.as_posix() for item in items]), strict=True))
+                     archive.member_names([item.relative.as_posix() for item in items]),
+                     (item.identity for item in items), strict=True))
     current = [0]
     packed: dict[str, object] = {}
 

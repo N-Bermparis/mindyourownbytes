@@ -129,7 +129,9 @@ class Ledger:
                 )
                 if not re.fullmatch(r"[0-9a-f]{64}", record.sha256):
                     raise ValueError("not a SHA-256")
-            except (ValueError, KeyError, TypeError):
+            except (ValueError, KeyError, TypeError, RecursionError):
+                # RecursionError: a damaged line of deeply nested brackets, found by fuzzing. Like any other line
+                # that can't be read, it's counted and skipped, so it can't stop a restore.
                 self.unreadable += 1
                 continue
             self.records.append(record)

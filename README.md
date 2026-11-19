@@ -289,12 +289,19 @@ Five different things can be true of a file, and the app keeps them apart:
    a key with any name.
 
 When you encrypt to a key in advanced mode, **Also sign them with** adds a signature made with your own
-key. GnuPG asks for your key's passphrase itself, so the app never sees it, and the files stay standard
-OpenPGP that plain `gpg --decrypt` opens and checks. A restored file for a key then says **signed by**
-the key's name, if it's yours or one you've certified, **signed with a key you haven't verified**, or
-**not signed**, and its tooltip shows the full fingerprint. A file whose signature is invalid, or can't
-be checked, is never restored. Files you encrypted to a key before signing existed still restore, and
-say **not signed**. To refuse those too, turn on **Tools > Require a signature on files for a key**.
+key. It's ticked whenever you have a key that can sign, unless you untick it. GnuPG asks for your key's
+passphrase itself, so the app never sees it, and the files stay standard OpenPGP that plain
+`gpg --decrypt` opens and checks. A restored file for a key then says **signed by** the key's name, if
+it's yours or one you've certified, and its tooltip shows the full fingerprint. A file whose signature
+is invalid, or can't be checked, is never restored.
+
+A file for your key that no key you've verified signed isn't restored without asking, because anyone
+could have made it. That includes files you encrypted to a key before signing existed, or without it.
+It's decrypted, deleted again, and listed as **not restored yet**. **Restore anyway…** shows what each
+one showed, such as **not signed**, or **signed with a key you haven't verified** and that key's
+fingerprint, and restores it only if it still shows exactly that when decrypted again. Under **Tools >
+Files for your key with no verified signature**, you can choose **Never restore them** instead, or, in
+advanced mode, **Restore them, and say so**. Files opened with a passphrase are never affected.
 
 ### Which algorithm should I choose?
 

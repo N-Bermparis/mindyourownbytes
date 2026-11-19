@@ -1,6 +1,7 @@
 """The window's side of signing, signature verdicts, new passphrases, and leftover cleanup, with a real GnuPG."""
 
 import os
+import shutil
 import subprocess
 import unittest
 from pathlib import Path
@@ -47,6 +48,44 @@ class SigningCase(GuiCase):
     def row(self, index: int = 0):
         return self.window.table.item(index, 3)
 
+    def forge(self, name: str = "invoice.pdf", content: bytes = b"pay mallory") -> tuple[Path, str]:
+        """A file for my key, signed by someone else's, whose public key I have but never verified."""
+        home = self.root / "sender"
+        if not home.exists():
+            home.mkdir(mode=0o700)
+            gpgconf = Path(self.gpg).with_name("gpgconf.exe" if os.name == "nt" else "gpgconf")
+            self.addCleanup(subprocess.run, [str(gpgconf), "--homedir", str(home), "--kill", "all"],
+                            capture_output=True, check=False)
+        env = dict(os.environ, GNUPGHOME=str(home))
+        self.run_gpg("--passphrase", "", "--pinentry-mode", "loopback", "--quick-generate-key",
+                     "Mallory <mallory@example.invalid>", "default", "default", "1y", env=env)
+        listing = self.run_gpg("--with-colons", "--fingerprint", "--list-keys", "Mallory", env=env).stdout.decode()
+        mallory = next(line.split(":")[9] for line in listing.splitlines() if line.startswith("fpr:"))
+        self.run_gpg("--import", input=self.run_gpg("--export", self.me).stdout, env=env)
+        forged = self.root / "Downloads" / f"{name}.gpg"
+        forged.parent.mkdir(exist_ok=True)
+        self.run_gpg("--passphrase", "", "--pinentry-mode", "loopback", "--trust-model", "always", "--sign",
+                     "--encrypt", "--recipient", self.me, "--output", str(forged),
+                     str(self.write(name, content)), env=env)
+        self.run_gpg("--import", input=self.run_gpg("--export", mallory, env=env).stdout)
+        return forged, mallory
+
+    def restore_anyway(self, answer=None):
+        """Click "Restore anyway…" below the list, and answer the question it asks."""
+        button = next(button for button in self.window.result_bar._actions
+                      if button.text() == main_window.HELD_COPY["action"])
+        self.message_boxes["warning"].reset_mock()
+        self.message_boxes["warning"].return_value = answer or QMessageBox.StandardButton.Yes
+        button.click()
+        self.finish()
+        self.message_boxes["warning"].return_value = QMessageBox.StandardButton.Yes
+
+    def actions(self) -> list[str]:
+        return [button.text() for button in self.window.result_bar._actions]
+
+    def policy(self, name: str):
+        return next(action for action in self.window.signature_group.actions() if action.data() == name)
+
 
 class SigningControlTests(SigningCase):
     def test_signing_is_offered_only_when_encrypting_to_a_key(self):
@@ -63,9 +102,44 @@ class SigningControlTests(SigningCase):
 
     def test_the_choice_is_remembered(self):
         self.select_method("public-key")
+        self.window.sign_box.setChecked(False)
+        self.assertEqual(self.settings.value("sign_files"), "false")
         self.window.sign_box.setChecked(True)
         self.assertEqual(self.settings.value("sign_files"), "true")
         self.assertEqual(self.settings.value("sign_with"), self.me)
+
+    def test_files_for_a_key_are_signed_unless_someone_chose_otherwise(self):
+        self.select_method("public-key")
+        self.assertTrue(self.window.sign_box.isChecked(), "on whenever there's a key to sign with")
+        self.assertIsNone(self.settings.value("sign_files"), "a default, not a choice anyone made")
+        self.window.add_paths([str(self.write("a.txt"))])
+        self.window.key_combo.setCurrentIndex(self.window.key_combo.findData(self.me))
+        self.window.start()
+        self.finish()
+        self.assertEqual(self.row().text(), "Signed and encrypted, not checked")
+        self.restore(self.root / "exports" / "a.txt.gpg")
+        self.assertEqual(self.row().text(), "Restored, signed by Alex Example, matches your record")
+
+    def test_a_choice_not_to_sign_is_kept(self):
+        self.settings.setValue("sign_files", "false")
+        window = MainWindow(self.settings, self.root / "app" / "other-vault.gpg")
+        self.addCleanup(window.close)
+        window.set_method("public-key")
+        self.assertFalse(window.sign_box.isChecked())
+
+    def test_without_a_key_that_can_sign_signing_is_off_and_encrypting_still_works(self):
+        self.run_gpg("--yes", "--delete-secret-keys", self.me)
+        self.window.refresh_keys()
+        if self.window.signer_combo.currentData():
+            self.skipTest("this GnuPG will not delete a secret key in batch mode")
+        self.select_method("public-key")
+        self.assertFalse(self.window.sign_box.isChecked())
+        self.window.add_paths([str(self.write("a.txt"))])
+        self.window.key_combo.setCurrentIndex(self.window.key_combo.findData(self.me))
+        with patch.object(self.window, "_confirm_recipient", return_value=True):
+            self.window.start()
+        self.finish()
+        self.assertTrue((self.root / "exports" / "a.txt.gpg").exists())
 
     def test_without_a_key_that_can_sign_nothing_starts(self):
         self.run_gpg("--yes", "--delete-secret-keys", self.me)
@@ -97,44 +171,104 @@ class SignedRoundTripTests(SigningCase):
         self.assertEqual(self.window.result_bar.property("kind"), "success")
         self.assertIn("1 signed by a key you've verified", self.window.result_bar.text())
 
-    def test_an_unsigned_file_for_a_key_says_who_made_it_is_unknown(self):
+    def test_an_unsigned_file_for_a_key_waits_until_you_say_to_restore_it(self):
         self.restore(self.encrypt_to_me())
-        self.assertEqual(self.row().text(), "Restored, not signed, matches your record")
+        self.assertEqual(list((self.root / "restored").rglob("*")), [], "decrypted, then deleted again")
+        self.assertEqual(self.row().text(), "Not restored yet, not signed")
         self.assertIn("anyone who has your public key", self.row().toolTip())
+        self.assertEqual(self.window.result_bar.property("kind"), "warning")
+        self.assertIn("nothing shows who made it", self.window.result_bar.text())
+        self.assertIn("0 failed · 1 not restored yet", self.window.status_text.text())
+        self.assertIn("Restore anyway…", self.actions())
+        self.restore_anyway()
+        question = self.message_boxes["warning"].call_args.args
+        self.assertEqual(question[1], "Restore this file anyway?")
+        self.assertIn("• a.txt.gpg: not signed", question[2])
+        self.assertEqual((self.root / "restored" / "a.txt").read_bytes(), b"made here")
+        self.assertEqual(self.row().text(), "Restored, not signed, matches your record")
         self.assertIn("1 not signed", self.window.result_bar.text())
         self.assertNotIn("verified secure", self.window.result_bar.text().casefold())
 
-    def test_requiring_a_signature_refuses_an_unsigned_file_for_a_key(self):
+    def test_saying_no_restores_nothing(self):
+        self.restore(self.encrypt_to_me())
+        self.restore_anyway(QMessageBox.StandardButton.No)
+        self.assertEqual(list((self.root / "restored").rglob("*")), [])
+        self.assertEqual(self.row().text(), "Not restored yet, not signed")
+        self.assertIn("Restore anyway…", self.actions(), "still on offer")
+
+    def test_never_restoring_them_refuses_without_asking(self):
         encrypted = self.encrypt_to_me()
         self.window.signature_action.setChecked(True)
-        self.assertEqual(self.settings.value("require_signature"), "true")
+        self.assertEqual(self.settings.value("signature_policy"), "refuse")
         self.restore(encrypted)
         self.assertFalse((self.root / "restored" / "a.txt").exists())
         self.assertEqual(self.window.result_bar.property("kind"), "error")
         self.assertIn("isn't signed", self.row().toolTip())
+        self.assertNotIn("Restore anyway…", self.actions())
         self.assertEqual(list((self.root / "restored").rglob("*")), [], "nothing left, not even a workspace")
 
-    def test_a_file_signed_with_a_key_you_havent_verified_is_flagged(self):
-        home = self.root / "sender"
-        home.mkdir(mode=0o700)
-        env = dict(os.environ, GNUPGHOME=str(home))
-        gpgconf = Path(self.gpg).with_name("gpgconf.exe" if os.name == "nt" else "gpgconf")
-        self.addCleanup(subprocess.run, [str(gpgconf), "--homedir", str(home), "--kill", "all"],
-                        capture_output=True, check=False)
-        self.run_gpg("--passphrase", "", "--pinentry-mode", "loopback", "--quick-generate-key",
-                     "Mallory <mallory@example.invalid>", "default", "default", "1y", env=env)
-        self.run_gpg("--import", input=self.run_gpg("--export", self.me).stdout, env=env)
-        forged = self.root / "Downloads" / "invoice.pdf.gpg"
-        forged.parent.mkdir()
-        self.run_gpg("--passphrase", "", "--pinentry-mode", "loopback", "--trust-model", "always", "--sign",
-                     "--encrypt", "--recipient", self.me, "--output", str(forged),
-                     str(self.write("invoice.pdf", b"pay mallory")), env=env)
-        self.run_gpg("--import", input=self.run_gpg("--export", env=env).stdout)
+    def test_a_file_signed_with_a_key_you_havent_verified_waits_and_shows_the_fingerprint(self):
+        forged, mallory = self.forge()
         self.restore(forged)
-        self.assertEqual(self.row().text(), "Restored, signed with a key you haven't verified")
+        self.assertEqual(self.row().text(), "Not restored yet, signed with a key you haven't verified")
         self.assertIn("anyone can make a key with any name", self.row().toolTip())
         self.assertNotIn("Mallory", self.row().text(), "an unverified name is never presented as the signer")
+        self.assertFalse((self.root / "restored" / "invoice.pdf").exists())
+        self.restore_anyway()
+        question = self.message_boxes["warning"].call_args.args[2]
+        self.assertIn(f"• invoice.pdf.gpg: signed with a key you haven't verified, {signatures.spaced(mallory)}",
+                      question)
+        self.assertNotIn("Mallory", question)
+        self.assertEqual((self.root / "restored" / "invoice.pdf").read_bytes(), b"pay mallory")
+        self.assertEqual(self.row().text(), "Restored, signed with a key you haven't verified")
         self.assertEqual(self.window.result_bar.property("kind"), "warning")
+
+    def test_a_file_that_shows_something_else_when_decrypted_again_isnt_restored(self):
+        encrypted = self.encrypt_to_me()
+        self.restore(encrypted)
+        # Swapped, after you were asked about an unsigned file, for one that someone else signed.
+        forged, _mallory = self.forge("a.txt", b"pay mallory")
+        shutil.copyfile(forged, encrypted)
+        self.restore_anyway()
+        self.assertEqual(list((self.root / "restored").rglob("*")), [], "not what you agreed to")
+        self.assertEqual(self.row().text(), "Not restored yet, signed with a key you haven't verified")
+
+    def test_restoring_them_and_saying_so_is_only_for_advanced_mode(self):
+        encrypted = self.encrypt_to_me()
+        self.policy("allow").setChecked(True)
+        self.assertEqual(self.settings.value("signature_policy"), "allow")
+        self.restore(encrypted)
+        self.assertEqual(self.row().text(), "Restored, not signed, matches your record")
+        self.assertNotIn("Restore anyway…", self.actions())
+        self.window.advanced_action.setChecked(False)
+        self.assertEqual(self.window.signature_policy(), "ask", "simple mode never restores them without asking")
+        self.assertFalse(self.window.signature_menu.menuAction().isVisible())
+
+    def test_never_still_applies_in_simple_mode(self):
+        self.window.signature_action.setChecked(True)
+        self.window.advanced_action.setChecked(False)
+        self.assertEqual(self.window.signature_policy(), "refuse")
+
+    def test_the_earlier_switch_carries_over_as_never(self):
+        self.settings.remove("signature_policy")
+        self.settings.setValue("require_signature", "true")
+        window = MainWindow(self.settings, self.root / "app" / "other-vault.gpg")
+        self.addCleanup(window.close)
+        self.assertEqual(window.signature_policy(), "refuse")
+        self.assertTrue(window.signature_action.isChecked())
+
+    def test_passphrase_files_are_never_held(self):
+        self.window.set_operation("encrypt")
+        self.window.add_paths([str(self.write("typed.txt", b"by passphrase"))])
+        self.select_method("once")
+        self.run_with_typed_passphrase()
+        self.window.clear_files()
+        self.window.set_operation("restore")
+        self.window.add_paths([str(self.root / "exports" / "typed.txt.gpg")])
+        self.select_method("once")
+        self.run_with_typed_passphrase()
+        self.assertEqual((self.root / "restored" / "typed.txt").read_bytes(), b"by passphrase")
+        self.assertNotIn("Restore anyway…", self.actions())
 
 
 class SavedPassphraseTests(GuiCase):

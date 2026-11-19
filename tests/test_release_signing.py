@@ -7,12 +7,15 @@ afterwards, and that the release workflow only offers signing to version tags.
 
 import importlib.util
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
+
+from tests.support import GpgTestCase
 
 ROOT = Path(__file__).resolve().parent.parent
 _spec = importlib.util.spec_from_file_location("signing", ROOT / "packaging" / "signing.py")
@@ -185,8 +188,130 @@ class WorkflowTests(unittest.TestCase):
     def test_the_checksum_signature_job_can_not_write(self):
         job = self.text.split("  sign-checksums:")[1].split("\n  publish:")[0]
         self.assertIn("contents: read", job)
-        self.assertNotRegex(job, r":\s*write")
+        self.assertNotRegex(job, r":\s*write\b")
         self.assertIn("VALIDSIG", job, "the signature is checked with only the public key")
+        # The same check finds a job that can write, so that it can't pass by never matching anything.
+        self.assertRegex(self.text.split("\n  publish:")[1], r":\s*write\b")
+
+    def test_a_release_waits_for_the_tag_check_which_runs_nothing_from_the_repository(self):
+        job = self.text.split("\n  tag:")[1].split("\n  collect:")[0]
+        self.assertIn("vars.TAG_SIGNING_FINGERPRINTS", job)
+        self.assertNotIn("secrets.", job)
+        self.assertNotRegex(job, r":\s*write")
+        self.assertNotRegex(job, r"python|\.py\b|\./", "only reads the keys file")
+        collect = self.text.split("\n  collect:")[1].split("\n  sign-checksums:")[0]
+        self.assertIn("needs: [tag, ", collect)
+
+
+def step_script(workflow: str, name: str) -> str:
+    """A step's shell script from a workflow file, exactly as the runner gets it."""
+    lines = workflow.splitlines()
+    start = lines.index(f"      - name: {name}")
+    run = next(index for index in range(start, len(lines)) if lines[index].strip() == "run: |")
+    body = []
+    for line in lines[run + 1:]:
+        if line.strip() and not line.startswith(" " * 10):
+            break
+        body.append(line[10:])
+    return "\n".join(body) + "\n"
+
+
+def posix_shell() -> str | None:
+    """bash, but never WSL's on Windows: Git for Windows' own, which comes with GnuPG."""
+    if os.name != "nt":
+        return shutil.which("bash")
+    git = shutil.which("git")
+    for parent in Path(git).resolve().parents if git else ():
+        if (parent / "bin" / "bash.exe").is_file():
+            return str(parent / "bin" / "bash.exe")
+    return None
+
+
+class TagCheckTests(GpgTestCase):
+    """The release workflow's check of who signed a tag, run as written, with real git and GnuPG."""
+
+    def setUp(self):
+        super().setUp()
+        self.bash = posix_shell()
+        if self.bash is None or shutil.which("git") is None:
+            self.skipTest("needs git and bash")
+        workflow = (ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
+        self.script = self.root / "check.sh"
+        self.script.write_text(step_script(workflow, "Check who signed the tag"), encoding="utf-8", newline="\n")
+        # Nothing from this computer's own git settings, such as signing every tag with an SSH key. And the
+        # GnuPG the tests use: on Windows, git would otherwise pick Git's own, which can't find a home that
+        # Git Bash names as /tmp/... once git has turned it into a Windows path.
+        empty = self.root / "gitconfig"
+        empty.write_text("", encoding="utf-8")
+        self.env = {**os.environ, "GIT_CONFIG_GLOBAL": str(empty), "GIT_CONFIG_NOSYSTEM": "1",
+                    "GIT_CONFIG_COUNT": "1", "GIT_CONFIG_KEY_0": "gpg.program", "GIT_CONFIG_VALUE_0": self.gpg}
+        self.repo = self.root / "repo"
+        self.repo.mkdir()
+        self.git("init", "-q")
+        (self.repo / "README").write_text("release\n", encoding="utf-8")
+        self.git("add", "README")
+        self.git("commit", "-q", "-m", "release")
+        self.maintainer = self.generate_key("Maintainer <maintainer@example.invalid>")
+        self.other = self.generate_key("Someone Else <someone@example.invalid>")
+
+    def git(self, *args: str) -> subprocess.CompletedProcess:
+        command = ["git", "-c", "user.name=Test", "-c", "user.email=test@example.invalid",
+                   "-c", f"gpg.program={self.gpg}", *args]
+        result = subprocess.run(command, cwd=self.repo, env=self.env, capture_output=True, text=True, check=False)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return result
+
+    def publish_keys(self, *fingerprints: str) -> None:
+        (self.repo / "packaging").mkdir(exist_ok=True)
+        exported = self.run_gpg("--armor", "--export", *fingerprints).stdout
+        (self.repo / "packaging" / "release-keys.asc").write_bytes(exported)
+
+    def check(self, tag: str, expected: str) -> tuple[int, str, str]:
+        output, summary = self.root / "output", self.root / "summary"
+        output.write_text("", encoding="utf-8")
+        summary.write_text("", encoding="utf-8")
+        env = {**self.env, "TAG": tag, "EXPECTED": expected, "GITHUB_OUTPUT": output.as_posix(),
+               "GITHUB_STEP_SUMMARY": summary.as_posix()}
+        result = subprocess.run([self.bash, self.script.as_posix()], cwd=self.repo, env=env, capture_output=True,
+                                text=True, check=False, timeout=120)
+        return result.returncode, result.stdout + result.stderr, output.read_text(encoding="utf-8")
+
+    def test_a_tag_signed_by_an_expected_key_passes_and_names_it(self):
+        self.publish_keys(self.maintainer, self.other)
+        self.git("tag", "-s", "-u", self.maintainer, "-m", "v1.0.0", "v1.0.0")
+        code, said, output = self.check("v1.0.0", f"{self.other.lower()}\n{self.maintainer.lower()}")
+        self.assertEqual(code, 0, said)
+        self.assertEqual(output.strip(), f"signer={self.maintainer}")
+
+    def test_nothing_set_up_means_a_warning_not_a_check(self):
+        self.git("tag", "v1.0.0")
+        code, said, output = self.check("v1.0.0", " \n")
+        self.assertEqual(code, 0, said)
+        self.assertIn("::warning title=Tag signature not checked::", said)
+        self.assertEqual(output, "")
+
+    def test_every_other_tag_stops_the_release(self):
+        self.publish_keys(self.maintainer, self.other)
+        self.git("tag", "light")
+        self.git("tag", "-a", "-m", "unsigned", "unsigned")
+        self.git("tag", "-s", "-u", self.other, "-m", "other", "other")
+        cases = {"light": "lightweight", "unsigned": "no good signature", "other": "isn't in TAG_SIGNING_FINGERPRINTS"}
+        for tag, reason in cases.items():
+            with self.subTest(tag):
+                code, said, output = self.check(tag, self.maintainer)
+                self.assertEqual(code, 1, said)
+                self.assertIn(reason, said)
+                self.assertEqual(output, "")
+
+    def test_a_key_that_isnt_published_or_a_missing_keys_file_stops_it(self):
+        self.git("tag", "-s", "-u", self.maintainer, "-m", "v1.0.0", "v1.0.0")
+        code, said, _output = self.check("v1.0.0", self.maintainer)
+        self.assertEqual(code, 1, said)
+        self.assertIn("release-keys.asc", said)
+        self.publish_keys(self.other)
+        code, said, _output = self.check("v1.0.0", self.maintainer)
+        self.assertEqual(code, 1, said)
+        self.assertIn("no good signature", said)
 
 
 if __name__ == "__main__":

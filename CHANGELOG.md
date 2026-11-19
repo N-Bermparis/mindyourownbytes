@@ -43,8 +43,11 @@ First public version. Not independently audited.
   Checksums can be saved as a `SHA256SUMS` list and imported on another computer.
 - A step-by-step guide to restoring on another computer, under Help, for Windows, macOS, or Linux,
   with or without this app. It can be saved as a text file to keep beside your backups.
-- Warnings before restoring into a synced folder, when originals already appear to be in
-  one, and before encrypting to a key you can't decrypt with.
+- Restoring into a folder that looks synced, such as one inside OneDrive or Dropbox, is refused, with a
+  folder on this computer suggested, because restored files are readable. In advanced mode, **Tools >
+  Allow restoring into synced folders** warns and asks instead. A link into a synced folder counts too.
+- Warnings when originals already appear to be in a synced folder, and before encrypting to a key you
+  can't decrypt with.
 - Real-GnuPG test suite, including forged, tampered, and truncated input.
 - A Windows installer and portable download with GnuPG included, so there's nothing else to
   install. Both are built by CI, with published checksums, and tested by installing, upgrading,
@@ -53,12 +56,17 @@ First public version. Not independently audited.
   and tested by CI like the Windows one. They use the computer's own GnuPG, from GPG Suite,
   Homebrew, or the package manager, and the app says how to get it when it can't find it.
 - Sign-and-encrypt: when encrypting to a key, **Also sign them with** adds a standard OpenPGP signature
-  with a key of yours. GnuPG asks for its passphrase itself.
+  with a key of yours. It's ticked whenever you have a key that can sign, unless you've unticked it.
+  GnuPG asks for its passphrase itself.
 - Every restored file for a key says who made it, as far as signatures can tell: signed by a key you've
   verified, signed with a key you haven't verified, revoked, or expired, or not signed, with the full
   fingerprint in its tooltip. The finished restore sums this up.
-- **Tools > Require a signature on files for a key**, which refuses files for a key unless a key you've
-  verified signed them. Off by default, so files encrypted before signing existed still restore.
+- A file for your key that no key you've verified signed isn't restored without asking, because anyone
+  who has your public key could have made it. It's decrypted, deleted again, and listed as **not
+  restored yet**. **Restore anyway…** shows what each one showed, with any signing key's fingerprint,
+  and restores it only if it still shows exactly that when decrypted again. **Tools > Files for your key
+  with no verified signature** can instead never restore them, or, in advanced mode, restore them and
+  say so, for backups made before signing existed. Passphrase files are never affected.
 - New passphrases are checked on your computer: common ones, common ones dressed up, single words,
   two words, runs of keys, repeats, and digit strings are refused for new files and new vault master
   passphrases, with the reason. Anything typed to open something is never judged.
@@ -67,7 +75,12 @@ First public version. Not independently audited.
 - Optional code signing in the release workflow (Authenticode, Developer ID with notarization) and an
   OpenPGP signature for the checksum list, ready for when the keys exist. Every signature is verified
   before a release can be drafted. None is configured yet, so the downloads are still unsigned.
-- CI also runs the tests on macOS.
+- CI also runs the tests on macOS. Windows runs them against the included GnuPG 2.5, Linux against 2.4.
+- CI checks every locked dependency file with pip-audit, reports test coverage, and a weekly workflow
+  fuzzes the code that reads archive names, zip files, checksum and record files, GnuPG's status
+  reports, and passphrases, with a new seed each time, printed so that a failure can be repeated.
+- A release can require its tag to be signed by a listed key, once that's set up, and its notes then
+  say which key signed it. Setting that up, and protecting version tags, is in the release checklist.
 
 ### Security
 
@@ -98,6 +111,22 @@ These issues were found and fixed during the pre-release review, before any publ
   and a crash could leave it with no way to find it again. It now waits in a private workspace (mode
   0700 on Linux and macOS), noted in the app's own folder, so that leftovers are found and offered for
   deletion at the next start. Only folders the app can prove it made are ever deleted.
+- Found by the new fuzz tests:
+  - A line of deeply nested brackets in the record of checksums stopped every restore with an error,
+    instead of being skipped like any other damaged line.
+  - Restoring your own `.zip` file stopped with an error if its header named a zip version newer than
+    Python knows, because checking whether it was one of this app's archives didn't expect that. Such a
+    file is now restored as it is.
+  - A file or folder name close to the 255-character limit that needed a number to tell it apart from
+    another, such as "report (2).pdf", became too long, so the app made archives it then refused to
+    unpack. Numbered names are now shortened before the number.
+  - A damaged archive could fail with Python's own error, such as "strong encryption (flag bit 6)",
+    rather than an explanation. Each is now refused with the reason, and nothing is unpacked.
+- GnuPG opened each original by its name, so a file swapped, after it was chosen, for a link to another
+  file, for another file, or reached through a folder swapped for a link elsewhere, was encrypted in its
+  place, and passed the check after encrypting. Each original is now opened once, never through a link,
+  checked to be the file that was chosen, and given to GnuPG over a pipe from that open file. Archives
+  are packed the same way. A copy is only kept if the name still leads to the file that was read.
 
 ### Changed
 
@@ -109,7 +138,10 @@ These issues were found and fixed during the pre-release review, before any publ
 - **File and folder names, and approximate sizes, are visible to your provider**, unless you
   encrypt them into one archive. An archive's own name and size still show.
 - Rollback and swapping of files are only flagged for files with a saved checksum. Files for a key
-  only show who made them if they were signed, and files encrypted before signing existed weren't.
+  only show who made them if they were signed, and files encrypted before signing existed weren't, so
+  restoring those asks first.
+- Synced folders are recognized by name and by OneDrive's own settings, so a synced folder with an
+  unusual name can still go unnoticed.
 - Files encrypted to an OpenPGP key, or through GnuPG's own passphrase prompt, aren't checked after
   encrypting. Nothing checks that an upload reached your provider intact.
 - A crash during a restore leaves decrypted data in a hidden folder until the app next starts, and

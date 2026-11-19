@@ -66,5 +66,10 @@ What can be checked today, and what can't yet:
 - **Release key**: none yet. When one exists, its full fingerprint will be published here, and a
   release may then include `SHA256SUMS.txt.asc`. Check it against the fingerprint given here, never
   against one found beside the download.
+- **Signed tags**: none yet. Once the maintainer's tag-signing key is listed here, each version tag
+  will be signed, and `git verify-tag v1.2.3` in a copy of the repository checks it, after you import
+  that key and compare its fingerprint with this page. The release workflow then refuses a tag that
+  isn't signed by it. A tag signature says which commit the maintainer chose. It says nothing about
+  the downloads, which only code signatures and the release key cover.
 
 Treat any claim that a download is signed, made anywhere else, with suspicion until this section says so.

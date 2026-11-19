@@ -34,9 +34,11 @@ import errno
 import functools
 import os
 import platform
+import stat
 import sys
 from collections.abc import Callable
 from pathlib import Path
+from typing import BinaryIO
 
 #: Errors that mean "this drive or system can't do that", rather than "that failed".
 _UNSUPPORTED = frozenset({errno.EINVAL, errno.ENOSYS, errno.ENOTSUP, errno.EOPNOTSUPP})
@@ -282,3 +284,93 @@ def sync_directory(path: Path) -> None:
         pass
     finally:
         os.close(descriptor)
+
+
+# ------------------------------------------------------------------ reading originals by what they are
+
+
+class NotTheOriginal(OSError):
+    """A name no longer leads to the ordinary file that was chosen: it's a link now, say, or another file."""
+
+
+#: What tells one file apart from another that later takes its name: (device, inode), or Windows' file ID.
+Identity = tuple[int, int]
+
+_GENERIC_READ = 0x80000000
+#: Others may still read, write, rename, and delete the file while it's open, as they could before.
+_FILE_SHARE_ALL = 0x1 | 0x2 | 0x4
+_OPEN_EXISTING = 3
+_FILE_FLAG_SEQUENTIAL_SCAN = 0x08000000
+
+
+def identity(status: os.stat_result) -> Identity | None:
+    """None where the drive gives every file the same number, so that files can't be told apart by it."""
+    return (status.st_dev, status.st_ino) if status.st_ino else None
+
+
+def identity_of(path: Path) -> Identity | None:
+    """The identity of the ordinary file named ``path`` itself, never of a link's target. None for anything else."""
+    try:
+        status = os.lstat(path)
+    except OSError:
+        return None
+    return identity(status) if stat.S_ISREG(status.st_mode) else None
+
+
+def _open_for_reading(path: Path) -> int:
+    if os.name == "nt":
+        import _winapi
+        import msvcrt
+
+        handle = _winapi.CreateFile(str(path), _GENERIC_READ, _FILE_SHARE_ALL, 0, _OPEN_EXISTING,
+                                    _FILE_FLAG_SEQUENTIAL_SCAN, 0)
+        try:
+            return msvcrt.open_osfhandle(handle, os.O_RDONLY | os.O_BINARY | os.O_NOINHERIT)
+        except BaseException:
+            _winapi.CloseHandle(handle)
+            raise
+    # Never through a link at the end, and never stuck waiting, should a pipe have taken the name.
+    flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_NOCTTY | getattr(os, "O_CLOEXEC", 0)
+    try:
+        return os.open(path, flags)
+    except OSError as exc:
+        if exc.errno in (errno.ELOOP, errno.EMLINK):
+            raise NotTheOriginal(exc.errno, f"{path.name} is a link now, so it wasn't read") from exc
+        raise
+
+
+def open_original(path: Path, expected: Identity | None = None) -> BinaryIO:
+    """Open an original for reading, only if its name leads straight to an ordinary file: the one expected.
+
+    Whatever reads it then reads only from the open file, never by its name again, so swapping the name
+    meanwhile, for a link to another file say, changes nothing that's read. The name must not lead
+    through a link at its end, the file must be an ordinary one, and, if ``expected`` is given, it must
+    be the same file that had the name when it was chosen. Otherwise this raises ``NotTheOriginal``.
+
+    ``still_named`` says afterwards whether the name still leads to the same file.
+    """
+    before = os.lstat(path)
+    if not stat.S_ISREG(before.st_mode):
+        raise NotTheOriginal(errno.EINVAL, f"{path.name} isn't an ordinary file any more, so it wasn't read. "
+                                           "It may have been replaced by a link or a folder")
+    descriptor = _open_for_reading(path)
+    try:
+        opened = os.fstat(descriptor)
+        if not stat.S_ISREG(opened.st_mode) or identity(opened) != identity(before):
+            raise NotTheOriginal(errno.EINVAL, f"{path.name} was replaced as it was being opened, so it wasn't read")
+        if expected is not None and identity(opened) is not None and identity(opened) != tuple(expected):
+            raise NotTheOriginal(errno.EINVAL, f"{path.name} isn't the file that was chosen: another file has "
+                                               "taken its name, so it wasn't read. Add it again to use it as it is now")
+        if os.name != "nt":
+            os.set_blocking(descriptor, True)
+        return os.fdopen(descriptor, "rb")
+    except BaseException:
+        os.close(descriptor)
+        raise
+
+
+def still_named(path: Path, original: BinaryIO) -> bool:
+    """Whether ``path`` still leads to the open file ``original``, rather than to nothing, or to another file."""
+    now = identity_of(path)
+    opened = identity(os.fstat(original.fileno()))
+    return now is not None and (opened is None or now == opened)

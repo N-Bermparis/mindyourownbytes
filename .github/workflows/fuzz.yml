@@ -1,0 +1,54 @@
+name: Fuzz
+
+# The fuzz tests in tests/test_fuzz.py feed archive names, zip files, checksum and record files,
+# GnuPG status reports, and passphrases made from random pieces to the code that reads them. Every
+# CI run tries a few hundred of each with a fixed seed. This tries many more, with a new seed each
+# week, and prints the seed first, so that any failure can be repeated exactly:
+#
+#     MYOB_FUZZ_SEED=<seed> MYOB_FUZZ_ITERATIONS=<iterations> python -m unittest tests.test_fuzz -v
+
+on:
+  schedule:
+    - cron: '41 5 * * 3'
+  pull_request:
+    paths:
+      - .github/workflows/fuzz.yml
+      - tests/test_fuzz.py
+  workflow_dispatch:
+    inputs:
+      seed:
+        description: A seed to repeat, or empty for a new one
+        required: false
+        default: ''
+      iterations:
+        description: How many inputs of each kind
+        required: false
+        default: '20000'
+
+permissions:
+  contents: read
+
+jobs:
+  fuzz:
+    name: Fuzz the readers
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: '3.14'
+      # Inputs are passed through the environment and checked, never pasted into the script.
+      - name: Fuzz with a seed that's printed first
+        env:
+          SEED_INPUT: ${{ inputs.seed }}
+          ITERATIONS_INPUT: ${{ inputs.iterations }}
+        run: |
+          seed="${SEED_INPUT:-$(od -An -N4 -tu4 /dev/urandom | tr -d ' ')}"
+          iterations="${ITERATIONS_INPUT:-20000}"
+          case "$seed$iterations" in *[!0-9]*) echo "Seed and iterations must be whole numbers." >&2; exit 2;; esac
+          echo "Seed $seed, $iterations of each. To repeat: MYOB_FUZZ_SEED=$seed MYOB_FUZZ_ITERATIONS=$iterations" \
+            | tee -a "$GITHUB_STEP_SUMMARY"
+          MYOB_FUZZ_SEED="$seed" MYOB_FUZZ_ITERATIONS="$iterations" python -m unittest tests.test_fuzz -v

@@ -41,6 +41,8 @@ specific provider. Those are not missing features; they are the point.
       a certificate is needed)
 - [ ] Signed and notarized macOS releases (the workflow is ready; a Developer ID is needed)
 - [ ] A published release key, and a signed list of checksums with every release
+- [ ] Signed version tags, checked by the release workflow (ready: a key and its fingerprint are needed),
+      and a ruleset so that only maintainers can push them
 - [ ] Reproducible builds
 - [ ] Linux and macOS packages (Flatpak, Homebrew)
 - [ ] A command-line interface for scripting
@@ -54,11 +56,17 @@ specific provider. Those are not missing features; they are the point.
 - [ ] Translations
 - [ ] Move folder scanning off the UI thread for very large trees
 - [x] Show, with your own files, what a cloud provider can and can't see
-- [ ] Better detection of cloud-synced folders
+- [ ] Better detection of cloud-synced folders, such as the sync roots Windows itself keeps a list of
 - [x] Restore a whole collection, or a mix of passphrase and key files, in one go
 - [x] A step-by-step guide to restoring on another computer
 - [ ] Periodic restore-test reminders
-- [ ] Input fuzzing
+- [x] Input fuzzing of archive names, zip files, checksum and record files, GnuPG's status reports, and
+      passphrases, weekly with a new seed
+- [ ] Give restores the encrypted file from an open file too, hashed once for both the comparison with
+      your checksums and decrypting, as encrypting already does for originals
+- [ ] Smaller security-sensitive modules: split `core.py` (GnuPG commands, encrypting, restoring, keys)
+      and the main window (the job, its results, the Tools menu) into parts that can each be reviewed
+      alone, one at a time and each behind the full test suite, with no change in behaviour
 
 Items that are good places to start are labelled
 [`good first issue`](https://github.com/N-Bermparis/mindyourownbytes/labels/good%20first%20issue).

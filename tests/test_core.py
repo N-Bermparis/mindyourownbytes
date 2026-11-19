@@ -350,6 +350,31 @@ class CloudSyncDetectionTests(unittest.TestCase):
             with patch.dict(os.environ, {"OneDrive": str(root)}):
                 self.assertEqual(looks_cloud_synced(root / "a" / "b"), "Personal files")
 
+    def test_a_link_into_a_synced_folder_counts_as_synced(self):
+        with tempfile.TemporaryDirectory() as directory:
+            target = Path(directory).resolve() / "Dropbox" / "restored"
+            target.mkdir(parents=True)
+            link = Path(directory).resolve() / "Restored Files"
+            try:
+                os.symlink(target, link, target_is_directory=True)
+            except (OSError, NotImplementedError):
+                if os.name != "nt":
+                    raise
+                import _winapi
+                _winapi.CreateJunction(str(target), str(link))
+            with patch.dict(os.environ, {"OneDrive": "", "OneDriveConsumer": "", "OneDriveCommercial": ""}):
+                self.assertEqual(looks_cloud_synced(link / "a.txt"), "Dropbox")
+
+
+def reading(fake):
+    """Stands in for run_gpg_reading with a stand-in for run_gpg, reading the original as GnuPG would."""
+    def run(argv, cancel, secret, original):
+        content = original.read()
+        code, stderr = fake(argv, cancel, secret)
+        return code, stderr, hashlib.sha256(content).digest()
+
+    return run
+
 
 class ProcessItemsTests(TempDirCase):
     """gpg itself is mocked here; tests/test_gpg_integration.py runs the real thing."""
@@ -358,7 +383,7 @@ class ProcessItemsTests(TempDirCase):
         progress = []
         with patch("mindyourownbytes.core.is_valid_gpg", return_value=True), patch(
             "mindyourownbytes.core.run_gpg", side_effect=fake
-        ):
+        ), patch("mindyourownbytes.core.run_gpg_reading", side_effect=reading(fake)):
             job = process_items("mock-gpg", items, self.output, operation, method, fingerprint,
                                 threading.Event(), lambda *args: progress.append(args), **kwargs)
         return job, progress
@@ -550,7 +575,9 @@ class CheckAfterEncryptingTests(TempDirCase):
             kwargs.setdefault("passphrases", ["hunter2 hunter2"])
         with patch("mindyourownbytes.core.is_valid_gpg", return_value=True), patch(
             "mindyourownbytes.core.run_gpg", side_effect=encrypt or self.encrypting()
-        ), patch("mindyourownbytes.core.run_gpg_hashed", side_effect=check) as checker:
+        ), patch("mindyourownbytes.core.run_gpg_reading", side_effect=reading(encrypt or self.encrypting())), patch(
+            "mindyourownbytes.core.run_gpg_hashed", side_effect=check
+        ) as checker:
             job = process_items("mock-gpg", items or [self.item()], self.output, operation, method, fingerprint,
                                 cancel or threading.Event(), lambda *args: progress.append(args), **kwargs)
         return job, progress, checker
