@@ -24,7 +24,8 @@ specific provider. Those are not missing features; they are the point.
 - [x] **Hide file and folder names** in one encrypted archive
 - [ ] Hide names while keeping files separate (name mapping)
 - [x] Flag older and swapped files on restore, with checksums saved when they were made
-- [ ] Sign-and-encrypt, so public-key restores can detect forged files
+- [x] Sign-and-encrypt, so public-key restores can detect forged files
+- [ ] Choose which signers to expect when restoring, by fingerprint (the engine already supports it)
 - [ ] Optional `--throw-keyids`, to hide the recipient in public-key mode
 - [x] Verify each file after encrypting it, wherever the app has the passphrase
 - [ ] Verify files encrypted to your own key, without asking for anything extra
@@ -36,7 +37,10 @@ specific provider. Those are not missing features; they are the point.
 - [x] A Windows installer with GnuPG included, built in CI with published checksums
 - [x] Encrypt from File Explorer's right-click menu
 - [ ] Show that entry in Windows 11's shorter menu, not only under "Show more options"
-- [ ] Code-signed Windows releases, so that Windows stops warning about them
+- [ ] Code-signed Windows releases, so that Windows stops warning about them (the workflow is ready;
+      a certificate is needed)
+- [ ] Signed and notarized macOS releases (the workflow is ready; a Developer ID is needed)
+- [ ] A published release key, and a signed list of checksums with every release
 - [ ] Reproducible builds
 - [ ] Linux and macOS packages (Flatpak, Homebrew)
 - [ ] A command-line interface for scripting

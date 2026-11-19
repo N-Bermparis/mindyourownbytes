@@ -44,26 +44,35 @@ can't read. This app makes that a drag and drop.
 ## What it does
 
 - **Drag in files or folders** and get encrypted `.gpg` copies, with folder structure kept.
-  Your originals are never changed, and existing files are never overwritten.
+  Your originals are never changed, and nothing already there is ever replaced, not even an empty
+  folder: a finished file or folder gets its name in one step, and only if the name is free.
 - **Or right-click them in File Explorer** and choose **Encrypt with mindyourownbytes**.
 - **Or pack them into one archive** that hides the names of the files and folders inside. Your
   provider sees one `.zip.gpg` file, and restoring it gives you the folder back.
 - **One passphrase for a whole batch**, typed once.
-- **Every file is checked before it's called done.** The app decrypts each new file again and
-  compares it with your original. A copy that doesn't match is thrown away, and you're told why.
+- **Files encrypted with a passphrase are checked before they're called done.** When the app has the
+  passphrase, it decrypts each new file again and compares it with your original. A copy that doesn't
+  match is thrown away, and you're told why. Files for an OpenPGP key, or whose passphrase GnuPG asked
+  for itself, can't be checked this way, and say **Encrypted, not checked**.
 - **Choose the algorithm** for passphrase encryption: AES-256 (recommended), Twofish, or Camellia-256.
 - **Save different passphrases** for different kinds of documents, in an optional vault
   encrypted under one master passphrase.
 - **Let your computer pick a passphrase**, wherever you choose one: seven random words that are
-  easy to type, or 30 random letters and digits. The app says exactly how strong it is.
+  easy to type, or 30 random letters and digits. The app says exactly how strong it is. A new
+  passphrase you make up is checked on your computer, and one that's common or easily guessed, such
+  as `Password123!` or `qwertyuiop`, isn't accepted for new files or a new vault.
 - **Organize into collections** such as Taxes or Medical, then browse, search, and move files
   in the Library. Collections are plain folders, so they work in Explorer and on any cloud too.
 - **Or use OpenPGP keys** you already manage in Kleopatra, with each key's type shown, including
   post-quantum Kyber keys with GnuPG 2.5 or later. **Tools > Post-quantum keys** checks what your
   GnuPG can do, explains who can open such files, and can create one or upgrade a key of yours.
-- **Restore safely.** Forged, tampered, and truncated files are rejected, with nothing written.
-  Each download is also compared with a checksum saved on your computer when it was made, so an
-  older or swapped copy is flagged. Checksums can be saved as a list and checked on another computer.
+- **Sign what you encrypt to a key**, so that restoring it can show who made it. Anyone with a public
+  key can encrypt to it, so without a signature nothing does. Each restored file says whether it was
+  signed, and by which key, with its fingerprint.
+- **Restore safely.** Forged, tampered, and truncated files are rejected, and so is a file with an
+  invalid signature, with nothing written. Each download is also compared with a checksum saved on
+  your computer when it was made, so an older or swapped copy is flagged. Checksums can be saved as a
+  list and checked on another computer.
 - **Works with any storage**, because it never talks to any: Google Drive, OneDrive, Dropbox,
   iCloud, a NAS, or a USB stick. You upload the files yourself.
 - **Clear, guided steps** in plain language, using your system's own controls and its light or
@@ -148,6 +157,24 @@ A match shows that you have the file published there, which is what matters if i
 other way or was damaged on the way. It can't help if the GitHub account itself were compromised:
 the [threat model](docs/THREAT_MODEL.md#the-downloads) explains what you're trusting.
 
+Two more checks become possible as the project gets the keys for them. Neither is in place yet, and
+this section will say when one is:
+
+- **A signed list of checksums.** A release may include `SHA256SUMS.txt.asc`, an OpenPGP signature of
+  the checksum list made with the project's release key. Check it with
+  `gpg --verify SHA256SUMS.txt.asc SHA256SUMS.txt`, and compare the fingerprint GnuPG names with the
+  one published in [SECURITY.md](SECURITY.md#verifying-a-download), not with one found next to the
+  download.
+- **Code signatures.** Signed Windows downloads show a verified publisher, and signed and notarized
+  macOS ones open without Gatekeeper's warning. Until then, Windows and macOS warn about them, as
+  described above. Never take a download that claims to be signed on its word: in PowerShell,
+  `Get-AuthenticodeSignature .\FILE` must say `Valid`, and on a Mac,
+  `spctl --assess --type open --context context:primary-signature -v FILE` must say `accepted`.
+
+Once the repository is public, each file also gets a
+[build attestation](https://docs.github.com/actions/security-for-github-actions/using-artifact-attestations)
+tying it to the workflow run and commit that built it: `gh attestation verify FILE --repo N-Bermparis/mindyourownbytes`.
+
 ### Run from source
 
 For an Intel Mac, a Linux computer with another kind of processor, or if you'd rather not run a
@@ -188,8 +215,9 @@ The app is mainly developed and used on Windows, so reports from Linux and Mac u
    simple mode always uses, suits nearly everyone.
 3. Optionally type a collection name, such as `Taxes`. To hide the names of what you're encrypting,
    choose **One archive** under **Save as**, and give it a vague name.
-4. Click **Encrypt**. Each file is encrypted, then decrypted again and compared with your original,
-   and its row then says **Encrypted and checked**.
+4. Click **Encrypt**. With a passphrase, each file is encrypted, then decrypted again and compared
+   with your original, and its row then says **Encrypted and checked**. With a key, each row says
+   **Encrypted, not checked**, or **Signed and encrypted, not checked** if you chose to sign.
 5. When it's done, click **Open folder** and upload what's there. By default that's
    `%USERPROFILE%\mindyourownbytes\Encrypted Exports`.
 
@@ -203,6 +231,12 @@ The app is mainly developed and used on Windows, so reports from Linux and Mac u
 3. Choose a folder that no cloud service syncs, then click **Restore**. Each row says whether the
    download **matches your record**, or warns if it's an older or swapped copy. If one isn't the
    copy you made, the app asks before decrypting it, and leaves it out unless you say otherwise.
+   A file for a key also says whether it was **signed**, and by whom: see
+   [Who made a file](#who-made-a-file).
+4. If the app is ever stopped partway through a restore, by a crash or a power cut, it can leave
+   readable data in a hidden `.myob-….partial` folder beside the destination. The next time it starts,
+   it lists exactly where, and offers to delete what it can prove it made. **Tools > Clean up after an
+   interrupted restore** does the same at any time.
 
 On another computer, the app has no record of what you made. In the Library on the computer that
 made them, **Save checksums** writes a list, and on the other computer **Tools > Import checksums**
@@ -214,7 +248,7 @@ reads it. Keep that list somewhere your provider can't change, such as a USB sti
 | --- | --- | --- |
 | **Passphrase** | Most people | The passphrase passes through this app |
 | **Saved passphrase** | Different secrets for different documents | One master passphrase guards them all |
-| **OpenPGP key** | Existing Kleopatra users | You must back up your private key, and forged files aren't detected ([why](docs/THREAT_MODEL.md#tampering)) |
+| **OpenPGP key** | Existing Kleopatra users | You must back up your private key, and only signed files show who made them ([why](docs/THREAT_MODEL.md#tampering)) |
 
 **Simple mode**, which new installations start in, offers the first two. Anyone who already has a
 key of their own, or has changed an advanced setting, starts in advanced mode, so nothing they use
@@ -239,6 +273,28 @@ The check is on by default, and it takes time. On one test computer, a 256 MB fi
 in place of 6, and 200 small files took 56 seconds in place of 34. You can turn it off under
 **Tools > Check each file after encrypting it**.
 The [threat model](docs/THREAT_MODEL.md#how-the-design-defends-you) has the details.
+
+### Who made a file
+
+Five different things can be true of a file, and the app keeps them apart:
+
+1. **It was encrypted.** Only the passphrase or the private key opens it.
+2. **It decrypted.** It hasn't been damaged or altered since it was encrypted. With a passphrase, it
+   was also made by someone who knew the passphrase. With a key, it could have been made by **anyone**
+   who has the public key, which is meant to be public.
+3. **It matches your record.** It's the very file this computer made, by its checksum.
+4. **Its signature is valid.** It hasn't changed since the holder of a particular private key signed it.
+5. **That key is someone you trust.** The key is yours, or you checked its fingerprint with its owner and
+   certified it in Kleopatra. A name or email address in a key proves nothing by itself: anyone can make
+   a key with any name.
+
+When you encrypt to a key in advanced mode, **Also sign them with** adds a signature made with your own
+key. GnuPG asks for your key's passphrase itself, so the app never sees it, and the files stay standard
+OpenPGP that plain `gpg --decrypt` opens and checks. A restored file for a key then says **signed by**
+the key's name, if it's yours or one you've certified, **signed with a key you haven't verified**, or
+**not signed**, and its tooltip shows the full fingerprint. A file whose signature is invalid, or can't
+be checked, is never restored. Files you encrypted to a key before signing existed still restore, and
+say **not signed**. To refuse those too, turn on **Tools > Require a signature on files for a key**.
 
 ### Which algorithm should I choose?
 
@@ -311,9 +367,14 @@ a copy of your cloud data, as long as your passphrase is strong.
 - **Rollback and swaps, without a record.** A provider could serve an old version of a file, or swap
   two files that share a passphrase. The app flags both when restoring files it made on this
   computer, or whose checksums you imported, but can't tell for any other file.
+- **Who made a file for a key, unless it's signed.** Anyone with your public key can make one that
+  decrypts perfectly. [Signing](#who-made-a-file) closes that gap for files made from now on.
 - **A compromised computer.** Malware can read whatever you can.
-- **A weak passphrase.** Use five or more random words, or let the app generate one. It can't
-  measure a passphrase you make up, so it only states the strength of ones it generates.
+- **A weak passphrase.** Use five or more random words, or let the app generate one. The app refuses
+  new passphrases that are common or follow an obvious pattern, but no check can measure a passphrase
+  you make up, so it only states the strength of ones it generates.
+- **Secure deletion.** Deleting a file, including the app's temporary ones, doesn't erase it from an
+  SSD, a backup, or a sync client's history.
 
 To see it with your own files, open **Help > What your provider sees**, or the link on the Encrypt
 screen or in the Library. It shows the same files as you see them and as your provider does.

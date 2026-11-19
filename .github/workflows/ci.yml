@@ -38,6 +38,10 @@ jobs:
         include:
           - os: ubuntu-latest
             python-version: '3.13'
+          # Publishing without replacing anything uses a different system call on a Mac (renamex_np),
+          # which only a Mac can show working. One Python is enough, as Mac minutes cost more.
+          - os: macos-latest
+            python-version: '3.14'
     env:
       QT_QPA_PLATFORM: offscreen
       # A missing GnuPG must fail the build, not skip every cryptography test.
@@ -53,6 +57,9 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y gnupg libegl1 libgl1 libxkbcommon0 libdbus-1-3 libfontconfig1 libglib2.0-0t64
+      - name: Install GnuPG (macOS)
+        if: runner.os == 'macOS'
+        run: brew install gnupg
       # The same GnuPG that the Windows download includes, from its pinned official package.
       - name: Install native GnuPG (Windows)
         if: runner.os == 'Windows'

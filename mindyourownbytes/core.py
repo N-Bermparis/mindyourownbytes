@@ -12,7 +12,6 @@ import contextlib
 import hashlib
 import os
 import re
-import shutil
 import subprocess
 import sys
 import threading
@@ -23,7 +22,8 @@ from functools import partial
 from pathlib import Path
 from typing import BinaryIO, Literal, NamedTuple
 
-from mindyourownbytes import archive
+from mindyourownbytes import archive, safefs, signatures, workspace
+from mindyourownbytes.signatures import Verification
 
 Operation = Literal["encrypt", "restore"]
 Method = Literal["password", "public-key"]
@@ -106,6 +106,12 @@ _SYNC_FOLDER_NAMES = {
 }
 _GPG_ERR_BAD_PASSPHRASE = 11
 _GPG_ERR_CANCELED = 99
+#: Why GnuPG refused a signing key, from the reason code in its INV_SGNR status line.
+_INVALID_KEY_REASONS = {
+    "1": ", because it wasn't found", "3": ", because it can't make signatures", "4": ", because it has been revoked",
+    "5": ", because it has expired", "9": ", because its private key isn't on this computer",
+    "13": ", because it's disabled",
+}
 
 #: Sync clients often append an account name, e.g. "OneDrive - Contoso".
 _SYNC_FOLDER_PREFIXES = ("onedrive", "dropbox (", "nextcloud-", "google drive (")
@@ -139,10 +145,12 @@ class JobResult:
     failed: int
     cancelled: bool
     outputs: tuple[Path, ...]
-    #: Staging files that could not be deleted. On restore these are plaintext.
+    #: Staging files or folders that could not be deleted. On restore these hold plaintext.
     leftovers: tuple[Path, ...] = ()
     #: How many of the outputs were decrypted again and matched their originals.
     checked: int = 0
+    #: On restore, what each output's signatures showed, in the same order as ``outputs``.
+    verifications: tuple[Verification, ...] = ()
 
 
 class PublicKey(NamedTuple):
@@ -452,6 +460,39 @@ def list_public_keys(binary: str) -> list[PublicKey]:
     return sorted(keys, key=lambda key: not key.has_secret)
 
 
+def list_signing_keys(binary: str) -> list[PublicKey]:
+    """Your own keys that can sign, from GnuPG's list of private keys.
+
+    As for ``list_public_keys``, uppercase S in field 12 means the key as a whole can sign right now, so
+    an expired, revoked, or disabled key isn't offered. Whether its private part is really usable, such as
+    on a smartcard that isn't plugged in, only GnuPG can tell when it signs, and it says so if not.
+    """
+    keys: list[PublicKey] = []
+    current: dict[str, str] | None = None
+
+    def flush() -> None:
+        if current and current["fingerprint"] and current["usable"]:
+            keys.append(PublicKey(current["fingerprint"], current["uid"] or "Unknown identity", True,
+                                  current["algorithm"]))
+
+    for line in _list_keys(binary, "--list-secret-keys").splitlines():
+        fields = line.split(":")
+        record = fields[0]
+        if record == "sec":
+            flush()
+            capabilities = fields[11] if len(fields) > 11 else ""
+            validity = fields[1] if len(fields) > 1 else ""
+            usable = "S" in capabilities and "D" not in capabilities and validity not in _UNUSABLE_VALIDITY
+            current = {"fingerprint": "", "uid": "", "usable": "yes" if usable else "",
+                       "algorithm": _key_type(fields) if len(fields) > 3 else ""}
+        elif current is not None and record == "fpr" and not current["fingerprint"]:
+            current["fingerprint"] = fields[9] if len(fields) > 9 else ""
+        elif current is not None and record == "uid" and not current["uid"]:
+            current["uid"] = _unescape_colon_field(fields[9]) if len(fields) > 9 else ""
+    flush()
+    return keys
+
+
 #: Post-quantum keys need GnuPG 2.5. Files encrypted to them need it too, wherever they're opened.
 POST_QUANTUM_GPG_VERSION = (2, 5, 0)
 #: How long a key made here lasts. Kleopatra can extend it.
@@ -659,49 +700,34 @@ def output_relative(item: SourceItem, operation: Operation) -> Path:
     return result
 
 
-def unique_target(path: Path) -> Path:
-    """Pick a free name, so earlier backups and restores are never overwritten.
-
-    The counter goes before the inner extension, so ``report.pdf.gpg`` becomes
-    ``report (2).pdf.gpg`` and later restores as ``report (2).pdf``. Placing it
-    last would produce ``report.pdf (2)``, which no application can open.
-    """
-    if not os.path.lexists(path):
-        return path
-    name = path.name
-    outer = ""
-    if name.lower().endswith(ENCRYPTED_SUFFIXES):
-        name, outer = name[:-4], name[-4:]
-    stem, inner = os.path.splitext(name)
-    for number in range(2, 10001):
-        candidate = path.with_name(f"{stem} ({number}){inner}{outer}")
-        if not os.path.lexists(candidate):
-            return candidate
-    raise RuntimeError("Too many backups with the same filename")
+#: Suggests a free name. Taking it safely is ``_publish``'s job. See safefs.unique_target.
+unique_target = safefs.unique_target
 
 
 def publish_no_overwrite(staged: Path, destination: Path) -> None:
-    """Publish a complete file without overwriting a pre-existing destination."""
+    """Publish a complete file atomically, without replacing anything already called ``destination``.
+
+    Raises FileExistsError if the name is taken, and safefs.PublicationUnsupported if the drive offers no
+    atomic way to do this. There is no copying fallback: see safefs.
+    """
+    safefs.publish_file(staged, destination)
+
+
+def _publish(staged: Path, preferred: Path, publish: Callable[[Path, Path], None]) -> Path:
+    """Give a finished file or folder ``preferred`` as its name, or the next free one. Returns the name used.
+
+    Every failure becomes a safefs.PublishFailed with a message that's safe to show, and nothing has
+    appeared under the final name.
+    """
     try:
-        os.link(staged, destination)
-    except FileExistsError:
+        published = safefs.publish_under_free_name(staged, preferred, publish)
+    except safefs.PublishFailed:
         raise
-    except OSError:
-        if os.name == "nt":
-            # Windows rename fails when the target already exists and keeps
-            # publication atomic, even on filesystems without hardlinks.
-            os.rename(staged, destination)
-            return
-        # Non-NTFS drives may not permit hardlinks. Exclusive create prevents
-        # replacement; a failure removes only the newly created destination.
-        with destination.open("xb") as target:
-            try:
-                with staged.open("rb") as source:
-                    shutil.copyfileobj(source, target, length=1024 * 1024)
-            except BaseException:
-                target.close()
-                destination.unlink(missing_ok=True)
-                raise
+    except OSError as exc:
+        raise safefs.PublishFailed(f"The finished result couldn't be saved as {preferred.name}, so nothing was "
+                                   f"kept. The reason given was: {exc.strerror or exc}", exc.errno) from exc
+    safefs.sync_directory(published.parent)
+    return published
 
 
 def encode_passphrase(passphrase: str) -> bytes:
@@ -919,11 +945,18 @@ def describe_failure(stderr: str, operation: Operation = "restore") -> GpgFailur
     if "DECRYPTION_OKAY" in statuses and ("NO_PUBKEY" in statuses or "ERRSIG" in statuses):
         # Common with files from other tools, such as Kleopatra's sign-and-encrypt.
         # The file itself is fine, so saying "damaged" here would be false.
-        return GpgFailure("This file decrypted, but it is signed by a key you don't have, so the signature "
-                          "can't be checked. Import the signer's public key and try again.")
+        return GpgFailure(signatures.refusal(signatures.read(stderr))
+                          or "This file decrypted, but its signature can't be checked. Nothing was restored.")
+    if "INV_SGNR" in statuses:
+        reason = next((_INVALID_KEY_REASONS.get(line[1], "") for line in lines
+                       if len(line) > 1 and line[0] == "INV_SGNR"), "")
+        return GpgFailure(f"GnuPG couldn't sign with this key{reason}, so nothing was encrypted.")
     if "INV_RECP" in statuses:
         return GpgFailure("GnuPG refused this key. It may be expired, revoked, or not yet certified in Kleopatra.")
     if operation == "encrypt":
+        if bad_passphrase:
+            # Only signing checks a passphrase while encrypting: it unlocks the private key.
+            return GpgFailure("Wrong passphrase for the signing key, so nothing was encrypted.")
         # A full disk, say. The rest of these only make sense when reading a file.
         return GpgFailure(f"GnuPG reported an error: {_last_diagnostic(stderr)}")
     if "PLAINTEXT" in statuses or "NODATA" in statuses:
@@ -940,14 +973,14 @@ def describe_failure(stderr: str, operation: Operation = "restore") -> GpgFailur
     return GpgFailure(f"GnuPG reported an error: {_last_diagnostic(stderr)}")
 
 
-def _check_success(operation: Operation, code: int, stderr: str, staged: Path) -> None:
+def _check_success(operation: Operation, code: int, stderr: str, staged: Path, signed: bool = False) -> None:
     """Decide success from gpg's status lines rather than its exit code alone.
 
     Exit code 0 is not enough. ``gpg --decrypt`` also "succeeds" on OpenPGP data
     that was never encrypted, with no key or passphrase needed, so whoever holds
     the storage could replace a backup with content of their choosing and it
     would restore as if nothing had happened. DECRYPTION_OKAY proves that
-    decryption really took place.
+    decryption really took place. Likewise, a file meant to be signed needs SIG_CREATED.
     """
     if code != 0:
         raise describe_failure(stderr, operation)
@@ -955,6 +988,8 @@ def _check_success(operation: Operation, code: int, stderr: str, staged: Path) -
     if operation == "encrypt":
         if "END_ENCRYPTION" not in statuses:
             raise GpgFailure("GnuPG did not confirm that it encrypted this file.")
+        if signed and "SIG_CREATED" not in statuses:
+            raise GpgFailure("GnuPG did not confirm that it signed this file, so it wasn't kept.")
         if not staged.is_file() or staged.stat().st_size == 0:
             raise GpgFailure("GnuPG did not produce a valid output file.")
     else:
@@ -966,8 +1001,13 @@ def _check_success(operation: Operation, code: int, stderr: str, staged: Path) -
             raise GpgFailure("GnuPG did not produce an output file.")
 
 
+def _signing_args(sign_with: str | None) -> tuple[str, ...]:
+    """Sign with exactly this key, by fingerprint. GnuPG asks for its passphrase through Pinentry, never this app."""
+    return ("--sign", "--local-user", sign_with) if sign_with else ()
+
+
 def _build_command(binary: str, operation: Operation, method: Method, fingerprint: str | None,
-                   staged: Path, source: Path, piped: bool, cipher: str) -> list[str]:
+                   staged: Path, source: Path, piped: bool, cipher: str, sign_with: str | None = None) -> list[str]:
     command = [binary, *_BASE_ARGS]
     command += _PIPE_ARGS if piped else ("--pinentry-mode", "ask")
     command += ["--output", str(staged)]
@@ -976,9 +1016,15 @@ def _build_command(binary: str, operation: Operation, method: Method, fingerprin
     elif method == "password":
         command += symmetric_args(cipher)
     else:
-        command += ["--encrypt", "--recipient", fingerprint or ""]
+        command += [*_signing_args(sign_with), "--encrypt", "--recipient", fingerprint or ""]
     command += ["--", str(source)]
     return command
+
+
+def _check_fingerprint(fingerprint: str | None, what: str) -> str:
+    if not fingerprint or not re.fullmatch(r"[0-9A-Fa-f]{40,64}", fingerprint):
+        raise ValueError(f"Select a valid OpenPGP {what} key.")
+    return fingerprint
 
 
 def _remove_staged(staged: Path, leftovers: list[Path]) -> None:
@@ -1049,58 +1095,101 @@ def _check_copy(binary: str, staged: Path, source: Path, state_before: tuple[int
                          "has this file open, close it first.")
 
 
-def _process_one(binary: str, item: SourceItem, output_directory: Path, operation: Operation,
-                 method: Method, fingerprint: str | None, cancel: threading.Event,
-                 secrets: Sequence[bytes], leftovers: list[Path], cipher: str, verify: bool,
-                 on_checking: Callable[[], None] | None) -> tuple[Path, bool]:
-    """Returns where the result is, and whether it was checked against its original."""
-    target = unique_target(output_directory / output_relative(item, operation))
+def _encrypt_one(binary: str, item: SourceItem, output_directory: Path, method: Method, fingerprint: str | None,
+                 cancel: threading.Event, secret: bytes | None, leftovers: list[Path], cipher: str, verify: bool,
+                 on_checking: Callable[[], None] | None, sign_with: str | None) -> tuple[Path, bool]:
+    """Returns where the encrypted file is, and whether it was checked against its original."""
+    target = unique_target(output_directory / output_relative(item, "encrypt"))
     target.parent.mkdir(parents=True, exist_ok=True)
-    if operation == "restore" and secrets and peek_protection(item.source) == "key":
+    # A short fixed-length name: embedding the original name pushed long,
+    # perfectly valid filenames past the 255-character limit.
+    staged = target.parent / f".myob-{uuid.uuid4().hex[:16]}.partial"
+    # Only with a passphrase already in hand. A key, or GnuPG's own prompt, would mean asking again.
+    checking = verify and method == "password" and secret is not None
+    try:
+        command = _build_command(binary, "encrypt", method, fingerprint, staged, item.source,
+                                 piped=secret is not None, cipher=cipher, sign_with=sign_with)
+        state_before = _file_state(item.source) if checking else None
+        code, stderr = run_gpg(command, cancel, secret)
+        _check_success("encrypt", code, stderr, staged, signed=sign_with is not None)
+        if checking:
+            _stop_if_cancelled(cancel)
+            if on_checking is not None:
+                on_checking()
+            # Still under its temporary name, so a copy that fails never gets its final one.
+            _check_copy(binary, staged, item.source, state_before, secret, cancel)
+        _stop_if_cancelled(cancel)
+        # On the drive before it gets its name, so a power cut can't leave the name with less behind it.
+        safefs.sync_file(staged)
+        return _publish(staged, target, publish_no_overwrite), checking
+    finally:
+        _remove_staged(staged, leftovers)
+
+
+def _discard(path: Path) -> None:
+    # Best effort: whatever is left goes with its workspace.
+    with contextlib.suppress(OSError):
+        path.unlink(missing_ok=True)
+
+
+def _restore_one(binary: str, item: SourceItem, output_directory: Path, cancel: threading.Event,
+                 secrets: Sequence[bytes], leftovers: list[Path], journal: workspace.Journal | None,
+                 require_signature: bool, expected_signers: frozenset[str]) -> tuple[Path, Verification]:
+    """Returns where the restored file or folder is, and what its signatures showed.
+
+    Everything decrypted goes into a private workspace beside the destination (see ``workspace``), and
+    only a finished result leaves it, by being published under its final name. The workspace is deleted
+    however this ends. One that can't be is added to ``leftovers``, and stays noted in ``journal``.
+    """
+    target = unique_target(output_directory / output_relative(item, "restore"))
+    target.parent.mkdir(parents=True, exist_ok=True)
+    if secrets and peek_protection(item.source) == "key":
         # Encrypted to a key, in a batch that also has passphrase files: the passphrases are for those.
         # GnuPG opens this one with the private key, and asks for its passphrase itself if it has one.
         secrets = ()
-    failures: list[GpgFailure] = []
-    for secret in secrets or (None,):
-        # A short fixed-length name: embedding the original name pushed long,
-        # perfectly valid filenames past the 255-character limit.
-        staged = target.parent / f".myob-{uuid.uuid4().hex[:16]}.partial"
-        # Only with a passphrase already in hand. A key, or GnuPG's own prompt, would mean asking again.
-        checking = verify and operation == "encrypt" and method == "password" and secret is not None
-        try:
-            command = _build_command(binary, operation, method, fingerprint, staged,
-                                     item.source, piped=secret is not None, cipher=cipher)
-            state_before = _file_state(item.source) if checking else None
-            code, stderr = run_gpg(command, cancel, secret)
-            _check_success(operation, code, stderr, staged)
-            if operation == "restore" and target.suffix.lower() == archive.SUFFIX and archive.is_archive(staged):
-                # One of this app's archives: its files come out into a folder, and the zip is deleted below.
-                folder = unique_target(target.with_suffix(""))
-                archive.unpack(staged, folder, partial(_stop_if_cancelled, cancel), leftovers)
-                return folder, False
-            if checking:
-                if cancel.is_set():
-                    raise Cancelled()
-                if on_checking is not None:
-                    on_checking()
-                # Still under its temporary name, so a copy that fails never gets its final one.
-                _check_copy(binary, staged, item.source, state_before, secret, cancel)
-            publish_no_overwrite(staged, target)
-            return target, checking
-        except GpgFailure as exc:
-            # Keep going even after what looks like damage. About 1 wrong
-            # passphrase in 65,536 passes gpg's quick check and then fails like
-            # a corrupt file, so stopping could wrongly report a good backup as
-            # damaged when a later saved passphrase would have opened it.
-            failures.append(exc)
-        finally:
-            _remove_staged(staged, leftovers)
-    other = next((failure for failure in failures if not failure.wrong_secret), None)
-    if other is not None:
-        raise other
-    if len(failures) > 1:
-        raise GpgFailure("None of the saved passphrases opened this file.")
-    raise failures[0]
+    space = workspace.create(target.parent, journal)
+    try:
+        failures: list[GpgFailure] = []
+        for attempt, secret in enumerate(secrets or (None,)):
+            payload = space.path / f"decrypted-{attempt}"
+            try:
+                command = _build_command(binary, "restore", "password", None, payload, item.source,
+                                         piped=secret is not None, cipher=DEFAULT_CIPHER)
+                code, stderr = run_gpg(command, cancel, secret)
+                _check_success("restore", code, stderr, payload)
+            except GpgFailure as exc:
+                # Keep going even after what looks like damage. About 1 wrong
+                # passphrase in 65,536 passes gpg's quick check and then fails like
+                # a corrupt file, so stopping could wrongly report a good backup as
+                # damaged when a later saved passphrase would have opened it.
+                failures.append(exc)
+                _discard(payload)
+                continue
+            verification = signatures.read(stderr, expected_signers)
+            # It decrypted, so this was the right secret, and trying others would change nothing.
+            problem = signatures.refusal(verification, require_verified=require_signature)
+            if problem is not None:
+                raise GpgFailure(problem)
+            break
+        else:
+            other = next((failure for failure in failures if not failure.wrong_secret), None)
+            if other is not None:
+                raise other
+            if len(failures) > 1:
+                raise GpgFailure("None of the saved passphrases opened this file.")
+            raise failures[0]
+        _stop_if_cancelled(cancel)
+        if target.suffix.lower() == archive.SUFFIX and archive.is_archive(payload):
+            # One of this app's archives: its files come out into a folder, and the zip goes with the workspace.
+            unpacked = space.path / "unpacked"
+            unpacked.mkdir(mode=0o700)
+            archive.extract(payload, unpacked, partial(_stop_if_cancelled, cancel))
+            return _publish(unpacked, target.with_suffix(""), safefs.publish_directory), verification
+        safefs.sync_file(payload)
+        return _publish(payload, target, publish_no_overwrite), verification
+    finally:
+        if not workspace.remove(space, journal):
+            leftovers.append(space.path)
 
 
 def process_items(
@@ -1108,7 +1197,9 @@ def process_items(
     operation: Operation, method: Method, fingerprint: str | None,
     cancel: threading.Event, on_progress: Callable[[int, bool, str, Path | None], None],
     *, passphrases: Sequence[str] = (), cipher: str = DEFAULT_CIPHER, verify: bool = True,
-    on_checking: Callable[[int], None] | None = None,
+    on_checking: Callable[[int], None] | None = None, sign_with: str | None = None,
+    journal: workspace.Journal | None = None, require_signature: bool = False,
+    expected_signers: Iterable[str] = (), on_signature: Callable[[int, Verification], None] | None = None,
 ) -> JobResult:
     """Process each item independently; failed jobs leave no partial exports.
 
@@ -1124,6 +1215,15 @@ def process_items(
     before the file gets its final name. That only happens when a passphrase was passed in,
     because anything else would make GnuPG ask again. ``on_checking`` hears when a file's
     check begins, and ``on_progress`` then says ``CHECKED`` rather than ``READY``.
+
+    ``sign_with`` signs each file encrypted to a key with the key that has this fingerprint, so that
+    restoring it can show who made it. GnuPG asks for that key's passphrase itself.
+
+    On restore, ``on_signature`` hears what each restored file's signatures showed, just before
+    ``on_progress`` reports it. A bad signature, one that can't be checked, or a signer that isn't in
+    ``expected_signers`` (when any are given) is always refused. ``require_signature`` also refuses files
+    for a key unless a key you've verified signed them. Decrypted data waits in workspaces that ``journal``
+    notes, so that any left behind can be found later.
     """
     if not is_valid_gpg(binary):
         raise RuntimeError(
@@ -1132,16 +1232,21 @@ def process_items(
         )
     symmetric_args(cipher)  # Refuses an algorithm this app doesn't offer, before any work.
     if operation == "encrypt" and method == "public-key":
-        if not fingerprint or not re.fullmatch(r"[0-9A-Fa-f]{40,64}", fingerprint):
-            raise ValueError("Select a valid OpenPGP recipient key.")
+        _check_fingerprint(fingerprint, "recipient")
         if passphrases:
             raise ValueError("Public-key encryption does not use a passphrase.")
+    if sign_with is not None:
+        if operation != "encrypt" or method != "public-key":
+            raise ValueError("Only files encrypted to a key are signed.")
+        _check_fingerprint(sign_with, "signing")
     if operation == "encrypt" and len(passphrases) > 1:
         raise ValueError("Encryption uses exactly one passphrase.")
+    expected = frozenset(signatures.normalize_fingerprint(signer) for signer in expected_signers)
     secrets = [encode_passphrase(passphrase) for passphrase in passphrases]
 
     succeeded = failed = checked = 0
     outputs: list[Path] = []
+    verifications: list[Verification] = []
     leftovers: list[Path] = []
     was_cancelled = False
     for index, item in enumerate(items):
@@ -1149,10 +1254,17 @@ def process_items(
             was_cancelled = True
             break
         try:
-            target, was_checked = _process_one(
-                binary, item, output_directory, operation, method, fingerprint, cancel, secrets, leftovers,
-                cipher, verify, partial(on_checking, index) if on_checking is not None else None,
-            )
+            if operation == "encrypt":
+                target, was_checked = _encrypt_one(
+                    binary, item, output_directory, method, fingerprint, cancel, secrets[0] if secrets else None,
+                    leftovers, cipher, verify, partial(on_checking, index) if on_checking is not None else None,
+                    sign_with,
+                )
+                verification = None
+            else:
+                target, verification = _restore_one(binary, item, output_directory, cancel, secrets, leftovers,
+                                                    journal, require_signature, expected)
+                was_checked = False
         except Cancelled:
             was_cancelled = True
             on_progress(index, False, "Cancelled", None)
@@ -1164,8 +1276,13 @@ def process_items(
             outputs.append(target)
             succeeded += 1
             checked += was_checked
+            if verification is not None:
+                verifications.append(verification)
+                if on_signature is not None:
+                    on_signature(index, verification)
             on_progress(index, True, CHECKED if was_checked else UNPACKED if target.is_dir() else READY, target)
-    return JobResult(succeeded, failed, was_cancelled, tuple(outputs), tuple(leftovers), checked)
+    return JobResult(succeeded, failed, was_cancelled, tuple(outputs), tuple(leftovers), checked,
+                     tuple(verifications))
 
 
 def _check_archive(binary: str, staged: Path, packed: bytes, states: list[tuple[str, Path, tuple[int, ...] | None]],
@@ -1202,6 +1319,7 @@ def encrypt_archive(
     on_progress: Callable[[int, bool, str, Path | None], None],
     *, passphrases: Sequence[str] = (), cipher: str = DEFAULT_CIPHER, verify: bool = True,
     on_packing: Callable[[int], None] | None = None, on_checking: Callable[[], None] | None = None,
+    sign_with: str | None = None,
 ) -> JobResult:
     """Encrypt every item into one archive, ``name``.zip.gpg, which hides their names and folders.
 
@@ -1209,7 +1327,8 @@ def encrypt_archive(
     succeeds or none of it does, so ``on_progress`` reports every item at the end, with the archive
     as each one's output. ``on_packing`` hears as each item goes in. With a passphrase in hand and
     ``verify``, the archive is decrypted again and checked before it gets its final name, as for
-    single files, and ``on_checking`` hears when that starts.
+    single files, and ``on_checking`` hears when that starts. ``sign_with`` signs an archive for a key,
+    as ``process_items`` does a file.
 
     The archive's name, and roughly its size, are what whoever stores it can see.
     """
@@ -1220,11 +1339,14 @@ def encrypt_archive(
         )
     encryption = symmetric_args(cipher)  # Refuses an algorithm this app doesn't offer, before any work.
     if method == "public-key":
-        if not fingerprint or not re.fullmatch(r"[0-9A-Fa-f]{40,64}", fingerprint):
-            raise ValueError("Select a valid OpenPGP recipient key.")
+        _check_fingerprint(fingerprint, "recipient")
         if passphrases:
             raise ValueError("Public-key encryption does not use a passphrase.")
-        encryption = ("--encrypt", "--recipient", fingerprint)
+        if sign_with is not None:
+            _check_fingerprint(sign_with, "signing")
+        encryption = (*_signing_args(sign_with), "--encrypt", "--recipient", fingerprint)
+    elif sign_with is not None:
+        raise ValueError("Only files encrypted to a key are signed.")
     if len(passphrases) > 1:
         raise ValueError("Encryption uses exactly one passphrase.")
     if not items:
@@ -1256,14 +1378,16 @@ def encrypt_archive(
     problem: Exception | None = None
     try:
         code, stderr = run_gpg_feeding(command, cancel, secret, feed)
-        _check_success("encrypt", code, stderr, staged)
+        _check_success("encrypt", code, stderr, staged, signed=sign_with is not None)
         if checking:
             _stop_if_cancelled(cancel)
             if on_checking is not None:
                 on_checking()
             # Still under its temporary name, so an archive that fails never gets its final one.
             _check_archive(binary, staged, packed["digest"], packed["states"], secret, cancel)
-        publish_no_overwrite(staged, target)
+        _stop_if_cancelled(cancel)
+        safefs.sync_file(staged)
+        target = _publish(staged, target, publish_no_overwrite)
     except Exception as exc:  # Including Cancelled. Reported below, once the temporary file is gone.
         problem = exc
     finally:
