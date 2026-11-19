@@ -199,7 +199,7 @@ pip install --require-hashes -r requirements.txt
 python -m mindyourownbytes
 ```
 
-CI runs the tests on Linux, and tests each download by running it, on Windows, Linux, and macOS.
+CI runs the tests, and tests each download by running it, on Windows, Linux, and macOS.
 The app is mainly developed and used on Windows, so reports from Linux and Mac users are very welcome.
 
 ## How to use it
