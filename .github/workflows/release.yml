@@ -321,10 +321,67 @@ jobs:
           path: dist/check
           retention-days: 14
 
+  tag:
+    name: Check the tag's signature
+    # A signed tag lets anyone check, with `git verify-tag`, that a maintainer chose this commit. Once the
+    # TAG_SIGNING_FINGERPRINTS variable lists the keys that sign tags, this stops a release whose tag isn't
+    # signed by one of them, with its public key in packaging/release-keys.asc. That catches a mistake, not
+    # someone who can push: what runs is the workflow in the tagged commit, which they could change too.
+    # Who can push a version tag at all is up to the repository's rulesets (docs/RELEASE_CHECKLIST.md).
+    if: ${{ github.ref_type == 'tag' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      signer: ${{ steps.verify.outputs.signer }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # Runs nothing from the repository: the keys file is only read, and the fingerprint decides.
+      - name: Check who signed the tag
+        id: verify
+        env:
+          TAG: ${{ github.ref_name }}
+          EXPECTED: ${{ vars.TAG_SIGNING_FINGERPRINTS }}
+        run: |
+          set -euo pipefail
+          expected="$(printf '%s' "$EXPECTED" | tr 'a-f' 'A-F')"
+          if [ -z "${expected//[[:space:]]/}" ]; then
+            echo "::warning title=Tag signature not checked::The TAG_SIGNING_FINGERPRINTS variable isn't set, so nothing checks who signed $TAG. See Signing tags in docs/RELEASE_CHECKLIST.md."
+            exit 0
+          fi
+          if [ "$(git cat-file -t "refs/tags/$TAG")" != tag ]; then
+            echo "::error title=Tag not signed::$TAG is a lightweight tag, which can't be signed. Make it with git tag -s."
+            exit 1
+          fi
+          if [ ! -f packaging/release-keys.asc ]; then
+            echo "::error title=No public keys::packaging/release-keys.asc, with the public keys that sign tags, is missing."
+            exit 1
+          fi
+          home="$(mktemp -d)"
+          trap 'gpgconf --homedir "$home" --kill all 2>/dev/null || true; rm -rf "$home"' EXIT
+          gpg --homedir "$home" --batch --quiet --import packaging/release-keys.asc
+          # GnuPG's status lines say exactly which key made a good signature, in any language.
+          status="$(GNUPGHOME="$home" git verify-tag --raw "$TAG" 2>&1 >/dev/null || true)"
+          signer="$(printf '%s\n' "$status" | awk '$1 == "[GNUPG:]" && $2 == "VALIDSIG" { print $NF }' | head -n 1)"
+          if ! printf '%s\n' "$status" | grep -q '^\[GNUPG:\] GOODSIG ' || [ -z "$signer" ]; then
+            echo "::error title=Tag not verified::$TAG has no good signature from a key in packaging/release-keys.asc."
+            exit 1
+          fi
+          for fingerprint in $expected; do
+            if [ "$signer" = "$fingerprint" ]; then
+              echo "signer=$signer" >> "$GITHUB_OUTPUT"
+              echo "$TAG is signed with the key $signer." >> "$GITHUB_STEP_SUMMARY"
+              exit 0
+            fi
+          done
+          echo "::error title=Unexpected signer::$TAG is signed with $signer, which isn't in TAG_SIGNING_FINGERPRINTS."
+          exit 1
+
   collect:
     name: Put the release together
     if: ${{ github.ref_type == 'tag' }}
-    needs: [test, test-linux, test-macos]
+    needs: [tag, test, test-linux, test-macos]
     # Runs the repository's script, so it gets no write access.
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -398,7 +455,7 @@ jobs:
     if: >-
       ${{ github.ref_type == 'tag' && !cancelled() && needs.collect.result == 'success'
       && (needs.sign-checksums.result == 'success' || needs.sign-checksums.result == 'skipped') }}
-    needs: [collect, sign-checksums]
+    needs: [tag, collect, sign-checksums]
     # Only this job can write to the repository, and it runs nothing from the repository.
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -422,6 +479,16 @@ jobs:
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-path: release/*
+      - name: Say which key signed the tag
+        if: ${{ needs.tag.outputs.signer != '' }}
+        env:
+          TAG: ${{ github.ref_name }}
+          SIGNER: ${{ needs.tag.outputs.signer }}
+        run: |
+          printf '\nThe source of this release is the tag %s, signed with the OpenPGP key %s. ' "$TAG" "$SIGNER" >> release-notes.md
+          printf 'To check it in a copy of the repository: git verify-tag %s\n' "$TAG" >> release-notes.md
+      # --verify-tag only makes sure the tag already exists, so that gh doesn't make one. It checks no signature:
+      # the tag job above does, once it's set up.
       - name: Create the draft
         env:
           GH_TOKEN: ${{ github.token }}

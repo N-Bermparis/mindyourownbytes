@@ -149,11 +149,11 @@ class PackTests(ArchiveCase):
     def test_an_original_that_fails_to_read_says_so(self):
         original = self.write("a.txt")
 
-        class Failing(io.BytesIO):
+        class Failing(io.FileIO):
             def read(self, *_args):
                 raise OSError(5, "Input/output error")
 
-        with patch("mindyourownbytes.archive.open", return_value=Failing(), create=True), \
+        with patch("mindyourownbytes.safefs.open_original", side_effect=lambda path, _chosen=None: Failing(path)), \
                 self.assertRaisesRegex(archive.ArchiveError, "a.txt couldn't be read"):
             self.pack([(original, "a.txt")])
 

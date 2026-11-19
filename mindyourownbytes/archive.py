@@ -195,29 +195,51 @@ class _Writer:
         self._abandoned = True
 
 
-def pack(files: Sequence[tuple[Path, str]], target: BinaryIO, stop: Callable[[], None],
-         on_file: Callable[[int], None] | None = None) -> tuple[bytes, list[tuple[str, Path, tuple[int, ...] | None]]]:
+def _member_info(name: str, status: os.stat_result) -> zipfile.ZipInfo:
+    """What ``ZipInfo.from_file`` makes for an ordinary file, from the open file's status rather than its name's."""
+    date_time = time.localtime(status.st_mtime)[:6]
+    if date_time[0] < 1980:  # What a zip can hold.
+        date_time = (1980, 1, 1, 0, 0, 0)
+    elif date_time[0] > 2107:
+        date_time = (2107, 12, 31, 23, 59, 59)
+    name = os.path.normpath(os.path.splitdrive(name)[1])
+    while name[0] in (os.sep, os.altsep):
+        name = name[1:]
+    info = zipfile.ZipInfo(name, date_time)
+    info.external_attr = (status.st_mode & 0xFFFF) << 16
+    info.file_size = status.st_size
+    return info
+
+
+def pack(files: Sequence[tuple[Path, str] | tuple[Path, str, tuple[int, int] | None]], target: BinaryIO,
+         stop: Callable[[], None], on_file: Callable[[int], None] | None = None,
+         ) -> tuple[bytes, list[tuple[str, Path, tuple[int, ...] | None]]]:
     """Write ``files``, as (original, name inside) pairs, into one zip on ``target``.
 
-    Returns the SHA-256 of everything written, and the state of each original just before it was
-    read, so that a check can tell afterwards whether any of them changed meanwhile. ``stop`` raises
-    to cancel.
+    Each original is opened once, and read only through that (see ``safefs.open_original``): never
+    through a link, and, when a third item gives the identity it had when it was chosen, only if it's
+    still that file. Returns the SHA-256 of everything written, and the state of each original just
+    before it was read, so that a check can tell afterwards whether any of them changed meanwhile.
+    ``stop`` raises to cancel.
     """
     writer = _Writer(target, stop)
     states: list[tuple[str, Path, tuple[int, ...] | None]] = []
     archive = zipfile.ZipFile(writer, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=6)
     try:
-        for index, (source, name) in enumerate(files):
+        for index, (source, name, *chosen) in enumerate(files):
             stop()
             if on_file is not None:
                 on_file(index)
-            states.append((name, source, file_state(source)))
             try:
-                info = zipfile.ZipInfo.from_file(source, name, strict_timestamps=False)
-                original = open(source, "rb")  # noqa: SIM115 - closed below, and its errors are worded apart
+                original = safefs.open_original(source, chosen[0] if chosen else None)
+            except safefs.NotTheOriginal as exc:
+                raise ArchiveError(f"{name}: {exc.strerror}, so no archive was kept.") from exc
             except OSError as exc:
                 raise ArchiveError(f"The original is gone: {name} couldn't be opened, so no archive was kept. "
                                    f"The reason given was: {exc.strerror or exc}") from exc
+            status = os.fstat(original.fileno())
+            states.append((name, source, (status.st_size, status.st_mtime_ns, status.st_ino, status.st_dev)))
+            info = _member_info(name, status)
             info.compress_type = zipfile.ZIP_DEFLATED
             with original, archive.open(info, "w") as packed:
                 while True:

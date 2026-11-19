@@ -99,6 +99,36 @@ class SignAndEncryptTests(SigningCase):
     def test_requiring_a_verified_signature_refuses_an_unsigned_file_for_a_key(self):
         self.assert_refused(self.restore(self.encrypt_to_me(), require_signature=True), "restored", "isn't signed")
 
+    def test_a_file_held_for_want_of_a_signature_is_listed_with_what_it_showed(self):
+        signed = self.encrypt_to_me("signed.txt", sign_with=self.me)
+        unsigned = self.encrypt_to_me("unsigned.txt")
+        result = self.job([self.item(signed), self.item(unsigned)], "restored", "restore", require_signature=True,
+                          on_signature=lambda index, verification: self.verdicts.append((index, verification)))
+        self.assertEqual((result.succeeded, result.failed, result.held), (1, 1, (1,)))
+        self.assertEqual([(index, verification.status) for index, verification in self.verdicts],
+                         [(0, "verified"), (1, "unsigned")], "the held file's verdict is reported too")
+        self.assertEqual(sorted(path.name for path in (self.root / "restored").iterdir()), ["signed.txt"])
+
+    def test_accepting_a_held_file_restores_it_and_only_on_that_answer(self):
+        encrypted = self.encrypt_to_me()
+        asked = []
+        refused = self.restore(encrypted, out="no", require_signature=True,
+                               accept=lambda index, verification: asked.append(verification.status) or False)
+        self.assertEqual(refused.held, (0,))
+        self.assertEqual(asked, ["unsigned"])
+        restored = self.restore(encrypted, out="yes", require_signature=True, accept=lambda *_: True)
+        self.assertEqual((restored.succeeded, restored.held), (1, ()))
+        self.assertEqual(restored.outputs[0].read_bytes(), b"made by me")
+        self.assertEqual(restored.verifications[0].status, "unsigned", "still says what it is")
+
+    def test_accepting_never_lets_a_bad_or_unexpected_signature_through(self):
+        _other, encrypted = self.from_someone_else()
+        result = self.restore(encrypted, out="strict", require_signature=True, expected_signers=[self.me],
+                              accept=lambda *_: True)
+        self.assertEqual((result.succeeded, result.held), (0, ()))
+        self.assertRegex(self.progress[-1][2], "not by a key you expected")
+        self.assertEqual(list((self.root / "strict").rglob("*")), [])
+
     def test_requiring_a_signature_never_affects_passphrase_files(self):
         encrypted = self.encrypt(self.write("p.txt", b"by passphrase"))
         restored = self.restore(encrypted, passphrases=[PASSPHRASE], require_signature=True)

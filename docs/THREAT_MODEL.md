@@ -101,6 +101,19 @@ only after success. A failed file leaves nothing behind and doesn't stop the res
 batch. Links and junctions are never followed, and folders that can't be read are reported
 rather than silently left out.
 
+**What's encrypted is the file you chose.** Each original's identity (its device and file number)
+is noted when it's chosen. When its turn comes, it's opened once, never through a link at the end of
+its name (`O_NOFOLLOW` on Linux and macOS; on Windows, its identity before and after opening must
+match), and only if it's still that very file. GnuPG never gets its name: it's given the contents over
+a pipe, read from that open file, and hashed on the way, so the check after encrypting compares with
+exactly what GnuPG was given, then reads the original again through the same open file. The same goes
+for each file packed into an archive. Swapping the file meanwhile for a link to another file, for
+another file, for a pipe, or a folder on its way for a link elsewhere, is refused, and nothing is
+encrypted in its place. If its name no longer leads to the file that was read once encrypting ends,
+the copy isn't kept. Tests make each of these swaps happen at each moment, against real GnuPG. A file
+that's rewritten in place while it's read, keeping its size and time, is only caught by the check after
+encrypting, which files for a key don't get.
+
 **Nothing is replaced, and nothing appears half-made.** A finished file or folder gets its final
 name in one step, which the operating system carries out atomically, and only if nothing at all has
 that name: not a file, not a folder, even an empty one, and not a link, even one to nothing. Each
@@ -252,11 +265,11 @@ On restore, signatures are judged from GnuPG's status lines, never from its tran
 | What GnuPG reported | What the app does |
 | --- | --- |
 | No signature, file opened with a passphrase | Restores it. Whoever made it knew the passphrase |
-| No signature, file opened with a key | Restores it, marked **not signed**, unless **Tools > Require a signature on files for a key** is on, which refuses it |
+| No signature, file opened with a key | **Held**: decrypted, deleted again, and listed as **not restored yet, not signed**, until you choose **Restore anyway…** (see below) |
 | A valid signature by a key that's yours or certified | Restores it, **signed by** the key's name, with its fingerprint in the tooltip |
-| A valid signature by any other key | Restores it, **signed with a key you haven't verified**, as a warning. The name is never shown as the signer. Refused if a signature is required |
-| A valid signature by a revoked key | Restores it, **signed with a revoked key**, as a warning. Refused if a signature is required |
-| A valid signature by a key that has expired since | Restores it, **signed with a key that has expired**, as a warning. Refused if a signature is required |
+| A valid signature by any other key | **Held**, as **signed with a key you haven't verified**, with its fingerprint. The name is never shown as the signer |
+| A valid signature by a revoked key | **Held**, as **signed with a revoked key** |
+| A valid signature by a key that has expired since | **Held**, as **signed with a key that has expired** |
 | An invalid signature (`BADSIG`) | **Refused**, and nothing is kept |
 | A signature that can't be checked (`ERRSIG`), such as by a key you don't have | **Refused**, with the reason |
 | A report that's incomplete or contradicts itself | **Refused** |
@@ -326,16 +339,24 @@ still on the [roadmap](ROADMAP.md). [Cryptomator](https://cryptomator.org/) and
 | Deleting files | **Not preventable**: keep other copies |
 | Serving an older version (rollback) | **Flagged, with a record**: see below. Otherwise not detected |
 | Swapping two files encrypted with the same secret | **Flagged, with a record**: see below. Names aren't bound to contents |
-| **Public-key mode only:** replacing a file with new content encrypted to your public key | **Flagged, with a record. Reported** as not signed, or signed by an unverified key, for files you signed. **Refused** with Tools > Require a signature on files for a key. Otherwise not detected |
+| **Public-key mode only:** replacing a file with new content encrypted to your public key | **Flagged, with a record. Held** until you agree, as not signed, or signed by an unverified key, whether or not you signed your own files. **Refused** with **Never restore them**. Restored, and reported, with **Restore them, and say so** |
 | Altering a signed file, or forging its signature | **Detected**: an invalid signature is refused, and nothing is restored |
 
 The public-key row deserves emphasis. Public keys are public, so anyone who has yours can create a
 file that decrypts perfectly. Passphrase mode is not affected, because creating a valid file requires
 the passphrase. Signing your files when you encrypt them to a key closes the gap for files made from
-then on: a forged file then either has no signature, or one by a key you haven't verified, and the
-restore says so, or refuses it if you've asked for that. See
+then on: a forged file then either has no signature, or one by a key you haven't verified, so the
+restore holds it until you agree, or refuses it if you've asked for that. See
 [Who made a file](#who-made-a-file-signatures). Files you encrypted to a key without signing can't be
-told apart from forgeries, except by their checksum record.
+told apart from forgeries, except by their checksum record, so they're held too.
+
+**Holding a file, and restoring it anyway.** A held file is decrypted into the private workspace,
+checked, and deleted with the workspace before anyone is asked, so no readable copy waits on a question.
+**Restore anyway…** lists each held file with what it showed, and any signing key's full fingerprint,
+never its name. Agreeing decrypts them again, and each is restored only if GnuPG's report is the same as
+before: the same verdict, about the same keys. A file swapped in between for one signed by another key
+is held again. That costs a second decryption, and GnuPG may ask for your key's passphrase again. A bad
+or unexpected signature, or one that can't be checked, is never offered: it's refused outright.
 
 **Checksums kept on your computer.** Each file the app encrypts gets its SHA-256 written to
 `records.jsonl`, beside the vault, which your provider can't reach. Before anything is decrypted,
@@ -449,8 +470,10 @@ Its costs, which you should weigh:
 - **If your originals sit in OneDrive, Dropbox, or similar, your provider likely already has
   them.** Encrypting a copy doesn't undo that. The app warns when it recognizes such a
   folder, but detection is a heuristic and misses clients it doesn't know.
-- Restoring into a synced folder would upload the plaintext. The app warns about this too,
-  with the same limitation.
+- Restoring into a synced folder would upload the plaintext. The app refuses a restore folder it
+  recognizes as synced, including through a link, and suggests one on this computer. In advanced
+  mode, **Tools > Allow restoring into synced folders** turns the refusal into a warning. Recognizing
+  a synced folder has the same limitation as above: an unusual one can go unnoticed.
 - A crash or power cut during a restore can leave a hidden `.myob-*.partial` folder holding
   plaintext beside the destination: for an archive, that can be the whole decrypted zip. It stays
   until the app next starts, which then lists it and offers to delete it, as
@@ -458,6 +481,9 @@ Its costs, which you should weigh:
 - The operating system may keep traces such as thumbnails, search indexes, and recent-file lists.
 - Restored files do not carry Windows' Mark-of-the-Web, so SmartScreen will not warn about
   them. Be careful running anything you restored, particularly in public-key mode.
+- Restoring still gives GnuPG the encrypted file by its name. A download swapped for another between
+  being compared with your saved checksums and being decrypted would be decrypted instead, and its
+  row would still say what the comparison found. Who made it is still judged by its own signatures.
 
 ### Other limits
 

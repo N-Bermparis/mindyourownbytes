@@ -234,5 +234,33 @@ class RefusalTests(unittest.TestCase):
         self.assertIsNone(self.refusal(UNSIGNED_PASSPHRASE, require=True))
 
 
+class SameReportTests(unittest.TestCase):
+    """Agreeing to restore a file covers what you were shown about it, and nothing else."""
+
+    def same(self, first: str, second: str) -> bool:
+        return signatures.same_report(signatures.read(first), signatures.read(second))
+
+    def test_the_same_report_again(self):
+        for text in (UNSIGNED_FOR_KEY, UNCERTIFIED, SELF_SIGNED, OLDER_GNUPG):
+            with self.subTest(text[-80:]):
+                self.assertTrue(self.same(text, text))
+
+    def test_anything_else_is_a_different_report(self):
+        other_key = DECRYPTED_WITH_KEY + signed_by(MINE, "Other <other@example.invalid>", "TRUST_UNDEFINED") + DONE
+        self.assertEqual(signatures.read(other_key).status, signatures.read(UNCERTIFIED).status, "same verdict")
+        revoked =DECRYPTED_WITH_KEY + signed_by(OTHER, "Other", "TRUST_UNDEFINED", "REVKEYSIG") + DONE
+        twice = DECRYPTED_WITH_KEY + signed_by(OTHER, "Other", "TRUST_UNDEFINED") + signed_by(
+            MINE, "Me", "TRUST_UNDEFINED") + DONE
+        for first, second in ((UNSIGNED_FOR_KEY, UNCERTIFIED), (UNCERTIFIED, other_key), (UNCERTIFIED, revoked),
+                              (UNCERTIFIED, twice), (UNSIGNED_FOR_KEY, UNSIGNED_PASSPHRASE)):
+            with self.subTest(first=first[-60:], second=second[-60:]):
+                self.assertFalse(self.same(first, second))
+                self.assertFalse(self.same(second, first))
+
+    def test_a_name_is_not_part_of_it_but_the_key_is(self):
+        renamed = UNCERTIFIED.replace("Other <other@example.invalid>", "Someone Trustworthy")
+        self.assertTrue(self.same(UNCERTIFIED, renamed), "the same key, whatever it calls itself")
+
+
 if __name__ == "__main__":
     unittest.main()

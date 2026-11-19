@@ -10,6 +10,8 @@ release pull request. Passing this list is not a security certification.
 - [ ] Enable Issues and Discussions.
 - [ ] Enable private vulnerability reporting, then re-read `SECURITY.md`.
 - [ ] Add a `main` ruleset requiring a pull request and passing CI, with no force pushes.
+- [ ] Add a tag ruleset for `v*` tags that restricts creating, updating, and deleting them to admins
+      (see [Protecting and signing tags](#protecting-and-signing-tags)).
 - [ ] Enable secret scanning, push protection, and Dependabot alerts.
 - [ ] Upload `docs/assets/social-preview.png` as the social preview (Settings → General → Social preview).
 - [ ] Have the first release ready to publish, because the README's download link leads to the Releases page.
@@ -37,15 +39,22 @@ release pull request. Passing this list is not a security certification.
       Help > Restore on another computer, once with the app and once with its plain GnuPG commands.
 - [ ] Open a file and the vault using plain `gpg`, without this app.
 - [ ] Try a wrong passphrase, a missing key, a corrupt file, and Cancel.
-- [ ] Encrypt to your own key with **Also sign them with**, answering GnuPG's own window for the key's
-      passphrase, and once cancelling it. Restore: the row says **signed by** your name, and the tooltip
-      shows your key's full fingerprint. Decrypt the same file with plain `gpg --decrypt`, and check
-      that GnuPG reports a good signature.
-- [ ] Restore a file encrypted to your key without signing: it says **not signed**. Turn on **Tools >
-      Require a signature on files for a key**, and check that the same file is refused, and that a
-      passphrase file still restores. Turn it off again.
-- [ ] Restore a file signed by someone else's key that you haven't certified: it's flagged as **signed
-      with a key you haven't verified**. Certify the key in Kleopatra, and check it then says **signed by**.
+- [ ] Encrypt to your own key, and check that **Also sign them with** is ticked without being asked to,
+      answering GnuPG's own window for the key's passphrase, and once cancelling it. Restore: the row says
+      **signed by** your name, and the tooltip shows your key's full fingerprint. Decrypt the same file with
+      plain `gpg --decrypt`, and check that GnuPG reports a good signature.
+- [ ] Restore a file encrypted to your key without signing: it's **not restored yet**, and nothing is left
+      in the folder. Choose **Restore anyway…**, read the question, answer No, then do it again and answer
+      Yes: it's restored and says **not signed**. Under **Tools > Files for your key with no verified
+      signature**, choose **Never restore them** and check that the same file is refused with no offer, and
+      **Restore them, and say so** to check that it's restored straight away. Check that a passphrase file
+      restores with each choice, and that simple mode always asks unless **Never** was chosen.
+- [ ] Restore a file signed by someone else's key that you haven't certified: it waits as **signed with a
+      key you haven't verified**, and **Restore anyway…** shows that key's full fingerprint, never its
+      name. Certify the key in Kleopatra, and check it then restores at once and says **signed by**.
+- [ ] Set the restore folder to one inside OneDrive or Dropbox, and check that restoring is refused, with a
+      folder on this computer suggested. Turn on **Tools > Allow restoring into synced folders** in advanced
+      mode, and check that you're warned and asked instead. In simple mode it's refused again.
 - [ ] Choose a new passphrase such as `Password123!`, and check that it's refused with the reason, and
       that a generated one is accepted. Do the same for a new vault master passphrase. Check that a file
       made with a weak passphrase before still restores.
@@ -66,7 +75,14 @@ release pull request. Passing this list is not a security certification.
 ## Safety and packaging
 
 - [ ] Re-read the threat model against the code, and update whatever has changed.
-- [ ] `pip-audit -r requirements.txt` reports nothing unexplained.
+- [ ] The **Dependency audit** CI job is green. It runs pip-audit, locked by `requirements-audit.txt`, over
+      every locked requirements file. To run it by hand:
+      `pip install --require-hashes -r requirements-audit.txt`, then
+      `pip-audit --strict --disable-pip --require-hashes -r requirements.txt -r requirements-build.txt
+      -r requirements-dev.txt -r requirements-audit.txt`.
+- [ ] The latest weekly **Fuzz** run is green. A failure prints the seed that repeats it.
+- [ ] Read the coverage report from the CI run on Linux (in its summary, and as an artifact), and look at
+      what security-sensitive code no test reaches. Coverage measures what runs, not whether it's right.
 - [ ] CI is green on every platform, with no skipped GnuPG tests.
 - [ ] The included GnuPG is the newest release (see [Updating GnuPG](#updating-gnupg)).
 - [ ] Do not present unsigned binaries as verified.
@@ -105,12 +121,48 @@ and through at least one other channel you control, before the first signed rele
 After any of these is set up, run the **Downloads** workflow on a test tag, check every signature by
 hand on each system as the README describes, then delete the test release and tag.
 
+### Protecting and signing tags
+
+A version tag is what the **Downloads** workflow builds and releases from, so who can push one matters
+more than any check inside the workflow: whoever can push a tag can also push a commit that changes the
+workflow itself.
+
+**Who can push a tag.** Add a tag ruleset (Settings > Rules > Rulesets > New tag ruleset) that targets
+`v*` tags, restricts creations, updates, and deletions, and lets only the Repository admin role bypass
+it. Rulesets need a public repository, or a paid plan for a private one. With the GitHub CLI, from a
+file `release-tags.json`:
+
+    {"name": "Release tags", "target": "tag", "enforcement": "active",
+     "conditions": {"ref_name": {"include": ["refs/tags/v*"], "exclude": []}},
+     "rules": [{"type": "creation"}, {"type": "update"}, {"type": "deletion"}],
+     "bypass_actors": [{"actor_id": 5, "actor_type": "RepositoryRole", "bypass_mode": "always"}]}
+
+    gh api repos/N-Bermparis/mindyourownbytes/rulesets --method POST --input release-tags.json
+
+**Signed tags.** GitHub doesn't require tag signatures itself. A tag made with `git tag -s` lets anyone
+check, with `git verify-tag`, that the holder of a maintainer's key chose that commit. To sign tags:
+
+1. Use a key of your own for tags (or the release key), and tell git: `git config user.signingkey
+   FINGERPRINT`. Keep its private part off shared machines.
+2. Export its public part into `packaging/release-keys.asc` (`gpg --armor --export FINGERPRINT`), and
+   commit it through a pull request.
+3. Set the repository variable `TAG_SIGNING_FINGERPRINTS` to its full fingerprint: 40 hex digits, no
+   spaces. Several keys go one per line. Only admins can change variables.
+4. Publish the fingerprint in `SECURITY.md` and through at least one other channel you control.
+
+From then on, the workflow's **Check the tag's signature** job stops a release whose tag isn't signed by
+one of those keys, and the draft's notes say which key signed it. Without the variable, the job only
+warns. It catches mistakes, such as an unsigned tag, and not an attacker who can push: the ruleset is
+what stops them. `gh release create --verify-tag`, in the publishing step, only makes sure the tag
+already exists. It checks no signature.
+
 ## Releasing
 
 - [ ] Update the version in `mindyourownbytes/__init__.py`, and the version and date in `CHANGELOG.md`.
-- [ ] Merge that, then tag the merged commit and push the tag:
+- [ ] Merge that, then tag the merged commit, signing the tag once signing tags is set up, and push it:
 
-      git tag v1.2.3
+      git tag -s v1.2.3 -m "mindyourownbytes v1.2.3"
+      git verify-tag v1.2.3
       git push origin v1.2.3
 
   The **Downloads** workflow builds the Windows, Linux, and macOS downloads from the tag, tests each,

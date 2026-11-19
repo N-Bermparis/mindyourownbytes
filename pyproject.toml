@@ -75,3 +75,14 @@ ignore = [
 
 [tool.ruff.lint.isort]
 split-on-trailing-comma = false
+
+# Coverage, measured in CI on Linux. Code for one system only, such as Windows' registry, runs only
+# there, so the share here is lower than what all the systems' test runs reach together.
+[tool.coverage.run]
+branch = true
+source = ["mindyourownbytes"]
+
+[tool.coverage.report]
+precision = 1
+skip_covered = true
+show_missing = true

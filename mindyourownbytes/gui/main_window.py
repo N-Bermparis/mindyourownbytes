@@ -8,11 +8,12 @@ import re
 import sys
 import threading
 import traceback
+from dataclasses import replace
 from datetime import date
 from pathlib import Path
 
 from PySide6.QtCore import QObject, QProcess, QSettings, QSize, Qt, QThread, QTimer, QUrl, Signal, Slot
-from PySide6.QtGui import QBrush, QDesktopServices, QGuiApplication, QKeySequence
+from PySide6.QtGui import QActionGroup, QBrush, QDesktopServices, QGuiApplication, QKeySequence
 from PySide6.QtWidgets import (
     QApplication,
     QButtonGroup,
@@ -40,7 +41,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from mindyourownbytes import __version__, archive, records, signatures, strength, workspace
+from mindyourownbytes import __version__, archive, records, safefs, signatures, strength, workspace
 from mindyourownbytes.core import (
     CHECKED,
     CIPHERS,
@@ -210,6 +211,51 @@ SIGNATURE_SUMMARY = {
     "expired": "signed with a key that has expired",
     "unsigned": "not signed",
 }
+#: What restoring does with a file that decrypted with your key, but that no key you've verified signed.
+#: Anyone with your public key could have made one, and a file you encrypted without signing looks the same.
+SIGNATURE_POLICIES = {
+    "ask": "&Ask before restoring them",
+    "refuse": "&Never restore them",
+    "allow": "&Restore them, and say so",
+}
+#: What restoring says about such files while it waits for someone to decide.
+HELD_COPY = {
+    "row": "Not restored yet, {why}",
+    "row_tip": "{explanation}\n\nIt was decrypted, then deleted again. Choose Restore anyway below the list to "
+               "restore it.",
+    "title_one": "1 file wasn't restored: nothing shows who made it",
+    "title_many": "{count} files weren't restored: nothing shows who made them",
+    "detail_one": "No key you've verified signed it, so anyone who has your public key could have made it. A file "
+                  "you encrypted without signing looks the same. Restore it only if you know where it came from.",
+    "detail_many": "No key you've verified signed them, so anyone who has your public key could have made them. "
+                   "Files you encrypted without signing look the same. Restore them only if you know where they "
+                   "came from.",
+    "action": "Restore anyway…",
+    "confirm_one": "Restore this file anyway?",
+    "confirm_many": "Restore these {count} files anyway?",
+    "text_one": "{listed}\n\nAnyone who has your public key could have made it, so restore it only if you know where "
+                "it came from. It's decrypted again, and restored only if it still shows exactly this.",
+    "text_many": "{listed}\n\nAnyone who has your public key could have made them, so restore them only if you know "
+                 "where they came from. They're decrypted again, and each is restored only if it still shows "
+                 "exactly this.",
+    "hint": "To restore files like these without asking, choose “Restore them, and say so” under Files for your key "
+            "with no verified signature, in the Tools menu.",
+    "hint_simple": "To restore files like these without asking, turn on Show advanced options in the Tools menu, "
+                   "then choose “Restore them, and say so” under Files for your key with no verified signature.",
+    "row_listed": "• {name}: {why}",
+    "key": "{why}, {key}",
+    "status": " · {count} not restored yet",
+}
+#: What restoring says about a destination that looks synced, where readable files would be uploaded.
+SYNCED_COPY = {
+    "refused_title": "Choose a folder that isn't synced",
+    "refused": "This folder appears to be inside “{provider}”, so your restored files, which anyone can read, would "
+               "be uploaded to a cloud service.\n\nNothing was restored. Under Save to, choose a folder that no "
+               "cloud service syncs, such as {suggestion}.",
+    "confirm_title": "Restoring into a synced folder?",
+    "confirm": "This folder appears to be inside “{provider}”, so your decrypted files may be uploaded to a cloud "
+               "service automatically.\n\nContinue anyway?",
+}
 #: What a finished restore says when it couldn't delete where it kept decrypted data.
 LEFTOVER_COPY = (
     "These hidden folders hold readable data from this restore, and couldn't be deleted. The app offers to delete "
@@ -308,7 +354,8 @@ class BackupWorker(QObject):
     doubtful = Signal(object)
     #: The file at this position is going into the archive.
     packing = Signal(int)
-    #: What the restored file at this position showed about who made it, as a signatures.Verification.
+    #: What the file at this position showed about who made it, as a signatures.Verification: a file that
+    #: was restored, or one held back because no key you've verified signed it.
     verified = Signal(int, object)
     completed = Signal(object)
     error = Signal(str)
@@ -318,7 +365,8 @@ class BackupWorker(QObject):
                  method: str, fingerprint: str | None, passphrases: list[str], cipher: str, verify: bool,
                  archive_name: str | None = None, ledger: Ledger | None = None, keep_records: bool = False,
                  records_root: Path | None = None, sign_with: str | None = None,
-                 journal: workspace.Journal | None = None, require_signature: bool = False):
+                 journal: workspace.Journal | None = None, require_signature: bool = False,
+                 accepted: dict[int, signatures.Verification] | None = None):
         super().__init__()
         self.gpg = gpg
         self.files = files
@@ -333,8 +381,13 @@ class BackupWorker(QObject):
         self.sign_with = sign_with
         #: Notes where decrypted data waits during a restore, until it's gone.
         self.journal = journal
-        #: Refuse files for a key that a key you've verified didn't sign.
+        #: Hold back files for a key that a key you've verified didn't sign.
         self.require_signature = require_signature
+        #: Files, by position, that someone agreed to restore anyway, and what they were shown about each.
+        #: Each is restored only if it shows exactly that again.
+        self.accepted = dict(accepted or {})
+        #: Which of ``files`` are being processed, once compared with the record.
+        self._keep: list[int] = []
         #: Every file goes into one archive with this name, rather than into a .gpg file of its own.
         self.archive_name = archive_name
         #: Checked against before each restore, and added to after encrypting if ``keep_records``.
@@ -390,6 +443,11 @@ class BackupWorker(QObject):
         if self.cancel_event.is_set():
             raise Cancelled()
 
+    def _accept(self, position: int, verification: signatures.Verification) -> bool:
+        """Restore a file no verified key signed only if someone agreed to, after being shown exactly this."""
+        shown = self.accepted.get(self._keep[position])
+        return shown is not None and signatures.same_report(shown, verification)
+
     def _keep_records(self, result: JobResult) -> None:
         try:
             self.ledger.add(records.records_for(result.outputs, self.records_root))
@@ -409,6 +467,7 @@ class BackupWorker(QObject):
                     return
                 self.comparing.emit(-1)
             # Positions in the list that's processed, mapped back to rows.
+            self._keep = keep
             report = lambda position, ok, message, output: self.progress.emit(  # noqa: E731
                 keep[position], ok, message, output)
             if self.archive_name:
@@ -422,12 +481,15 @@ class BackupWorker(QObject):
                 options = {"sign_with": self.sign_with} if self.operation == "encrypt" else {
                     "journal": self.journal, "require_signature": self.require_signature,
                     "on_signature": lambda position, verification: self.verified.emit(keep[position], verification),
+                    "accept": self._accept if self.accepted else None,
                 }
                 result = process_items(
                     self.gpg, [self.files[index] for index in keep], self.output, self.operation, self.method,
                     self.fingerprint, self.cancel_event, report, passphrases=self.passphrases, cipher=self.cipher,
                     verify=self.verify, on_checking=lambda position: self.checking.emit(keep[position]), **options,
                 )
+                # Held files by position in this list, like everything else the worker reports.
+                result = replace(result, held=tuple(keep[position] for position in result.held))
             if self.operation == "encrypt" and self.ledger is not None and self.keep_records and result.outputs:
                 self._keep_records(result)
             self.completed.emit(result)
@@ -463,6 +525,10 @@ class MainWindow(QMainWindow):
         #: None before a job, then "done" or "incomplete" until the list changes.
         self._job_state: str | None = None
         self._unfinished_items: list[SourceItem] = []
+        #: What the current restore does with files no verified key signed: see ``signature_policy``.
+        self._job_policy = ""
+        #: Rows the last restore held back for want of a signature, which can be restored anyway.
+        self._held: list[int] = []
         self._method_chosen_by_user = False
         #: How many files in the Restore list are encrypted to a key, as far as their first bytes say.
         self._key_files = 0
@@ -794,7 +860,8 @@ class MainWindow(QMainWindow):
         self.sign_box = QCheckBox("Also sign them with")
         self.sign_box.setToolTip(
             "Signing lets a restore show that you made these files, rather than anyone else who has the "
-            "recipient's public key. GnuPG asks for your key's passphrase itself, if it has one."
+            "recipient's public key. Unsigned files for your key aren't restored without asking. GnuPG asks "
+            "for your key's passphrase itself, if it has one."
         )
         self.sign_box.setChecked(str(self.settings.value("sign_files", "")).lower() == "true")
         self.sign_box.toggled.connect(self._remember_signing)
@@ -980,16 +1047,42 @@ class MainWindow(QMainWindow):
         self._add_action(tools_menu, "&Import checksums…", self.import_checksums)
         self._add_action(tools_menu, "&Forget saved checksums…", self.forget_checksums)
         tools_menu.addSeparator()
-        self.signature_action = tools_menu.addAction("Require a &signature on files for a key")
-        self.signature_action.setCheckable(True)
-        self.signature_action.setChecked(str(self.settings.value("require_signature", "")).lower() == "true")
-        self.signature_action.setToolTip(
-            "Restores a file encrypted to your key only if a key you've verified signed it, because anyone with "
-            "your public key can make such a file. Files you encrypted without signing won't restore while this "
-            "is on. Passphrase files are never affected."
+        self.signature_menu = tools_menu.addMenu("Files for your key with no verified &signature")
+        self.signature_menu.setToolTipsVisible(True)
+        self.signature_menu.menuAction().setToolTip(
+            "Anyone who has your public key can make a file that decrypts with your key, so only a signature from "
+            "a key you've verified shows who made it. Files you encrypted without signing look the same. "
+            "Passphrase files are never affected."
         )
-        self.signature_action.toggled.connect(
-            lambda on: self.settings.setValue("require_signature", "true" if on else "false"))
+        self.signature_group = QActionGroup(self)
+        self.signature_group.setExclusive(True)
+        chosen = self._saved_signature_policy()
+        for policy, text in SIGNATURE_POLICIES.items():
+            action = self.signature_menu.addAction(text)
+            action.setCheckable(True)
+            action.setData(policy)
+            action.setChecked(policy == chosen)
+            action.toggled.connect(lambda on, policy=policy: on and self.settings.setValue("signature_policy", policy))
+            self.signature_group.addAction(action)
+        self.signature_menu.actions()[0].setToolTip(
+            "Such a file is decrypted, then deleted again, and you're asked whether to restore it.")
+        #: The strictest choice: such files are refused, and nobody is asked.
+        self.signature_action = self.signature_menu.actions()[1]
+        self.signature_action.setToolTip(
+            "Such a file is never restored, so files you encrypted without signing can't be restored either.")
+        self.signature_menu.actions()[2].setToolTip(
+            "Such a file is restored, and its row says that nothing shows who made it. Only in advanced mode: "
+            "simple mode always asks.")
+        self.synced_restore_action = tools_menu.addAction("Allow restoring into s&ynced folders")
+        self.synced_restore_action.setCheckable(True)
+        self.synced_restore_action.setChecked(str(self.settings.value("allow_synced_restore", "")).lower() == "true")
+        self.synced_restore_action.setToolTip(
+            "Restored files are readable, so a synced folder uploads them to its provider. While this is off, "
+            "restoring into a folder that looks synced is refused. While it's on, you're warned and asked instead. "
+            "Only in advanced mode. Folders are recognized by name, so a synced folder can still go unnoticed."
+        )
+        self.synced_restore_action.toggled.connect(
+            lambda on: self.settings.setValue("allow_synced_restore", "true" if on else "false"))
         self._add_action(tools_menu, "Clean &up after an interrupted restore…", lambda: self.offer_cleanup(True))
         tools_menu.addSeparator()
         self.post_quantum_action = self._add_action(tools_menu, "&Post-quantum keys…", self.show_post_quantum)
@@ -1249,9 +1342,29 @@ class MainWindow(QMainWindow):
         relies = (any(key.has_secret for key in self._keys.values())
                   or self.algorithm_combo.currentData() not in (None, DEFAULT_CIPHER)
                   or self.pinentry_action.isChecked() or not self.check_action.isChecked()
-                  or not self.records_action.isChecked() or self.signature_action.isChecked())
+                  or not self.records_action.isChecked() or self._chosen_signature_policy() != "ask"
+                  or self.synced_restore_action.isChecked())
         self.settings.setValue("advanced", "true" if relies else "false")
         return relies
+
+    def _saved_signature_policy(self) -> str:
+        saved = str(self.settings.value("signature_policy", "") or "")
+        if saved in SIGNATURE_POLICIES:
+            return saved
+        # Before there were three choices, there was one switch, which meant "never".
+        return "refuse" if str(self.settings.value("require_signature", "")).lower() == "true" else "ask"
+
+    def _chosen_signature_policy(self) -> str:
+        checked = self.signature_group.checkedAction()
+        return str(checked.data()) if checked is not None else "ask"
+
+    def signature_policy(self) -> str:
+        """What a restore does with a file for your key that no key you've verified signed: ask, refuse, or allow.
+
+        Simple mode asks unless "never" was chosen, because hiding a choice must never quietly weaken a restore.
+        """
+        chosen = self._chosen_signature_policy()
+        return chosen if self.advanced() or chosen == "refuse" else "ask"
 
     @Slot(bool)
     def _set_advanced(self, enabled: bool):
@@ -1260,9 +1373,9 @@ class MainWindow(QMainWindow):
 
     def _apply_mode(self):
         advanced = self.advanced()
-        # The signature setting still applies when hidden: simple mode never quietly weakens a restore.
+        # A stricter signature setting still applies when hidden: simple mode never quietly weakens a restore.
         for action in (self.check_action, self.pinentry_action, self.records_action, self.post_quantum_action,
-                       self.signature_action):
+                       self.signature_menu.menuAction(), self.synced_restore_action):
             action.setVisible(advanced)
         if not advanced and self.operation == "encrypt" and self.key_radio.isChecked():
             self.passphrase_radio.setChecked(True)
@@ -1482,6 +1595,12 @@ class MainWindow(QMainWindow):
         if not signers:
             self.signer_combo.addItem("You have no key that can sign", "")
         self.signer_combo.setCurrentIndex(max(self.signer_combo.findData(wanted), 0))
+        if self.settings.value("sign_files") is None and hasattr(self, "sign_box"):
+            # Signed unless someone chose otherwise, so that restoring them can show who made them. Not
+            # remembered as a choice, so that it follows whether there's a key to sign with.
+            blocked = self.sign_box.blockSignals(True)
+            self.sign_box.setChecked(bool(signers))
+            self.sign_box.blockSignals(blocked)
         if hasattr(self, "sign_label"):
             self._update_method()
 
@@ -1616,6 +1735,7 @@ class MainWindow(QMainWindow):
     def _reset_job_state(self):
         self._job_state = None
         self._unfinished_items = []
+        self._held = []
         self._job_output = None
         self.result_bar.hide()
         self.open_button.show()
@@ -1662,16 +1782,19 @@ class MainWindow(QMainWindow):
         return answer == QMessageBox.StandardButton.Yes
 
     def _confirm_locations(self, output: Path) -> bool:
-        """Warn when the plaintext is, or is about to be, inside a synced folder."""
+        """Refuse, or warn, when the plaintext is, or is about to be, inside a synced folder."""
         if self.operation == "restore":
             provider = looks_cloud_synced(output)
-            if provider:
-                return self._confirm(
-                    "Restoring into a synced folder?",
-                    f"This folder appears to be inside “{provider}”, so your decrypted files may be "
-                    "uploaded to a cloud service automatically.\n\nContinue anyway?",
-                )
-            return True
+            if not provider:
+                return True
+            if not (self.advanced() and self.synced_restore_action.isChecked()):
+                # Refused rather than asked: a click-through question is easy to answer without reading it.
+                local = DEFAULT_ROOT / "Restored Files"
+                suggestion = str(local) if not looks_cloud_synced(local) else "a folder on this computer only"
+                QMessageBox.warning(self, SYNCED_COPY["refused_title"],
+                                    SYNCED_COPY["refused"].format(provider=provider, suggestion=suggestion))
+                return False
+            return self._confirm(SYNCED_COPY["confirm_title"], SYNCED_COPY["confirm"].format(provider=provider))
         for item in self.items:
             provider = looks_cloud_synced(item.source)
             if provider:
@@ -1753,7 +1876,12 @@ class MainWindow(QMainWindow):
 
     # ---------------------------------------------------------------- the job
 
-    def start(self):
+    def start(self, accepted: dict[int, signatures.Verification] | None = None):
+        """Encrypt or restore the files in the list.
+
+        ``accepted`` restores files again that were held back because no key you've verified signed them,
+        once someone has agreed to restore them anyway: by row, what they were shown about each one.
+        """
         if self.running:
             return
         if not self.items:
@@ -1792,7 +1920,8 @@ class MainWindow(QMainWindow):
                                 "You have no key that can sign. Untick “Also sign them with” to encrypt without "
                                 "signing, or make a key in Kleopatra.")
             return
-        passphrases = self._passphrases_for(selection)
+        # Files held back for want of a signature all decrypted with a key, which needs no passphrase from here.
+        passphrases = [] if accepted else self._passphrases_for(selection)
         if passphrases is None:
             return
         try:
@@ -1806,6 +1935,8 @@ class MainWindow(QMainWindow):
                 for item in self.items:
                     if not item.source.is_file() or item.source.is_symlink():
                         raise ValueError(f"A source file is unavailable: {item.source}")
+                # Trying again means the files as they are now. From here on, each one must stay that file.
+                self.items = [replace(item, identity=safefs.identity_of(item.source)) for item in self.items]
         except (ValueError, OSError) as exc:
             QMessageBox.warning(self, "Cannot start", str(exc))
             return
@@ -1825,6 +1956,7 @@ class MainWindow(QMainWindow):
         self._succeeded_rows: set[int] = set()
         self._findings = {}
         self._verifications = {}
+        self._job_policy = self.signature_policy() if self.operation == "restore" else ""
         self._job_signer = sign_with
         self._notes = []
         self._left_out = set()
@@ -1843,7 +1975,8 @@ class MainWindow(QMainWindow):
                                    fingerprint, passphrases, cipher, verify, archive_name, ledger=self.ledger,
                                    keep_records=self.records_action.isChecked() or not self.advanced(),
                                    records_root=self.current_output("encrypt"), sign_with=sign_with,
-                                   journal=self.journal, require_signature=self.signature_action.isChecked())
+                                   journal=self.journal, require_signature=self._job_policy in ("ask", "refuse"),
+                                   accepted=accepted if self._job_policy == "ask" else None)
         self.worker.moveToThread(self._thread)
         self._thread.started.connect(self.worker.run)
         self.worker.progress.connect(self._progress)
@@ -2052,6 +2185,12 @@ class MainWindow(QMainWindow):
                 self._succeeded_rows.add(index)
             elif cancelled:
                 self._set_row_status(index, "Cancelled", "close", "muted")
+            elif index in self._verifications and self._job_policy == "ask":
+                # Held back for want of a signature, until someone says whether to restore it.
+                verification = self._verifications[index]
+                self._set_row_status(
+                    index, HELD_COPY["row"].format(why=signatures.headline(verification)), "alert", "warn",
+                    HELD_COPY["row_tip"].format(explanation=signatures.explanation(verification)))
             else:
                 short = re.split(r"[,:.]", message, maxsplit=1)[0]
                 self._set_row_status(index, short, "alert", "error", message)
@@ -2068,8 +2207,10 @@ class MainWindow(QMainWindow):
         self.running = False
         self._set_busy(False)
         self._refresh_collections()
+        held = len(result.held) if self._job_policy == "ask" else 0
         self.status_text.setText(
-            f"{result.succeeded} finished · {result.failed} failed"
+            f"{result.succeeded} finished · {result.failed - held} failed"
+            + (HELD_COPY["status"].format(count=held) if held else "")
             + (f" · {len(self._left_out)} left out" if self._left_out else "")
             + (" · cancelled" if result.cancelled else "")
         )
@@ -2100,12 +2241,23 @@ class MainWindow(QMainWindow):
                 actions=[open_folder] if result.succeeded else [],
             )
         elif result.failed:
+            # Files held back for want of a signature can still be restored, if someone agrees to.
+            self._held = list(result.held) if self._job_policy == "ask" else []
+            actions = ([(HELD_COPY["action"], self._restore_held)] if self._held else []) + (
+                [open_folder] if result.succeeded else [])
+            if self._held and len(self._held) == result.failed:
+                one = len(self._held) == 1
+                title = HELD_COPY["title_one"] if one else HELD_COPY["title_many"].format(count=len(self._held))
+                self.result_bar.show_message("warning", title, HELD_COPY["detail_one" if one else "detail_many"],
+                                             actions=actions)
+                self.open_button.setVisible(not result.succeeded)
+                return
             reasons = set(self._failures)
             detail = self._failures[0] if len(reasons) == 1 else "See the Status column for the reason for each file."
             title = (f"{result.failed} of {plural(total)} failed" if result.succeeded
                      else "The archive wasn't made" if self._job_archive
                      else f"{'That file' if total == 1 else f'All {total} files'} failed")
-            self.result_bar.show_message("error", title, detail, actions=[open_folder] if result.succeeded else [])
+            self.result_bar.show_message("error", title, detail, actions=actions)
         elif self._left_out:
             left = len(self._left_out)
             title = (DOUBTFUL_COPY["result_title"].format(files=plural(result.succeeded), count=left)
@@ -2150,6 +2302,38 @@ class MainWindow(QMainWindow):
                 detail = f"{who} {detail}"
             self.result_bar.show_message("warning" if caution else "success", title, detail, actions=[open_folder])
         self.open_button.setVisible(not result.succeeded)
+
+    def _restore_held(self):
+        """Restore the files held back for want of a signature, once someone has seen what each showed and agreed."""
+        rows = [row for row in self._held if row < len(self.items) and row in self._verifications]
+        if self.running or not rows:
+            return
+
+        def why(row: int) -> str:
+            verification = self._verifications[row]
+            words = signatures.headline(verification)
+            signer = verification.signer
+            if signer is not None and signer.primary_fingerprint:
+                # A key's name proves nothing, so it's the fingerprint that's shown.
+                words = HELD_COPY["key"].format(why=words, key=signatures.spaced(signer.primary_fingerprint))
+            return words
+
+        listed = [HELD_COPY["row_listed"].format(name=self.items[row].source.name, why=why(row)) for row in rows[:8]]
+        if len(rows) > 8:
+            listed.append(f"• and {len(rows) - 8} more")
+        one = len(rows) == 1
+        title = HELD_COPY["confirm_one"] if one else HELD_COPY["confirm_many"].format(count=len(rows))
+        text = HELD_COPY["text_one" if one else "text_many"].format(listed="\n".join(listed))
+        text += "\n\n" + HELD_COPY["hint" if self.advanced() else "hint_simple"]
+        if not self._confirm(title, text):
+            return
+        shown = {position: self._verifications[row] for position, row in enumerate(rows)}
+        previous = self.items, self._source_paths
+        self.items, self._source_paths = [self.items[row] for row in rows], []
+        self.start(accepted=shown)
+        if not self.running:
+            # It didn't start, such as when a file has gone, so the list stays as it was.
+            self.items, self._source_paths = previous
 
     @Slot(str)
     def _error(self, message: str):

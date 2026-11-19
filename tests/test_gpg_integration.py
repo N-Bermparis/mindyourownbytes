@@ -568,7 +568,8 @@ class CheckAfterEncryptingTests(IntegrationCase):
             os.utime(source, ns=(status.st_atime_ns, status.st_mtime_ns))
 
         result = self.encrypt_job(source, on_checking=rewrite_quietly)
-        self.assert_refused(result, "exports", "didn't give back the original")
+        # The copy itself is right, and the original, read again through the file GnuPG was given, isn't the same.
+        self.assert_refused(result, "exports", "^The original changed")
 
     def test_a_refused_file_does_not_stop_the_rest_and_can_be_tried_again(self):
         first, second = self.write("first.txt", b"one"), self.write("second.txt", b"two")
