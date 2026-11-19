@@ -487,7 +487,9 @@ class TransferFlowTests(GuiCase):
         path.write_bytes(b"x")
         self.window.add_paths([str(path)])
         self.message_boxes["warning"].reset_mock()
-        self.window.start()
+        # Every question is answered yes here, so if nothing stopped it, the passphrase would be next.
+        with patch.object(self.window, "_passphrases_for", return_value=None):
+            self.window.start()
         self.assertFalse(self.window.running)
         self.assertFalse((self.root / "Dropbox").exists(), "not even the folder is made")
         return self.message_boxes["warning"].call_args.args

@@ -111,8 +111,17 @@ These issues were found and fixed during the pre-release review, before any publ
   and a crash could leave it with no way to find it again. It now waits in a private workspace (mode
   0700 on Linux and macOS), noted in the app's own folder, so that leftovers are found and offered for
   deletion at the next start. Only folders the app can prove it made are ever deleted.
-- A line of deeply nested brackets in the record of checksums stopped every restore with an error,
-  instead of being skipped like any other damaged line. Found by the new fuzz tests.
+- Found by the new fuzz tests:
+  - A line of deeply nested brackets in the record of checksums stopped every restore with an error,
+    instead of being skipped like any other damaged line.
+  - Restoring your own `.zip` file stopped with an error if its header named a zip version newer than
+    Python knows, because checking whether it was one of this app's archives didn't expect that. Such a
+    file is now restored as it is.
+  - A file or folder name close to the 255-character limit that needed a number to tell it apart from
+    another, such as "report (2).pdf", became too long, so the app made archives it then refused to
+    unpack. Numbered names are now shortened before the number.
+  - A damaged archive could fail with Python's own error, such as "strong encryption (flag bit 6)",
+    rather than an explanation. Each is now refused with the reason, and nothing is unpacked.
 - GnuPG opened each original by its name, so a file swapped, after it was chosen, for a link to another
   file, for another file, or reached through a folder swapped for a link elsewhere, was encrypted in its
   place, and passed the check after encrypting. Each original is now opened once, never through a link,

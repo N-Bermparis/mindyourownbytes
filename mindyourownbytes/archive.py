@@ -36,6 +36,11 @@ SUFFIX = ".zip"
 MARKER = b"mindyourownbytes archive 1"
 MAX_NAME = 100
 _CHUNK = 1024 * 1024
+#: The longest file or folder name, in characters, that's created inside an archive's folder.
+_MAX_PART = 255
+#: Flags this app never sets, which mean encryption or data that zipfile can't read: 0 and 6 are encryption,
+#: 5 is "compressed patched data".
+_UNSUPPORTED_FLAGS = 0x1 | 0x20 | 0x40
 
 #: Characters and names that Windows can't use in a file or folder name.
 INVALID_NAME_CHARACTERS = frozenset('<>:"/\\|?*')
@@ -57,7 +62,7 @@ class OutputClosed(Exception):
 def is_safe_name_part(part: str) -> bool:
     """Whether one file or folder name is safe to create on every system this app runs on."""
     return (
-        bool(part) and part not in (".", "..") and len(part) <= 255
+        bool(part) and part not in (".", "..") and len(part) <= _MAX_PART
         and not any(character in INVALID_NAME_CHARACTERS or ord(character) < 32 for character in part)
         # Windows drops these from the end of a name, so two different names could become one.
         and not part.endswith((".", " "))
@@ -93,7 +98,9 @@ def member_names(relatives: Sequence[str]) -> list[str]:
     a file called "docs" and a folder called "docs". Windows can't tell names apart by case, so names
     that differ only in case clash too. Characters that Windows can't use in a name become "_".
     """
-    entries = [(tuple(_usable(part) for part in PurePosixPath(relative).parts), False) for relative in relatives]
+    # An empty name, which no file listed by this app has, still gets one rather than stopping everything.
+    entries = [(tuple(_usable(part) for part in PurePosixPath(relative).parts) or ("_",), False)
+               for relative in relatives]
     return ["/".join(parts) for parts in _side_by_side(entries)]
 
 
@@ -102,11 +109,11 @@ def _usable(part: str) -> str:
     if is_safe_name_part(part):
         return part
     usable = "".join("_" if character in INVALID_NAME_CHARACTERS or ord(character) < 32 else character
-                     for character in part)[:255] or "_"
+                     for character in part)[:_MAX_PART] or "_"
     if usable.endswith((".", " ")):
-        usable = usable[:254] + "_"
+        usable = usable[:_MAX_PART - 1] + "_"
     if usable.split(".")[0].strip().upper() in RESERVED_NAMES:
-        usable = "_" + usable[:254]
+        usable = "_" + usable[:_MAX_PART - 1]
     return usable if is_safe_name_part(usable) else "_"
 
 
@@ -114,14 +121,24 @@ def _key(parts: tuple[str, ...]) -> tuple[str, ...]:
     return tuple(part.casefold() for part in parts)
 
 
+def _with_number(part: str, number: int, is_folder: bool) -> str:
+    """"report (2).pdf", or "docs (2)" for a folder, shortened before the number to stay a usable name."""
+    stem, suffix = (part, "") if is_folder else (PurePosixPath(part).stem, PurePosixPath(part).suffix)
+    marker = f" ({number})"
+    if len(marker) + len(suffix) >= _MAX_PART:
+        # An extension so long that nothing else fits: the number goes at the end of the whole name.
+        stem, suffix = part, ""
+    room = _MAX_PART - len(marker) - len(suffix)
+    # Only the part before the number is shortened: what follows it ends the name as it always did.
+    return (stem[:room] or "_") + marker + suffix
+
+
 def _numbered(folder: tuple[str, ...], part: str, taken: Callable[[tuple[str, ...]], bool],
               is_folder: bool) -> tuple[str, ...]:
     """``part`` inside ``folder``, numbered as "report (2).pdf" or "docs (2)" until ``taken`` says it's free."""
     candidate, number = (*folder, part), 2
     while taken(_key(candidate)):
-        name = PurePosixPath(part)
-        numbered = f"{part} ({number})" if is_folder else f"{name.stem} ({number}){name.suffix}"
-        candidate, number = (*folder, numbered), number + 1
+        candidate, number = (*folder, _with_number(part, number, is_folder)), number + 1
     return candidate
 
 
@@ -265,7 +282,8 @@ def is_archive(path: Path) -> bool:
     try:
         with zipfile.ZipFile(path) as archive:
             return archive.comment == MARKER
-    except (OSError, ValueError, zipfile.BadZipFile):
+    except Exception:  # Anything zipfile can't read isn't one of ours, and is restored as it is.
+        # Such as a zip whose version is newer than Python knows, which raises NotImplementedError.
         return False
 
 
@@ -284,7 +302,7 @@ def _plan(infos: Sequence[zipfile.ZipInfo]) -> list[tuple[zipfile.ZipInfo, tuple
     """
     entries = []
     for info in infos:
-        if info.flag_bits & 0x1 or info.compress_type not in (zipfile.ZIP_STORED, zipfile.ZIP_DEFLATED):
+        if info.flag_bits & _UNSUPPORTED_FLAGS or info.compress_type not in (zipfile.ZIP_STORED, zipfile.ZIP_DEFLATED):
             raise ArchiveError("This archive uses a feature this app never writes, so nothing was unpacked. "
                                "Decrypt it with GnuPG and open it with another program.")
         entries.append((_member_parts(info.filename), info.is_dir()))
@@ -321,7 +339,7 @@ def extract(path: Path, folder: Path, stop: Callable[[], None]) -> int:
     """
     try:
         archive = zipfile.ZipFile(path)
-    except (OSError, ValueError, zipfile.BadZipFile) as exc:
+    except (OSError, ValueError, zipfile.BadZipFile, NotImplementedError) as exc:
         raise ArchiveError(f"This archive is damaged, so nothing was unpacked: {exc}") from exc
     with archive:
         plan = _plan(archive.infolist())
@@ -345,7 +363,7 @@ def extract(path: Path, folder: Path, stop: Callable[[], None]) -> int:
                     unpacked.flush()
                     os.fsync(unpacked.fileno())
                 _keep_time(destination, info.date_time)
-        except (zipfile.BadZipFile, zlib.error, EOFError) as exc:
+        except (zipfile.BadZipFile, zlib.error, EOFError, NotImplementedError, ValueError) as exc:
             raise ArchiveError(f"This archive is damaged inside, so nothing was unpacked: {exc}") from exc
         except OSError as exc:
             raise ArchiveError(f"This archive couldn't be unpacked here, so nothing was. "
