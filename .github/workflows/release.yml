@@ -129,6 +129,11 @@ jobs:
           sudo apt-get install -y --no-install-recommends libxcb-cursor0 libxcb-icccm4 libxcb-image0 \
             libxcb-keysyms1 libxcb-randr0 libxcb-render-util0 libxcb-shape0 libxcb-xinerama0 libxcb-xkb1 \
             libxkbcommon-x11-0
+      # The build draws the app's icon with Qt, which needs these, and GitHub's Ubuntu 22.04 lacks
+      # EGL. PyInstaller leaves both out of the download, because a computer's graphics drivers come
+      # with their own.
+      - name: Install the graphics libraries the build draws with
+        run: sudo apt-get install -y --no-install-recommends libegl1 libgl1
       - name: Build the download
         env:
           TAG: ${{ github.ref_type == 'tag' && github.ref_name || '' }}
