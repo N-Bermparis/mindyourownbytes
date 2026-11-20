@@ -127,6 +127,10 @@ These issues were found and fixed during the pre-release review, before any publ
   place, and passed the check after encrypting. Each original is now opened once, never through a link,
   checked to be the file that was chosen, and given to GnuPG over a pipe from that open file. Archives
   are packed the same way. A copy is only kept if the name still leads to the file that was read.
+- Restored files didn't carry Windows' Mark-of-the-Web, so SmartScreen and Office didn't warn about a
+  program or document restored from a downloaded file. A restored file now keeps the encrypted file's
+  mark, and so does each file unpacked from an archive, before it gets its name. A drive that can't keep
+  the mark, such as a FAT USB stick, drops it, as it does for any copy.
 
 ### Changed
 
@@ -151,5 +155,6 @@ These issues were found and fixed during the pre-release review, before any publ
 - The downloads aren't code-signed yet, so Windows and macOS warn about them, and Smart App
   Control blocks the Windows one. Their builds aren't reproducible yet either.
 - The GnuPG included in the Windows download only updates when the app does.
+- On a Mac, restored files don't carry a download's quarantine flag, so Gatekeeper doesn't check them.
 
 See the [threat model](docs/THREAT_MODEL.md) for the full list.

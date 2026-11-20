@@ -34,6 +34,8 @@ release pull request. Passing this list is not a security certification.
       one window should show them all. On Windows 11, use **Show more options**.
 - [ ] Encrypt, upload manually, download, restore, and compare file hashes. The row should say
       **matches your record**. Then restore a renamed copy, and check that it's flagged.
+- [ ] Restore a file and an archive downloaded in a browser, and check that each restored file's
+      Properties show the **Unblock** box, as the download's do (Mark-of-the-Web).
 - [ ] Save checksums in the Library, import them on a second computer, and restore there.
 - [ ] Restore on a second, clean computer, using only your backup of the passphrase or key, by following
       Help > Restore on another computer, once with the app and once with its plain GnuPG commands.
