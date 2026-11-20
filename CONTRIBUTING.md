@@ -4,8 +4,22 @@ Thanks for helping people keep readable copies of their files away from cloud
 providers. Code is only one way to help: testing on different setups, translations,
 accessibility fixes, documentation, and security review are all just as welcome.
 
-**New here?** Look for [`good first issue`](https://github.com/N-Bermparis/mindyourownbytes/labels/good%20first%20issue),
-or try the app and tell us where you got stuck. That feedback is valuable in itself.
+## Your first contribution
+
+New to open source? You're welcome here, and small, focused changes are the easiest to review.
+
+1. Pick an issue, such as a [`good first issue`](https://github.com/N-Bermparis/mindyourownbytes/labels/good%20first%20issue),
+   and say in a comment that you'd like to work on it.
+2. Fork the repository, and make a branch for that one change.
+3. Make the change, and run the [checks](#running-the-checks).
+4. Open a pull request that says what changed and why.
+
+You don't have to write code to help:
+
+- **Test it on another system.** On a Mac, follow [the testing guide](docs/TESTING_MACOS.md).
+- **Report what confused you**, from installing to restoring.
+- **Improve the instructions**, accessibility, or documentation.
+- **Question the security assumptions** in the [threat model](docs/THREAT_MODEL.md).
 
 ## Three rules
 

@@ -86,6 +86,8 @@ release pull request. Passing this list is not a security certification.
 - [ ] Read the coverage report from the CI run on Linux (in its summary, and as an artifact), and look at
       what security-sensitive code no test reaches. Coverage measures what runs, not whether it's right.
 - [ ] CI is green on every platform, with no skipped GnuPG tests.
+- [ ] Every runner the workflows name is still one GitHub offers. GitHub retires old ones, as it did
+      `macos-14` on 2 November 2026, and a job that names a retired one can't run.
 - [ ] The included GnuPG is the newest release (see [Updating GnuPG](#updating-gnupg)).
 - [ ] Do not present unsigned binaries as verified.
 - [ ] In the build logs, each download says either **UNSIGNED** or how it was signed. The release notes,
@@ -161,6 +163,8 @@ already exists. It checks no signature.
 ## Releasing
 
 - [ ] Update the version in `mindyourownbytes/__init__.py`, and the version and date in `CHANGELOG.md`.
+- [ ] For the first release only: remove the "Not released yet" notes from the README and from
+      `docs/index.html`, and update the README's Project status table.
 - [ ] Merge that, then tag the merged commit, signing the tag once signing tags is set up, and push it:
 
       git tag -s v1.2.3 -m "mindyourownbytes v1.2.3"
