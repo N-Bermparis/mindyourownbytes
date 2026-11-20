@@ -15,6 +15,14 @@ from mindyourownbytes import selftest
 from tests.support import require_gpg
 
 ROOT = Path(__file__).resolve().parent.parent
+#: ``python -m mindyourownbytes``, with none of the standard places to find GnuPG. Outside Windows, the
+#: app looks in /usr/bin and the like whatever PATH says, so an empty PATH alone doesn't hide it there.
+WITHOUT_STANDARD_GPG = (
+    "import runpy\n"
+    "from mindyourownbytes import core\n"
+    "core.STANDARD_GPG = {'darwin': (), 'linux': ()}\n"
+    "runpy.run_module('mindyourownbytes', run_name='__main__', alter_sys=True)\n"
+)
 
 
 class PostQuantumRequirementTests(unittest.TestCase):
@@ -38,9 +46,10 @@ class SelfTestTests(unittest.TestCase):
         self.addCleanup(temp.cleanup)
         self.folder = Path(temp.name)
 
-    def run_self_test(self, **environment) -> tuple[int, dict]:
+    def run_self_test(self, *, standard_gpg: bool = True, **environment) -> tuple[int, dict]:
+        start = ["-m", "mindyourownbytes"] if standard_gpg else ["-c", WITHOUT_STANDARD_GPG]
         result = subprocess.run(
-            [sys.executable, "-m", "mindyourownbytes", "--self-test", str(self.folder)],
+            [sys.executable, *start, "--self-test", str(self.folder)],
             cwd=ROOT, env={**os.environ, "QT_QPA_PLATFORM": "offscreen", **environment},
             capture_output=True, timeout=300, check=False,
         )
@@ -68,8 +77,8 @@ class SelfTestTests(unittest.TestCase):
         self.assertLessEqual(expected, names)
 
     def test_fails_without_gnupg(self):
-        code, report = self.run_self_test(PATH=str(self.folder), ProgramFiles="", ProgramW6432="",
-                                          LOCALAPPDATA="", **{"ProgramFiles(x86)": ""})
+        code, report = self.run_self_test(standard_gpg=False, PATH=str(self.folder), ProgramFiles="",
+                                          ProgramW6432="", LOCALAPPDATA="", **{"ProgramFiles(x86)": ""})
         self.assertEqual(code, 1)
         self.assertFalse(report["passed"])
         self.assertIn({"name": "Finds a working GnuPG", "passed": False, "detail": "None"}, report["checks"])

@@ -33,6 +33,11 @@ PASSPHRASE = "self-test passphrase, not a secret"  # noqa: S105
 #: Not plain ASCII, because people's names and files aren't.
 FILE_NAME = "Τεστ αρχείο résumé.txt"
 CONTENT = bytes(range(256)) * 256
+#: gpg-agent quits as it starts if the path to one of its sockets, which go in the GnuPG home, is
+#: longer than the system allows: 102 characters on a Mac. A Mac's usual temporary folder already
+#: takes 49, which left the longest socket path here one over, so on a Mac the files go in /tmp,
+#: inside a folder with a random name that only this user can open.
+SCRATCH_PARENT = "/tmp" if sys.platform == "darwin" else None  # noqa: S108
 
 
 class _Checks:
@@ -321,7 +326,8 @@ def run(folder: Path) -> int:
         "checks": checks.results,
     }
     try:
-        with tempfile.TemporaryDirectory(prefix="myob-self-test-", ignore_cleanup_errors=True) as temporary:
+        with tempfile.TemporaryDirectory(prefix="myob-self-test-", dir=SCRATCH_PARENT,
+                                         ignore_cleanup_errors=True) as temporary:
             scratch = Path(temporary)
             # Set first, because the window looks for keys as soon as it opens.
             home = scratch / "gnupg-home"
