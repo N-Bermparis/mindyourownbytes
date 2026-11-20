@@ -479,8 +479,12 @@ Its costs, which you should weigh:
   until the app next starts, which then lists it and offers to delete it, as
   [described above](#decrypted-data-on-its-way-to-its-name). Deleting it isn't secure erasure.
 - The operating system may keep traces such as thumbnails, search indexes, and recent-file lists.
-- Restored files do not carry Windows' Mark-of-the-Web, so SmartScreen will not warn about
-  them. Be careful running anything you restored, particularly in public-key mode.
+- On Windows, a restored file keeps the encrypted file's Mark-of-the-Web, and so does each file
+  unpacked from an archive, so SmartScreen and Office treat it as coming from where the download did.
+  A file that was never downloaded has no mark to keep, and a drive without alternate data streams,
+  such as a FAT USB stick, can't keep one. On a Mac, restored files don't carry the download's
+  quarantine flag, so Gatekeeper doesn't check them. Be careful running anything you restored,
+  particularly in public-key mode.
 - Restoring still gives GnuPG the encrypted file by its name. A download swapped for another between
   being compared with your saved checksums and being decrypted would be decrypted instead, and its
   row would still say what the comparison found. Who made it is still judged by its own signatures.

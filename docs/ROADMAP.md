@@ -46,7 +46,8 @@ specific provider. Those are not missing features; they are the point.
 - [ ] Reproducible builds
 - [ ] Linux and macOS packages (Flatpak, Homebrew)
 - [ ] A command-line interface for scripting
-- [ ] Copy Mark-of-the-Web onto restored files
+- [x] Copy Mark-of-the-Web onto restored files, on Windows
+- [ ] Copy a download's quarantine flag onto restored files, on macOS
 
 ## Quality and reach
 

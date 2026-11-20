@@ -933,6 +933,101 @@ class ArchiveTests(IntegrationCase):
         self.assertFalse((self.root / "exports").exists())
 
 
+ZONE_STREAM = ":Zone.Identifier"
+
+
+@unittest.skipUnless(os.name == "nt", "Mark-of-the-Web is Windows' own")
+class MarkOfTheWebTests(IntegrationCase):
+    """A file restored from a download keeps Windows' note that it came from the internet."""
+
+    MARK = b"[ZoneTransfer]\r\nZoneId=3\r\nHostUrl=https://cloud.example/files/report.pdf.gpg\r\n"
+
+    def setUp(self):
+        super().setUp()
+        probe = self.write("probe.txt")
+        try:
+            self.mark(probe)
+        except OSError:
+            self.skipTest("this drive can't keep alternate data streams")
+        probe.unlink()
+
+    def mark(self, path: Path, mark: bytes = MARK) -> None:
+        with open(str(path) + ZONE_STREAM, "wb") as stream:
+            stream.write(mark)
+
+    def mark_of(self, path: Path) -> bytes | None:
+        try:
+            with open(str(path) + ZONE_STREAM, "rb") as stream:
+                return stream.read()
+        except FileNotFoundError:
+            return None
+
+    def restore(self, encrypted: Path) -> Path:
+        result = self.job([self.item(encrypted)], "restored", "restore", passphrases=[PASSPHRASE])
+        self.assertEqual((result.succeeded, result.failed), (1, 0), self.progress)
+        return result.outputs[0]
+
+    def test_a_restored_file_keeps_the_mark_of_its_download(self):
+        encrypted = self.encrypt(self.write("report.pdf", b"%PDF-1.4 test"))
+        self.mark(encrypted)
+        restored = self.restore(encrypted)
+        self.assertEqual(restored.read_bytes(), b"%PDF-1.4 test")
+        self.assertEqual(self.mark_of(restored), self.MARK)
+
+    def test_a_file_that_was_never_downloaded_gets_no_mark(self):
+        encrypted = self.encrypt(self.write("report.pdf"))
+        self.assertIsNone(self.mark_of(self.restore(encrypted)))
+
+    def test_every_file_unpacked_from_a_downloaded_archive_is_marked(self):
+        contents = {"return.pdf": b"%PDF-1.4", "receipts/scan.jpg": b"jpeg", "receipts/empty.txt": b""}
+        for relative, content in contents.items():
+            self.write(f"Taxes 2026/{relative}", content)
+        items = collect_files([self.root / "Taxes 2026"], self.root / "exports", "encrypt").items
+        made = encrypt_archive(self.gpg, items, self.root / "exports", "Archive", "password", None, threading.Event(),
+                               lambda *args: self.progress.append(args), passphrases=[PASSPHRASE])
+        self.mark(made.outputs[0])
+        folder = self.restore(made.outputs[0]) / "Taxes 2026"
+        self.assertEqual({p.relative_to(folder).as_posix(): p.read_bytes() for p in folder.rglob("*") if p.is_file()},
+                         contents)
+        for relative in contents:
+            with self.subTest(relative):
+                self.assertEqual(self.mark_of(folder / relative), self.MARK)
+
+    def test_an_oversized_mark_becomes_a_plain_internet_mark(self):
+        encrypted = self.encrypt(self.write("tool.exe", b"MZ test"))
+        self.mark(encrypted, b"[ZoneTransfer]\r\nZoneId=3\r\nHostUrl=" + b"x" * 70_000)
+        self.assertEqual(self.mark_of(self.restore(encrypted)), b"[ZoneTransfer]\r\nZoneId=3\r\n")
+
+    def test_a_drive_that_cannot_keep_the_mark_still_gets_the_file(self):
+        encrypted = self.encrypt(self.write("report.pdf", b"content"))
+        self.mark(encrypted)
+
+        def no_streams_to_write(file, mode="r", *args, **kwargs):
+            if str(file).endswith(ZONE_STREAM) and "w" in mode:
+                raise OSError(22, "The filename, directory name, or volume label syntax is incorrect")  # FAT
+            return open(file, mode, *args, **kwargs)
+
+        with patch.object(core, "open", no_streams_to_write, create=True):
+            restored = self.restore(encrypted)
+        self.assertEqual(restored.read_bytes(), b"content")
+        self.assertIsNone(self.mark_of(restored))
+
+
+@unittest.skipIf(os.name == "nt", "on Windows, this name is a stream")
+class MarkOfTheWebElsewhereTests(IntegrationCase):
+    def test_a_file_named_like_a_stream_is_just_a_file(self):
+        # Outside Windows, "Archive.zip.gpg:Zone.Identifier" is an ordinary name, and nothing to copy. An
+        # archive shows it: a copy would sit beside each file unpacked from it.
+        items = [self.item(self.write("Taxes 2026/return.pdf", b"%PDF-1.4"), Path("Taxes 2026/return.pdf"))]
+        made = encrypt_archive(self.gpg, items, self.root / "exports", "Archive", "password", None, threading.Event(),
+                               lambda *args: self.progress.append(args), passphrases=[PASSPHRASE])
+        self.write(f"exports/{made.outputs[0].name}{ZONE_STREAM}", b"[ZoneTransfer]\nZoneId=3\n")
+        result = self.job([self.item(made.outputs[0])], "restored", "restore", passphrases=[PASSPHRASE])
+        self.assertEqual(result.succeeded, 1, self.progress)
+        found = sorted(p.relative_to(self.root / "restored").as_posix() for p in (self.root / "restored").rglob("*"))
+        self.assertEqual(found, ["Archive", "Archive/Taxes 2026", "Archive/Taxes 2026/return.pdf"])
+
+
 class NothingLingersTests(IntegrationCase):
     def test_passphrase_never_appears_in_output_files(self):
         encrypted = self.encrypt(self.write("a.txt"), passphrase="distinctive-canary-passphrase")

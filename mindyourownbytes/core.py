@@ -1231,6 +1231,43 @@ def _discard(path: Path) -> None:
         path.unlink(missing_ok=True)
 
 
+#: Windows' Mark-of-the-Web: the alternate data stream in which a browser or email program notes that a file
+#: came from elsewhere, so that SmartScreen and Office are careful with it.
+_ZONE_STREAM = ":Zone.Identifier"
+#: A real mark is a few short lines. A larger one is replaced with a plain "from the internet".
+_MAX_ZONE_MARK = 64 * 1024
+_INTERNET_ZONE = b"[ZoneTransfer]\r\nZoneId=3\r\n"
+
+
+def _zone_mark(path: Path) -> bytes | None:
+    """The Mark-of-the-Web on ``path``, or None if it has none, as always outside Windows."""
+    if os.name != "nt":
+        return None
+    try:
+        with open(str(path) + _ZONE_STREAM, "rb") as stream:
+            mark = stream.read(_MAX_ZONE_MARK + 1)
+    except OSError:
+        return None  # No mark, or a drive without streams, such as FAT.
+    if len(mark) > _MAX_ZONE_MARK:
+        return _INTERNET_ZONE
+    return mark or None
+
+
+def _copy_zone_mark(mark: bytes | None, result: Path) -> None:
+    """Give a restored file, or every file in a restored folder, the mark its encrypted file had.
+
+    This happens before the result gets its name, so that it never appears without the mark. A drive
+    without streams, such as FAT, can't keep one, as with any copy onto it, so that's no reason to fail.
+    """
+    if mark is None:
+        return
+    files = [result] if result.is_file() else [Path(folder, name) for folder, _, names in os.walk(result)
+                                               for name in names]
+    for file in files:
+        with contextlib.suppress(OSError), open(str(file) + _ZONE_STREAM, "wb") as stream:
+            stream.write(mark)
+
+
 def _restore_one(binary: str, item: SourceItem, output_directory: Path, cancel: threading.Event,
                  secrets: Sequence[bytes], leftovers: list[Path], journal: workspace.Journal | None,
                  require_signature: bool, expected_signers: frozenset[str],
@@ -1243,6 +1280,9 @@ def _restore_one(binary: str, item: SourceItem, output_directory: Path, cancel: 
 
     With ``require_signature``, a file that decrypted with a key but that no key you've verified signed
     raises ``Unauthenticated``, unless ``accept`` says yes to what its signatures showed.
+
+    On Windows, the restored file, or each file unpacked from an archive, gets the encrypted file's
+    Mark-of-the-Web, so that SmartScreen and Office treat it as coming from where the download did.
     """
     target = unique_target(output_directory / output_relative(item, "restore"))
     target.parent.mkdir(parents=True, exist_ok=True)
@@ -1285,12 +1325,16 @@ def _restore_one(binary: str, item: SourceItem, output_directory: Path, cancel: 
                 raise GpgFailure("None of the saved passphrases opened this file.")
             raise failures[0]
         _stop_if_cancelled(cancel)
+        # A file restored from a download is as much from the internet as the download was.
+        mark = _zone_mark(item.source)
         if target.suffix.lower() == archive.SUFFIX and archive.is_archive(payload):
             # One of this app's archives: its files come out into a folder, and the zip goes with the workspace.
             unpacked = space.path / "unpacked"
             unpacked.mkdir(mode=0o700)
             archive.extract(payload, unpacked, partial(_stop_if_cancelled, cancel))
+            _copy_zone_mark(mark, unpacked)
             return _publish(unpacked, target.with_suffix(""), safefs.publish_directory), verification
+        _copy_zone_mark(mark, payload)
         safefs.sync_file(payload)
         return _publish(payload, target, publish_no_overwrite), verification
     finally:
