@@ -20,11 +20,17 @@ Any Python from 3.12 up works, including one from [python.org](https://www.pytho
 
 ## 2. Keep your real keys out of it
 
-Testing makes keys and settings you won't want to keep. Give this Terminal window its own empty GnuPG
+The safest place to test is a separate macOS user account made just for this (**System Settings >
+Users & Groups**), which you can delete afterwards with everything in it. Use one if you've ever used
+mindyourownbytes on this Mac before: in your own account, the app would use your real settings and
+saved passphrases.
+
+Either way, testing makes keys you won't want to keep. Give this Terminal window its own empty GnuPG
 folder, and tell GnuPG to ask for passphrases in a window:
 
 ```bash
-export GNUPGHOME="$(mktemp -d)"
+export MYOB_TEST_GNUPG="$(mktemp -d)"
+export GNUPGHOME="$MYOB_TEST_GNUPG"
 echo "pinentry-program $(brew --prefix)/bin/pinentry-mac" > "$GNUPGHOME/gpg-agent.conf"
 ```
 
@@ -109,13 +115,30 @@ If something looks like a security problem, report it [privately](../SECURITY.md
 
 ## 8. Clean up
 
-If you don't use the app for anything else, this removes everything the test left behind, including
-the test keys, test files, saved passphrases, and the app's settings:
+If you tested in a separate user account, delete that account, and you're done.
+
+Otherwise, this removes only what the test made: the throwaway GnuPG folder with the test keys, the
+test files, and the self-test's results.
 
 ```bash
 deactivate
-rm -rf "$GNUPGHOME" ~/myob-test ~/myob-self-test "$HOME/Library/Application Support/mindyourownbytes"
-defaults delete com.mindyourownbytes.mindyourownbytes
+if [ -n "$MYOB_TEST_GNUPG" ]; then
+  gpgconf --homedir "$MYOB_TEST_GNUPG" --kill gpg-agent
+  rm -rf "$MYOB_TEST_GNUPG"
+fi
+rm -rf ~/myob-test ~/myob-self-test
 ```
 
-Then delete the `mindyourownbytes` folder that `git clone` made. Thank you!
+It never touches your own GnuPG folder, even if your settings name one. If you've closed the window
+from step 2 since, the throwaway folder is with your temporary files, which macOS clears out by itself.
+Then delete the `mindyourownbytes` folder that `git clone` made.
+
+The app also keeps its settings, the checksums of what you encrypted, and any passphrases you saved, in
+your account. **If you used mindyourownbytes on this Mac before this test, leave those alone**, because
+they'd include your real saved passphrases. If this test was the first time, you can remove them too:
+
+1. In Finder, choose **Go > Go to Folder**, and type `~/Library/Application Support`.
+2. Drag the `mindyourownbytes` folder to the Trash, where you can still get it back until you empty it.
+3. Clear the app's settings: `defaults delete com.mindyourownbytes.mindyourownbytes`
+
+Thank you!
