@@ -1,3 +1,5 @@
+![mindyourownbytes — Your files. Your keys. None of their business.](docs/assets/readme-banner.png)
+
 # mindyourownbytes
 
 **Your files. Your keys. None of their business.**
