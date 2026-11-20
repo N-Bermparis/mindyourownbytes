@@ -6,7 +6,8 @@ Encrypt your files on your own computer, then put them on any cloud you like. No
 account, no API keys, no new file format: just standard OpenPGP files that open with
 plain GnuPG, with or without this app.
 
-**[Download for Windows, macOS, and Linux](https://github.com/N-Bermparis/mindyourownbytes/releases)** · [or run it from source](#run-from-source)
+**Not released yet:** [run it from source](#run-from-source) for now. Downloads for Windows, macOS,
+and Linux will appear on the [Releases page](https://github.com/N-Bermparis/mindyourownbytes/releases).
 
 [![CI](https://github.com/N-Bermparis/mindyourownbytes/actions/workflows/ci.yml/badge.svg)](https://github.com/N-Bermparis/mindyourownbytes/actions/workflows/ci.yml)
 [![License: GPL v3+](https://img.shields.io/badge/license-GPL--3.0--or--later-blue)](LICENSE)
@@ -19,6 +20,40 @@ plain GnuPG, with or without this app.
 > **Alpha software, not independently audited.** Security review is exactly what this
 > release is asking for. Please test with non-sensitive files first, keep other verified
 > backups, and read [what it does and doesn't protect](#what-it-protects-and-what-it-doesnt).
+
+## Help wanted
+
+You're welcome here whether you write code, test software, review security, or just care about
+privacy. You don't need to know any cryptography: trying the app and saying what confused you
+already helps.
+
+What would help most right now:
+
+- **Try it on a Mac.** Nobody has run it on one yet. [Here's what to try](docs/TESTING_MACOS.md), and
+  [where to say how it went](https://github.com/N-Bermparis/mindyourownbytes/issues/6).
+- **Review the security.** Try to break it, starting from the [threat model](docs/THREAT_MODEL.md) and the
+  [security review issue](https://github.com/N-Bermparis/mindyourownbytes/issues/2). Report
+  vulnerabilities [privately](SECURITY.md), never in an issue.
+- **Test it on Linux or Windows**, and tell us what happened.
+- **Pick up an issue.** Start with a [`good first issue`](https://github.com/N-Bermparis/mindyourownbytes/labels/good%20first%20issue),
+  or take on the big one: [hiding file names](https://github.com/N-Bermparis/mindyourownbytes/issues/3).
+- **Help with** accessibility, translations, documentation, and packaging.
+
+To begin, [run it from source](#run-from-source), and see [CONTRIBUTING.md](CONTRIBUTING.md). Questions and
+ideas are welcome in [Discussions](https://github.com/N-Bermparis/mindyourownbytes/discussions), the
+[roadmap](docs/ROADMAP.md) shows where this is going, and everyone follows the
+[Code of Conduct](CODE_OF_CONDUCT.md).
+
+## Project status
+
+An early alpha, under active development. **No release has been published yet.**
+
+| System | Status |
+| --- | --- |
+| Windows 10 and 11 | The main platform: developed and tested on it. |
+| Linux, 64-bit Intel or AMD | Runs from source. Testing on desktop Linux wanted. |
+| macOS, Apple silicon | Should run from source, but nobody has tried it on a Mac yet. [Testing wanted](docs/TESTING_MACOS.md). |
+| macOS, Intel | As above, from source only. |
 
 ## Why this exists
 
@@ -89,6 +124,10 @@ library or Python's socket and SSL modules. All cryptography is done by [GnuPG](
 this project does not implement any of its own.
 
 ## Getting started
+
+> [!NOTE]
+> No release has been published yet, so the downloads described here don't exist yet. Until the
+> first one, [run it from source](#run-from-source).
 
 **On Windows 10 or 11:**
 
@@ -177,8 +216,8 @@ tying it to the workflow run and commit that built it: `gh attestation verify FI
 
 ### Run from source
 
-For an Intel Mac, a Linux computer with another kind of processor, or if you'd rather not run a
-download. You need
+Until the first release, this is the only way to run it. After that, it's for an Intel Mac, a Linux
+computer with another kind of processor, or if you'd rather not run a download. You need
 [Python 3.12+](https://www.python.org/downloads/) and GnuPG.
 
 **Windows**
@@ -199,8 +238,9 @@ pip install --require-hashes -r requirements.txt
 python -m mindyourownbytes
 ```
 
-CI runs the tests, and tests each download by running it, on Windows, Linux, and macOS.
+CI is set up to run the tests, and to test each download by running it, on Windows, Linux, and macOS.
 The app is mainly developed and used on Windows, so reports from Linux and Mac users are very welcome.
+On a Mac, [here's what to try](docs/TESTING_MACOS.md).
 
 ## How to use it
 
@@ -408,17 +448,7 @@ on the command line and want automated sync.
 
 ## Get involved
 
-This project needs people who care about privacy, and not all of them write code.
-
-- **Review the security.** Try to break it. The [threat model](docs/THREAT_MODEL.md) is a good
-  starting point, and vulnerabilities go through [private reporting](SECURITY.md).
-- **Test it** on your setup and say what confused you.
-- **Pick up an issue.** Start with [`good first issue`](https://github.com/N-Bermparis/mindyourownbytes/labels/good%20first%20issue),
-  or take on the big one: [hiding file names](docs/ROADMAP.md).
-- **Help with** translations, accessibility, and packaging.
-
-See [CONTRIBUTING.md](CONTRIBUTING.md) for setup, and the [roadmap](docs/ROADMAP.md) for where this
-is going. Please follow the [Code of Conduct](CODE_OF_CONDUCT.md).
+All kinds of help are welcome, and not all of it is code: see [Help wanted](#help-wanted) near the top.
 
 ## License
 
